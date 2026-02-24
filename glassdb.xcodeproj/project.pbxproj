@@ -1,0 +1,410 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1013D5BE9DD24D3097DFF5E3 /* SchemaBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF6C04803014428EA95F2A77 /* SchemaBrowserView.swift */; };
+		15EE3E9B85434489A98B1152 /* ResultsGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06AA08C663E426587B3B46C /* ResultsGridView.swift */; };
+		20F72498B8444E558304A9A3 /* WindowRecoveryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9978329ED9547C2930DF0E7 /* WindowRecoveryManager.swift */; };
+		22B58E26C7444FF4802B4B17 /* GlassDBKit in Frameworks */ = {isa = PBXBuildFile; productRef = 469DAC2964D74CADB1B32DE2 /* GlassDBKit */; };
+		A1B2C3D4E5F64A7B8C9D0E1F /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */; };
+		29D787D970624B23ABE13289 /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF83AE0207B342A29E2ADEE7 /* ConnectionManager.swift */; };
+		3711EDCA0BA34F4E98E10CE0 /* ConnectionFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BFCB3DBBA154885A5CF2BFB /* ConnectionFormView.swift */; };
+		3B64A03BF9CD4108BE9A5DEC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 990BF6E8175444E180F44614 /* Assets.xcassets */; };
+		4EEEE200E4F6459C9A24647C /* DatabaseSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBC442DB6AB4D709CB10272 /* DatabaseSessionManager.swift */; };
+		5760A471B09743FFA44D4265 /* QueryEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3792B5DAA1074993A43635A7 /* QueryEditorView.swift */; };
+		5FF0BC99598B472C869B9ACD /* SettingsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02EDAE92FBA4446990FFA07F /* SettingsManager.swift */; };
+		620E35D812F34A89864DCD4B /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80284FE2C784ED1A35C853D /* Models.swift */; };
+		A9905B31EEE942A39D519D15 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 052A0594CD464778B75FA34A /* Constants.swift */; };
+		BBA6B24EC0A34E31AAFDCAB1 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE1A61DE012A4FE1BF43783B /* SettingsView.swift */; };
+		CBAD66A56D84484EA4FE21E5 /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4FCE3E66A4A493E87AB6CF1 /* KeychainManager.swift */; };
+		D2BD5FCF9C1E4E02ACB59DC0 /* ConnectionManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EFD725D937543FE9945D407 /* ConnectionManagerView.swift */; };
+		E9A11E538E914C8E84523981 /* glassdbApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 714C40D218664F40AB970674 /* glassdbApp.swift */; };
+		F94F8A1208F54281AC20044A /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71AA2A7B03B84E35AED9D604 /* Logger.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		02EDAE92FBA4446990FFA07F /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
+		052A0594CD464778B75FA34A /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
+		0EFD725D937543FE9945D407 /* ConnectionManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionManagerView.swift; sourceTree = "<group>"; };
+		3792B5DAA1074993A43635A7 /* QueryEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueryEditorView.swift; sourceTree = "<group>"; };
+		714C40D218664F40AB970674 /* glassdbApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = glassdbApp.swift; sourceTree = "<group>"; };
+		71AA2A7B03B84E35AED9D604 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
+		7BFCB3DBBA154885A5CF2BFB /* ConnectionFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionFormView.swift; sourceTree = "<group>"; };
+		990BF6E8175444E180F44614 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A9978329ED9547C2930DF0E7 /* WindowRecoveryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowRecoveryManager.swift; sourceTree = "<group>"; };
+		AE1A61DE012A4FE1BF43783B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		C0149C38F9584EDF8F43B6A9 /* glassdb.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glassdb.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C80284FE2C784ED1A35C853D /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		CBBC442DB6AB4D709CB10272 /* DatabaseSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseSessionManager.swift; sourceTree = "<group>"; };
+		DF6C04803014428EA95F2A77 /* SchemaBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaBrowserView.swift; sourceTree = "<group>"; };
+		EF83AE0207B342A29E2ADEE7 /* ConnectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionManager.swift; sourceTree = "<group>"; };
+		F06AA08C663E426587B3B46C /* ResultsGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultsGridView.swift; sourceTree = "<group>"; };
+		F4FCE3E66A4A493E87AB6CF1 /* KeychainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainManager.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		ADA2B3566B6941DB91660EC0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				22B58E26C7444FF4802B4B17 /* GlassDBKit in Frameworks */,
+				A1B2C3D4E5F64A7B8C9D0E1F /* GlasSecretStore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		322E2E8ABC124DE8A96D43A8 = {
+			isa = PBXGroup;
+			children = (
+				B508EA9569D04CB4A7967F65 /* glassdb */,
+				E8921312CAD44E5488E3CCB6 /* Packages */,
+				9A75A586B2504699B8C19A5C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		9A75A586B2504699B8C19A5C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C0149C38F9584EDF8F43B6A9 /* glassdb.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B508EA9569D04CB4A7967F65 /* glassdb */ = {
+			isa = PBXGroup;
+			children = (
+				7BFCB3DBBA154885A5CF2BFB /* ConnectionFormView.swift */,
+				EF83AE0207B342A29E2ADEE7 /* ConnectionManager.swift */,
+				0EFD725D937543FE9945D407 /* ConnectionManagerView.swift */,
+				052A0594CD464778B75FA34A /* Constants.swift */,
+				CBBC442DB6AB4D709CB10272 /* DatabaseSessionManager.swift */,
+				F4FCE3E66A4A493E87AB6CF1 /* KeychainManager.swift */,
+				71AA2A7B03B84E35AED9D604 /* Logger.swift */,
+				C80284FE2C784ED1A35C853D /* Models.swift */,
+				3792B5DAA1074993A43635A7 /* QueryEditorView.swift */,
+				F06AA08C663E426587B3B46C /* ResultsGridView.swift */,
+				DF6C04803014428EA95F2A77 /* SchemaBrowserView.swift */,
+				02EDAE92FBA4446990FFA07F /* SettingsManager.swift */,
+				AE1A61DE012A4FE1BF43783B /* SettingsView.swift */,
+				A9978329ED9547C2930DF0E7 /* WindowRecoveryManager.swift */,
+				714C40D218664F40AB970674 /* glassdbApp.swift */,
+				990BF6E8175444E180F44614 /* Assets.xcassets */,
+			);
+			path = glassdb;
+			sourceTree = "<group>";
+		};
+		E8921312CAD44E5488E3CCB6 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B994B64E74CA47298534AEF3 /* glassdb */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 06D10A57B5A24B7BA150066A /* Build configuration list for PBXNativeTarget "glassdb" */;
+			buildPhases = (
+				6A6C60FB13AF4932B16D0689 /* Sources */,
+				ADA2B3566B6941DB91660EC0 /* Frameworks */,
+				E30D4097F4DA43389AAC10CB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = glassdb;
+			packageProductDependencies = (
+				469DAC2964D74CADB1B32DE2 /* GlassDBKit */,
+				B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */,
+			);
+			productName = glassdb;
+			productReference = C0149C38F9584EDF8F43B6A9 /* glassdb.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		60A05457F3744C3190CD5238 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2630;
+			};
+			buildConfigurationList = 902F2C99CA384D8E8E964562 /* Build configuration list for PBXProject "glassdb" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 322E2E8ABC124DE8A96D43A8;
+			packageReferences = (
+				95EEFE7D4E8E42E092908953 /* XCLocalSwiftPackageReference "Packages/GlassDBKit" */,
+				C3D4E5F6A7B84C9D0E1F2A3B /* XCLocalSwiftPackageReference "../GlasSecretStore" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 9A75A586B2504699B8C19A5C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B994B64E74CA47298534AEF3 /* glassdb */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E30D4097F4DA43389AAC10CB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3B64A03BF9CD4108BE9A5DEC /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6A6C60FB13AF4932B16D0689 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3711EDCA0BA34F4E98E10CE0 /* ConnectionFormView.swift in Sources */,
+				29D787D970624B23ABE13289 /* ConnectionManager.swift in Sources */,
+				D2BD5FCF9C1E4E02ACB59DC0 /* ConnectionManagerView.swift in Sources */,
+				A9905B31EEE942A39D519D15 /* Constants.swift in Sources */,
+				4EEEE200E4F6459C9A24647C /* DatabaseSessionManager.swift in Sources */,
+				CBAD66A56D84484EA4FE21E5 /* KeychainManager.swift in Sources */,
+				F94F8A1208F54281AC20044A /* Logger.swift in Sources */,
+				620E35D812F34A89864DCD4B /* Models.swift in Sources */,
+				5760A471B09743FFA44D4265 /* QueryEditorView.swift in Sources */,
+				15EE3E9B85434489A98B1152 /* ResultsGridView.swift in Sources */,
+				1013D5BE9DD24D3097DFF5E3 /* SchemaBrowserView.swift in Sources */,
+				5FF0BC99598B472C869B9ACD /* SettingsManager.swift in Sources */,
+				BBA6B24EC0A34E31AAFDCAB1 /* SettingsView.swift in Sources */,
+				20F72498B8444E558304A9A3 /* WindowRecoveryManager.swift in Sources */,
+				E9A11E538E914C8E84523981 /* glassdbApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1380AF6473F444FFA572702E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		35E3555780EE46058CBBBEA5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = glassdb/glassdb.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = glassdb;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.glassdb;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = xros;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				XROS_DEPLOYMENT_TARGET = 2.0;
+			};
+			name = Release;
+		};
+		80AA96C8BD8F4C2890C0BFA8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		F2ED1119C6BD4953AAFE755E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = glassdb/glassdb.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = glassdb;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.glassdb;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = xros;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				XROS_DEPLOYMENT_TARGET = 2.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		06D10A57B5A24B7BA150066A /* Build configuration list for PBXNativeTarget "glassdb" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F2ED1119C6BD4953AAFE755E /* Debug */,
+				35E3555780EE46058CBBBEA5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		902F2C99CA384D8E8E964562 /* Build configuration list for PBXProject "glassdb" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				80AA96C8BD8F4C2890C0BFA8 /* Debug */,
+				1380AF6473F444FFA572702E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		95EEFE7D4E8E42E092908953 /* XCLocalSwiftPackageReference "Packages/GlassDBKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/GlassDBKit;
+		};
+		C3D4E5F6A7B84C9D0E1F2A3B /* XCLocalSwiftPackageReference "../GlasSecretStore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../GlasSecretStore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		469DAC2964D74CADB1B32DE2 /* GlassDBKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 95EEFE7D4E8E42E092908953 /* XCLocalSwiftPackageReference "Packages/GlassDBKit" */;
+			productName = GlassDBKit;
+		};
+		B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C3D4E5F6A7B84C9D0E1F2A3B /* XCLocalSwiftPackageReference "../GlasSecretStore" */;
+			productName = GlasSecretStore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 60A05457F3744C3190CD5238 /* Project object */;
+}
