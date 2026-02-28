@@ -12,13 +12,9 @@ import os
 
 enum KeychainManager {
 
-    // Access group is nil until glas.sh also ships with GlasSecretStore.
-    // The entitlement is declared in glassdb.entitlements for when cross-app
-    // sharing is enabled — at that point, set accessGroup to
-    // "7JQGQ7CRH8.sh.glas.shared" here.
     static let config = SecretStoreConfiguration(
         serviceNamePrefix: "sh.glas",
-        accessGroup: nil,
+        accessGroup: "7JQGQ7CRH8.sh.glas.shared",
         legacyServiceNamePrefixes: ["app.glassdb"]
     )
 
@@ -69,7 +65,9 @@ enum KeychainManager {
     // MARK: - SSH Keys
 
     static func saveSSHKey(_ privateKey: String, passphrase: String?, for keyID: UUID) throws {
-        try SSHKeyKeychainStore.save(privateKey: privateKey, passphrase: passphrase, for: keyID, config: config)
+        let secureKey = SecureBytes(Data(privateKey.utf8))
+        let securePassphrase = passphrase.map { SecureBytes(Data($0.utf8)) }
+        try SSHKeyKeychainStore.save(privateKey: secureKey, passphrase: securePassphrase, for: keyID, config: config)
     }
 
     static func retrieveSSHKey(for keyID: UUID) throws -> SSHKeyMaterial {

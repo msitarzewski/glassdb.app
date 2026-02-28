@@ -54,8 +54,8 @@ class DatabaseSessionManager {
                 var sshKeyPassphrase: String? = nil
                 if config.sshAuthMethod == .sshKey, let keyID = config.sshKeyID {
                     let material = try KeychainManager.retrieveSSHKey(for: keyID)
-                    sshPrivateKey = material.privateKey
-                    sshKeyPassphrase = material.passphrase
+                    sshPrivateKey = material.privateKey.toUTF8String()
+                    sshKeyPassphrase = material.passphrase?.toUTF8String()
                 }
 
                 let tunnelManager = SSHTunnelManager()
