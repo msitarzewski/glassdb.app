@@ -13,7 +13,6 @@ struct glassdbApp: App {
     @State private var connectionManager = ConnectionManager(loadImmediately: false)
     @State private var sessionManager = DatabaseSessionManager(loadImmediately: false)
     @State private var settingsManager = SettingsManager(loadImmediately: false)
-    @State private var windowRecoveryManager = WindowRecoveryManager()
 
     var body: some Scene {
         // Connection manager — PRIMARY WINDOW
@@ -22,9 +21,9 @@ struct glassdbApp: App {
                 .environment(connectionManager)
                 .environment(sessionManager)
                 .environment(settingsManager)
-                .trackWindowPresence(key: "main", recovery: windowRecoveryManager)
         }
         .defaultSize(width: 1320, height: 760)
+        .defaultLaunchBehavior(.presented)
 
         // Query editor windows (can open multiple — one per session)
         WindowGroup(id: "query-editor", for: UUID.self) { $sessionID in
@@ -32,42 +31,45 @@ struct glassdbApp: App {
                 QueryEditorView(sessionID: sessionID)
                     .environment(sessionManager)
                     .environment(settingsManager)
-                    .trackWindowPresence(key: "query-\(sessionID)", recovery: windowRecoveryManager)
             }
         }
         .windowStyle(.plain)
         .defaultSize(width: 1200, height: 800)
+        .restorationBehavior(.disabled)
+        .defaultLaunchBehavior(.suppressed)
 
         // Results grid windows (detachable — pin results in space)
         WindowGroup(id: "results", for: UUID.self) { $resultSetID in
             if let resultSetID {
                 ResultsGridView(resultSetID: resultSetID)
                     .environment(sessionManager)
-                    .trackWindowPresence(key: "results-\(resultSetID)", recovery: windowRecoveryManager)
             }
         }
         .windowStyle(.plain)
         .defaultSize(width: 1000, height: 600)
+        .restorationBehavior(.disabled)
+        .defaultLaunchBehavior(.suppressed)
 
         // Schema browser
         WindowGroup(id: "schema", for: UUID.self) { $sessionID in
             if let sessionID {
                 SchemaBrowserView(sessionID: sessionID)
                     .environment(sessionManager)
-                    .trackWindowPresence(key: "schema-\(sessionID)", recovery: windowRecoveryManager)
             }
         }
         .windowStyle(.plain)
         .defaultSize(width: 400, height: 700)
+        .restorationBehavior(.disabled)
+        .defaultLaunchBehavior(.suppressed)
 
         // Settings
-        WindowGroup("Settings", id: "settings") {
+        Window("Settings", id: "settings") {
             SettingsView()
                 .environment(settingsManager)
-                .trackWindowPresence(key: "settings", recovery: windowRecoveryManager)
         }
         .windowStyle(.plain)
         .defaultSize(width: 700, height: 600)
+        .defaultLaunchBehavior(.suppressed)
     }
 }
 
@@ -85,24 +87,5 @@ struct MainBootstrapView: View {
                 sessionManager.loadIfNeeded()
                 settingsManager.loadIfNeeded()
             }
-    }
-}
-
-// MARK: - Window Presence Tracking
-
-struct WindowPresenceTrackingModifier: ViewModifier {
-    let key: String
-    let recovery: WindowRecoveryManager
-
-    func body(content: Content) -> some View {
-        content
-            .onAppear { recovery.markWindowVisible(key) }
-            .onDisappear { recovery.markWindowHidden(key) }
-    }
-}
-
-extension View {
-    func trackWindowPresence(key: String, recovery: WindowRecoveryManager) -> some View {
-        modifier(WindowPresenceTrackingModifier(key: key, recovery: recovery))
     }
 }

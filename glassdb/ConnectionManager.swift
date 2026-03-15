@@ -72,6 +72,7 @@ class ConnectionManager {
     func delete(_ connection: DatabaseConnectionConfig) {
         connections.removeAll { $0.id == connection.id }
         try? KeychainManager.deletePassword(for: connection)
+        try? KeychainManager.deleteSSHPassword(for: connection)
         save()
     }
 

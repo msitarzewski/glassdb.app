@@ -9,7 +9,7 @@
 /* Begin PBXBuildFile section */
 		1013D5BE9DD24D3097DFF5E3 /* SchemaBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF6C04803014428EA95F2A77 /* SchemaBrowserView.swift */; };
 		15EE3E9B85434489A98B1152 /* ResultsGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06AA08C663E426587B3B46C /* ResultsGridView.swift */; };
-		20F72498B8444E558304A9A3 /* WindowRecoveryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9978329ED9547C2930DF0E7 /* WindowRecoveryManager.swift */; };
+
 		22B58E26C7444FF4802B4B17 /* GlassDBKit in Frameworks */ = {isa = PBXBuildFile; productRef = 469DAC2964D74CADB1B32DE2 /* GlassDBKit */; };
 		A1B2C3D4E5F64A7B8C9D0E1F /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */; };
 		29D787D970624B23ABE13289 /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF83AE0207B342A29E2ADEE7 /* ConnectionManager.swift */; };
@@ -36,7 +36,7 @@
 		71AA2A7B03B84E35AED9D604 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
 		7BFCB3DBBA154885A5CF2BFB /* ConnectionFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionFormView.swift; sourceTree = "<group>"; };
 		990BF6E8175444E180F44614 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		A9978329ED9547C2930DF0E7 /* WindowRecoveryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowRecoveryManager.swift; sourceTree = "<group>"; };
+
 		AE1A61DE012A4FE1BF43783B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		C0149C38F9584EDF8F43B6A9 /* glassdb.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glassdb.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C80284FE2C784ED1A35C853D /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -93,7 +93,7 @@
 				DF6C04803014428EA95F2A77 /* SchemaBrowserView.swift */,
 				02EDAE92FBA4446990FFA07F /* SettingsManager.swift */,
 				AE1A61DE012A4FE1BF43783B /* SettingsView.swift */,
-				A9978329ED9547C2930DF0E7 /* WindowRecoveryManager.swift */,
+
 				714C40D218664F40AB970674 /* glassdbApp.swift */,
 				990BF6E8175444E180F44614 /* Assets.xcassets */,
 			);
@@ -191,7 +191,7 @@
 				1013D5BE9DD24D3097DFF5E3 /* SchemaBrowserView.swift in Sources */,
 				5FF0BC99598B472C869B9ACD /* SettingsManager.swift in Sources */,
 				BBA6B24EC0A34E31AAFDCAB1 /* SettingsView.swift in Sources */,
-				20F72498B8444E558304A9A3 /* WindowRecoveryManager.swift in Sources */,
+
 				E9A11E538E914C8E84523981 /* glassdbApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -271,7 +271,7 @@
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 7;
-				XROS_DEPLOYMENT_TARGET = 2.0;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
 		};
@@ -355,7 +355,7 @@
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 7;
-				XROS_DEPLOYMENT_TARGET = 2.0;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
 		};

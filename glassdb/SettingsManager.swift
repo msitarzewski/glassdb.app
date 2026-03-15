@@ -21,7 +21,6 @@ class SettingsManager {
     var resultRowLimit: Int = 1000
     var windowOpacity: Double = 0.95
     var blurBackground: Bool = true
-    var interactiveGlassEffects: Bool = true
     var glassTint: String = "None"
     var showSidebarByDefault: Bool = true
     var editorFontSize: Double = 14.0
@@ -61,9 +60,6 @@ class SettingsManager {
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.blurBackground) != nil {
             blurBackground = UserDefaults.standard.bool(forKey: UserDefaultsKeys.blurBackground)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.interactiveGlassEffects) != nil {
-            interactiveGlassEffects = UserDefaults.standard.bool(forKey: UserDefaultsKeys.interactiveGlassEffects)
-        }
         if let savedGlassTint = UserDefaults.standard.string(forKey: UserDefaultsKeys.glassTint) {
             glassTint = savedGlassTint
         }
@@ -88,7 +84,6 @@ class SettingsManager {
         UserDefaults.standard.set(resultRowLimit, forKey: UserDefaultsKeys.resultRowLimit)
         UserDefaults.standard.set(windowOpacity, forKey: UserDefaultsKeys.windowOpacity)
         UserDefaults.standard.set(blurBackground, forKey: UserDefaultsKeys.blurBackground)
-        UserDefaults.standard.set(interactiveGlassEffects, forKey: UserDefaultsKeys.interactiveGlassEffects)
         UserDefaults.standard.set(glassTint, forKey: UserDefaultsKeys.glassTint)
         UserDefaults.standard.set(showSidebarByDefault, forKey: UserDefaultsKeys.showSidebarByDefault)
         UserDefaults.standard.set(editorFontSize, forKey: UserDefaultsKeys.editorFontSize)

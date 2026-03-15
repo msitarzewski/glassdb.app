@@ -27,33 +27,39 @@ struct SchemaBrowserView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if isLoading && databases.isEmpty {
-                ProgressView("Loading schema...")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = errorMessage {
-                ContentUnavailableView(
-                    "Error",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(error)
-                )
+        Group {
+            if session != nil {
+                VStack(spacing: 0) {
+                    if isLoading && databases.isEmpty {
+                        ProgressView("Loading schema...")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if let error = errorMessage {
+                        ContentUnavailableView(
+                            "Error",
+                            systemImage: "exclamationmark.triangle",
+                            description: Text(error)
+                        )
+                    } else {
+                        schemaTree
+                    }
+                }
             } else {
-                schemaTree
+                ContentUnavailableView(
+                    "Session Disconnected",
+                    systemImage: "cable.connector.slash",
+                    description: Text("This database session is no longer active.")
+                )
             }
         }
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
         .navigationTitle("Schema")
-        .ornament(attachmentAnchor: .scene(.bottom)) {
-            HStack(spacing: 16) {
+        .toolbar {
+            ToolbarItemGroup(placement: .bottomOrnament) {
                 Button {
                     Task { await loadDatabases() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .glassBackgroundEffect()
         }
         .task {
             await loadDatabases()
@@ -94,6 +100,14 @@ struct SchemaBrowserView: View {
                 }
             }
         }
+        .scrollInputBehavior(.enabled, for: .look)
+    }
+
+    private func columnAccessibilityLabel(_ col: ColumnInfo) -> String {
+        var parts = [col.name, col.type]
+        if col.isPrimaryKey { parts.append("primary key") }
+        if !col.isNullable { parts.append("not null") }
+        return parts.joined(separator: ", ")
     }
 
     private func tableRow(_ table: String, database: String) -> some View {
@@ -122,6 +136,8 @@ struct SchemaBrowserView: View {
                                 .foregroundStyle(.orange)
                         }
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(columnAccessibilityLabel(col))
                 }
             } else if let error = loadErrors[cacheKey] {
                 Label(error, systemImage: "exclamationmark.triangle")

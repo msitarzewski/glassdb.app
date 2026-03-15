@@ -25,15 +25,41 @@ struct QueryEditorView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            editorArea
-            Divider()
-            resultsArea
+        Group {
+            if session != nil {
+                VStack(spacing: 0) {
+                    editorArea
+                    Divider()
+                    resultsArea
+                }
+            } else {
+                ContentUnavailableView(
+                    "Session Disconnected",
+                    systemImage: "cable.connector.slash",
+                    description: Text("This database session is no longer active.")
+                )
+            }
         }
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
         .navigationTitle(session?.connectionConfig.name ?? "Query Editor")
-        .ornament(attachmentAnchor: .scene(.bottom)) {
-            editorToolbar
+        .toolbar {
+            ToolbarItemGroup(placement: .bottomOrnament) {
+                Button {
+                    Task { await executeQuery() }
+                } label: {
+                    Label("Execute", systemImage: "play.fill")
+                }
+                .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
+                .keyboardShortcut(.return, modifiers: .command)
+                .accessibilityHint("Keyboard shortcut: Command Return")
+
+                Button {
+                    queryText = ""
+                    currentResult = nil
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                }
+                .disabled(queryText.isEmpty && currentResult == nil)
+            }
         }
     }
 
@@ -62,6 +88,7 @@ struct QueryEditorView: View {
                 .scrollContentBackground(.hidden)
                 .padding(16)
                 .frame(minHeight: 200)
+                .accessibilityLabel("SQL query editor")
         }
     }
 
@@ -122,6 +149,7 @@ struct QueryEditorView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
+            .accessibilityElement(children: .combine)
 
             ScrollView([.horizontal, .vertical]) {
                 Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
@@ -134,6 +162,7 @@ struct QueryEditorView: View {
                                 .padding(.vertical, 8)
                                 .frame(minWidth: 100, alignment: .leading)
                                 .background(.ultraThinMaterial)
+                                .accessibilityAddTraits(.isHeader)
                         }
                     }
 
@@ -142,47 +171,21 @@ struct QueryEditorView: View {
                     // Rows
                     ForEach(Array(result.rows.prefix(100).enumerated()), id: \.offset) { _, row in
                         GridRow {
-                            ForEach(Array(row.enumerated()), id: \.offset) { _, value in
+                            ForEach(Array(row.enumerated()), id: \.offset) { colIndex, value in
                                 Text(value.displayString)
                                     .font(.system(.caption, design: .monospaced))
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
                                     .frame(minWidth: 100, alignment: .leading)
                                     .foregroundStyle(value.isNull ? .tertiary : .primary)
+                                    .accessibilityLabel("\(result.columns[colIndex].name): \(value.isNull ? "null" : value.displayString)")
                             }
                         }
                     }
                 }
             }
+            .scrollInputBehavior(.enabled, for: .look)
         }
-    }
-
-    // MARK: - Toolbar Ornament
-
-    private var editorToolbar: some View {
-        HStack(spacing: 16) {
-            Button {
-                Task { await executeQuery() }
-            } label: {
-                Label("Execute", systemImage: "play.fill")
-            }
-            .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
-            .keyboardShortcut(.return, modifiers: .command)
-
-            Divider()
-                .frame(height: 20)
-
-            Button {
-                queryText = ""
-                currentResult = nil
-            } label: {
-                Label("Clear", systemImage: "trash")
-            }
-            .disabled(queryText.isEmpty && currentResult == nil)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .glassBackgroundEffect()
     }
 
     // MARK: - Execution

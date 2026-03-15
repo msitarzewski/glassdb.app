@@ -111,6 +111,41 @@ class DatabaseSessionManager {
         return sessionID
     }
 
+    func testConnection(config: DatabaseConnectionConfig, password: String, sshPassword: String? = nil) async throws {
+        let sessionID = try await connect(config: config, password: password, sshPassword: sshPassword)
+        await disconnect(sessionID: sessionID)
+    }
+
+    func testSSHConnection(config: DatabaseConnectionConfig, sshPassword: String? = nil) async throws {
+        guard config.useSSHTunnel,
+              let sshHost = config.sshHost,
+              let sshUsername = config.sshUsername else {
+            throw SSHTunnelError.noAuthMethod
+        }
+
+        var sshPrivateKey: String? = nil
+        var sshKeyPassphrase: String? = nil
+        if config.sshAuthMethod == .sshKey, let keyID = config.sshKeyID {
+            let material = try KeychainManager.retrieveSSHKey(for: keyID)
+            sshPrivateKey = material.privateKey.toUTF8String()
+            sshKeyPassphrase = material.passphrase?.toUTF8String()
+        }
+
+        let tunnelConfig = SSHTunnelConfig(
+            sshHost: sshHost,
+            sshPort: config.sshPort ?? 22,
+            sshUsername: sshUsername,
+            sshPassword: sshPrivateKey == nil ? sshPassword : nil,
+            sshPrivateKey: sshPrivateKey,
+            sshKeyPassphrase: sshKeyPassphrase,
+            remoteHost: config.host,
+            remotePort: config.port
+        )
+        let tunnelManager = SSHTunnelManager()
+        let tunnel = try await tunnelManager.establish(config: tunnelConfig)
+        try? await tunnel.close()
+    }
+
     func disconnect(sessionID: UUID) async {
         guard let session = sessions[sessionID] else { return }
         do {
