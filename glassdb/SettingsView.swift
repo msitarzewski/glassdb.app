@@ -67,7 +67,6 @@ struct SettingsView: View {
                             .frame(width: 40)
                     }
                     Toggle("Blur background", isOn: $settings.blurBackground)
-                    Toggle("Interactive glass effects", isOn: $settings.interactiveGlassEffects)
                     Toggle("Show sidebar by default", isOn: $settings.showSidebarByDefault)
                 }
 
@@ -78,7 +77,6 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
         }
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
         .onChange(of: settings.autoReconnect) { settingsManager.saveSettings() }
         .onChange(of: settings.confirmBeforeClosing) { settingsManager.saveSettings() }
         .onChange(of: settings.resultRowLimit) { settingsManager.saveSettings() }
@@ -87,7 +85,6 @@ struct SettingsView: View {
         .onChange(of: settings.showLineNumbers) { settingsManager.saveSettings() }
         .onChange(of: settings.windowOpacity) { settingsManager.saveSettings() }
         .onChange(of: settings.blurBackground) { settingsManager.saveSettings() }
-        .onChange(of: settings.interactiveGlassEffects) { settingsManager.saveSettings() }
         .onChange(of: settings.showSidebarByDefault) { settingsManager.saveSettings() }
         .sheet(isPresented: $showingAddSSHKey) {
             AddSSHKeyView { name, privateKey, passphrase, algorithmKind in
@@ -221,7 +218,6 @@ struct AddSSHKeyView: View {
                 }
             }
         }
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
     }
 
     private func saveKey() {

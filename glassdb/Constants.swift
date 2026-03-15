@@ -21,7 +21,6 @@ enum UserDefaultsKeys {
     static let resultRowLimit = "glassdb.resultRowLimit"
     static let windowOpacity = "glassdb.windowOpacity"
     static let blurBackground = "glassdb.blurBackground"
-    static let interactiveGlassEffects = "glassdb.interactiveGlassEffects"
     static let glassTint = "glassdb.glassTint"
     static let showSidebarByDefault = "glassdb.showSidebarByDefault"
     static let editorFontSize = "glassdb.editorFontSize"

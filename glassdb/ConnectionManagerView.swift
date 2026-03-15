@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import UIKit
 import os
 
 struct ConnectionManagerView: View {
@@ -17,16 +18,10 @@ struct ConnectionManagerView: View {
 
     @State private var selectedConnectionID: UUID?
     @State private var searchText = ""
+    @State private var connectingConnectionID: UUID?
+    @State private var connectionError: String?
     @State private var showingAddConnection = false
     @State private var editingConnection: DatabaseConnectionConfig?
-    @State private var connectingConnectionID: UUID?
-    @State private var passwordPromptConnection: DatabaseConnectionConfig?
-    @State private var passwordInput = ""
-    @State private var sshPasswordInput = ""
-    @State private var needsSSHPassword = false
-    @State private var showPromptPassword = false
-    @State private var showPromptSSHPassword = false
-    @State private var connectionError: String?
 
     var body: some View {
         NavigationSplitView {
@@ -39,18 +34,16 @@ struct ConnectionManagerView: View {
                 connectionManager.add(connection)
                 saveCredentials(password: password, sshPassword: sshPassword, for: connection)
             }
+            .environment(sessionManager)
+            .environment(settingsManager)
         }
         .sheet(item: $editingConnection) { connection in
             ConnectionFormView(mode: .edit(connection)) { updated, password, sshPassword in
                 connectionManager.update(updated)
                 saveCredentials(password: password, sshPassword: sshPassword, for: updated)
             }
-        }
-        .sheet(isPresented: .init(
-            get: { passwordPromptConnection != nil },
-            set: { if !$0 { clearPasswordPrompt() } }
-        )) {
-            credentialPromptSheet
+            .environment(sessionManager)
+            .environment(settingsManager)
         }
         .alert("Connection Error", isPresented: .init(
             get: { connectionError != nil },
@@ -89,6 +82,7 @@ struct ConnectionManagerView: View {
             }
         }
         .searchable(text: $searchText, prompt: "Search connections...")
+        .scrollInputBehavior(.enabled, for: .look)
         .navigationTitle("glassdb")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -115,6 +109,8 @@ struct ConnectionManagerView: View {
             Circle()
                 .fill(connection.colorTag.color)
                 .frame(width: 8, height: 8)
+                .accessibilityLabel(connection.colorTag == .none ? "" : "\(connection.colorTag.displayName) tag")
+                .accessibilityHidden(connection.colorTag == .none)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(connection.name)
@@ -126,16 +122,18 @@ struct ConnectionManagerView: View {
 
             Spacer()
 
-            if let sessionID = activeSessionID(for: connection) {
+            if activeSessionID(for: connection) != nil {
                 Image(systemName: "bolt.fill")
                     .foregroundStyle(.green)
                     .font(.caption)
+                    .accessibilityLabel("Active connection")
             }
 
             if connection.isFavorite {
                 Image(systemName: "star.fill")
                     .foregroundStyle(.yellow)
                     .font(.caption)
+                    .accessibilityLabel("Favorite")
             }
         }
         .tag(connection.id)
@@ -186,8 +184,7 @@ struct ConnectionManagerView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
 
-            if let sessionID = activeSessionID(for: connection),
-               let session = sessionManager.session(for: sessionID) {
+            if activeSessionID(for: connection) != nil {
                 Label("Connected", systemImage: "bolt.fill")
                     .foregroundStyle(.green)
                     .font(.callout)
@@ -233,141 +230,16 @@ struct ConnectionManagerView: View {
         }
     }
 
-    // MARK: - Credential Prompt Sheet
-
-    private var credentialPromptSheet: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    HStack {
-                        if showPromptPassword {
-                            TextField("Database Password", text: $passwordInput)
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                        } else {
-                            SecureField("Database Password", text: $passwordInput)
-                                .textContentType(.password)
-                        }
-                        Button {
-                            showPromptPassword.toggle()
-                        } label: {
-                            Image(systemName: showPromptPassword ? "eye.slash" : "eye")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if needsSSHPassword {
-                        HStack {
-                            if showPromptSSHPassword {
-                                TextField("SSH Password", text: $sshPasswordInput)
-                                    .autocorrectionDisabled()
-                                    .textInputAutocapitalization(.never)
-                            } else {
-                                SecureField("SSH Password", text: $sshPasswordInput)
-                                    .textContentType(.password)
-                            }
-                            Button {
-                                showPromptSSHPassword.toggle()
-                            } label: {
-                                Image(systemName: showPromptSSHPassword ? "eye.slash" : "eye")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                } footer: {
-                    if let conn = passwordPromptConnection {
-                        Text("Connecting to \(conn.displaySubtitle)")
-                    }
-                }
-            }
-            .navigationTitle("Enter Credentials")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { clearPasswordPrompt() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Connect") {
-                        if let conn = passwordPromptConnection {
-                            let sshPwd = needsSSHPassword ? sshPasswordInput : (try? KeychainManager.retrieveSSHPassword(for: conn))
-                            Task { await connectWith(conn, password: passwordInput, sshPassword: sshPwd) }
-                        }
-                        clearPasswordPrompt()
-                    }
-                    .disabled(passwordInput.isEmpty)
-                }
-            }
-        }
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.visible)
-    }
-
-    // MARK: - Credential Persistence
-
-    private func saveCredentials(password: String?, sshPassword: String?, for connection: DatabaseConnectionConfig) {
-        if let password, !password.isEmpty {
-            do {
-                try KeychainManager.savePassword(password, for: connection)
-                Logger.keychain.info("Saved database password for \(connection.username)@\(connection.host):\(connection.port)")
-            } catch {
-                Logger.keychain.error("Failed to save database password for \(connection.username)@\(connection.host):\(connection.port): \(error)")
-            }
-        }
-        if let sshPassword, !sshPassword.isEmpty {
-            do {
-                try KeychainManager.saveSSHPassword(sshPassword, for: connection)
-                Logger.keychain.info("Saved SSH password for \(connection.sshUsername ?? "")@\(connection.sshHost ?? "")")
-            } catch {
-                Logger.keychain.error("Failed to save SSH password for \(connection.sshUsername ?? "")@\(connection.sshHost ?? ""): \(error)")
-            }
-        }
-    }
-
     // MARK: - Connection Logic
 
     private func initiateConnection(_ connection: DatabaseConnectionConfig) {
-        var dbPassword: String?
-        do {
-            dbPassword = try KeychainManager.retrievePassword(for: connection)
-        } catch {
-            Logger.keychain.warning("No saved database password for \(connection.username)@\(connection.host):\(connection.port): \(error)")
-        }
-
-        // When using SSH key auth, SSH password is not needed — key material is resolved in connect()
+        let dbPassword = (try? KeychainManager.retrievePassword(for: connection)) ?? ""
         let usesSSHKey = connection.sshAuthMethod == .sshKey
-        var sshPassword: String?
+        var sshPassword: String? = nil
         if connection.useSSHTunnel && !usesSSHKey {
-            do {
-                sshPassword = try KeychainManager.retrieveSSHPassword(for: connection)
-            } catch {
-                Logger.keychain.warning("No saved SSH password for \(connection.sshUsername ?? "")@\(connection.sshHost ?? ""): \(error)")
-            }
+            sshPassword = try? KeychainManager.retrieveSSHPassword(for: connection)
         }
-
-        if let dbPassword {
-            if connection.useSSHTunnel && !usesSSHKey && sshPassword == nil {
-                // Have DB password but missing SSH password — prompt for SSH only
-                passwordInput = dbPassword
-                needsSSHPassword = true
-                passwordPromptConnection = connection
-            } else {
-                // Have everything — connect directly
-                Task { await connectWith(connection, password: dbPassword, sshPassword: sshPassword) }
-            }
-        } else {
-            // Missing DB password — prompt for it (and SSH if needed)
-            needsSSHPassword = connection.useSSHTunnel && !usesSSHKey && sshPassword == nil
-            passwordPromptConnection = connection
-        }
-    }
-
-    private func clearPasswordPrompt() {
-        passwordPromptConnection = nil
-        passwordInput = ""
-        sshPasswordInput = ""
-        needsSSHPassword = false
-        showPromptPassword = false
-        showPromptSSHPassword = false
+        Task { await connectWith(connection, password: dbPassword, sshPassword: sshPassword) }
     }
 
     private func connectWith(_ connection: DatabaseConnectionConfig, password: String, sshPassword: String? = nil) async {
@@ -390,6 +262,27 @@ struct ConnectionManagerView: View {
         sessionManager.sessions.first { _, session in
             session.connectionConfig.id == connection.id && session.state.isConnected
         }?.key
+    }
+
+    // MARK: - Credential Persistence
+
+    private func saveCredentials(password: String, sshPassword: String?, for connection: DatabaseConnectionConfig) {
+        if !password.isEmpty {
+            do {
+                try KeychainManager.savePassword(password, for: connection)
+                Logger.connections.info("Saved database password for \(connection.username)@\(connection.host):\(connection.port)")
+            } catch {
+                Logger.connections.error("Failed to save database password: \(error)")
+            }
+        }
+        if let sshPassword, !sshPassword.isEmpty {
+            do {
+                try KeychainManager.saveSSHPassword(sshPassword, for: connection)
+                Logger.connections.info("Saved SSH password for \(connection.sshUsername ?? "")@\(connection.sshHost ?? "")")
+            } catch {
+                Logger.connections.error("Failed to save SSH password: \(error)")
+            }
+        }
     }
 
     // MARK: - Filtering

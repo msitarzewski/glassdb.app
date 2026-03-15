@@ -38,7 +38,6 @@ struct ResultsGridView: View {
                 )
             }
         }
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
     }
 
     private func resultHeader(_ result: QueryResult) -> some View {
@@ -60,6 +59,7 @@ struct ResultsGridView: View {
             Spacer()
         }
         .padding(16)
+        .accessibilityElement(children: .combine)
     }
 
     private func resultGrid(_ result: QueryResult) -> some View {
@@ -79,6 +79,8 @@ struct ResultsGridView: View {
                         .padding(.vertical, 8)
                         .frame(minWidth: 120, alignment: .leading)
                         .background(.ultraThinMaterial)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(.isHeader)
                     }
                 }
 
@@ -87,18 +89,20 @@ struct ResultsGridView: View {
                 // Data rows
                 ForEach(Array(result.rows.enumerated()), id: \.offset) { rowIndex, row in
                     GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { _, value in
+                        ForEach(Array(row.enumerated()), id: \.offset) { colIndex, value in
                             Text(value.displayString)
                                 .font(.system(.caption, design: .monospaced))
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
                                 .frame(minWidth: 120, alignment: .leading)
                                 .foregroundStyle(value.isNull ? .tertiary : .primary)
+                                .accessibilityLabel("\(result.columns[colIndex].name): \(value.isNull ? "null" : value.displayString)")
                         }
                     }
-                    .background(rowIndex % 2 == 0 ? Color.clear : Color.white.opacity(0.02))
+                    .background(rowIndex % 2 == 0 ? Color.clear : Color.primary.opacity(0.02))
                 }
             }
         }
+        .scrollInputBehavior(.enabled, for: .look)
     }
 }
