@@ -7,6 +7,16 @@
 
 import Foundation
 
+public enum DatabaseError: Error, LocalizedError {
+    case unexpectedResult(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unexpectedResult(let message): return message
+        }
+    }
+}
+
 public protocol DatabaseEngine: Sendable {
     func connect(
         host: String,
@@ -28,4 +38,9 @@ public protocol DatabaseConnection: Sendable {
     func databases() async throws -> [String]
     func tables(in database: String) async throws -> [String]
     func columns(in table: String, database: String) async throws -> [ColumnInfo]
+    func showCreateTable(_ table: String, database: String) async throws -> String
+    func indexes(in table: String, database: String) async throws -> [IndexInfo]
+    func foreignKeys(in table: String, database: String) async throws -> [ForeignKeyInfo]
+    func tableStatus(in database: String) async throws -> [TableStatus]
+    func rowCount(table: String, database: String) async throws -> Int
 }

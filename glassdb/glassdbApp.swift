@@ -25,16 +25,16 @@ struct glassdbApp: App {
         .defaultSize(width: 1320, height: 760)
         .defaultLaunchBehavior(.presented)
 
-        // Query editor windows (can open multiple — one per session)
+        // Database workspace (schema sidebar + query editor + results)
         WindowGroup(id: "query-editor", for: UUID.self) { $sessionID in
             if let sessionID {
-                QueryEditorView(sessionID: sessionID)
+                DatabaseWorkspaceView(sessionID: sessionID)
                     .environment(sessionManager)
                     .environment(settingsManager)
             }
         }
         .windowStyle(.plain)
-        .defaultSize(width: 1200, height: 800)
+        .defaultSize(width: 1400, height: 900)
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(.suppressed)
 
@@ -47,18 +47,6 @@ struct glassdbApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 1000, height: 600)
-        .restorationBehavior(.disabled)
-        .defaultLaunchBehavior(.suppressed)
-
-        // Schema browser
-        WindowGroup(id: "schema", for: UUID.self) { $sessionID in
-            if let sessionID {
-                SchemaBrowserView(sessionID: sessionID)
-                    .environment(sessionManager)
-            }
-        }
-        .windowStyle(.plain)
-        .defaultSize(width: 400, height: 700)
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(.suppressed)
 

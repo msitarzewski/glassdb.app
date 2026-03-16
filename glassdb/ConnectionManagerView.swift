@@ -198,15 +198,9 @@ struct ConnectionManagerView: View {
                 Button {
                     openWindow(id: "query-editor", value: sessionID)
                 } label: {
-                    Label("Query Editor", systemImage: "text.page")
+                    Label("Workspace", systemImage: "rectangle.split.2x1")
                 }
                 .buttonStyle(.borderedProminent)
-
-                Button {
-                    openWindow(id: "schema", value: sessionID)
-                } label: {
-                    Label("Schema", systemImage: "list.bullet.indent")
-                }
 
                 Button(role: .destructive) {
                     Task { await sessionManager.disconnect(sessionID: sessionID) }

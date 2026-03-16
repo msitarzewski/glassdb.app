@@ -177,6 +177,17 @@ class DatabaseSessionManager {
         }
 
         let result = try await connection.execute(sql)
+
+        // Track USE database switches so the UI shows the current database
+        let trimmed = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.uppercased().hasPrefix("USE ") && result.error == nil {
+            let dbName = trimmed.dropFirst(4)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "`;"))
+                .replacingOccurrences(of: "`", with: "")
+            session.currentDatabase = dbName
+        }
+
         session.queryHistory.append(result)
 
         // Enforce history limit (reads from UserDefaults, falls back to 500)

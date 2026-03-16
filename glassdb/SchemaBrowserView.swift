@@ -3,6 +3,7 @@
 //  glassdb
 //
 //  Tree navigation: databases -> tables -> columns -> indexes
+//  Selection drives the workspace detail surface
 //
 
 import SwiftUI
@@ -11,6 +12,7 @@ import os
 
 struct SchemaBrowserView: View {
     let sessionID: UUID
+    var onSelectionChanged: ((WorkspaceSelection) -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
 
@@ -18,9 +20,13 @@ struct SchemaBrowserView: View {
     @State private var expandedDatabases: Set<String> = []
     @State private var tablesCache: [String: [String]] = [:]
     @State private var columnsCache: [String: [ColumnInfo]] = [:]
+    @State private var rowCountCache: [String: Int] = [:]
     @State private var loadErrors: [String: String] = [:]
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var filterText = ""
+    @State private var confirmingTruncate: String?
+    @State private var confirmingDrop: String?
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
@@ -51,9 +57,10 @@ struct SchemaBrowserView: View {
                 )
             }
         }
-        .navigationTitle("Schema")
+        .navigationTitle("Databases")
+        .searchable(text: $filterText, placement: .sidebar, prompt: "Filter")
         .toolbar {
-            ToolbarItemGroup(placement: .bottomOrnament) {
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     Task { await loadDatabases() }
                 } label: {
@@ -64,11 +71,76 @@ struct SchemaBrowserView: View {
         .task {
             await loadDatabases()
         }
+        .alert("Truncate Table?", isPresented: .init(
+            get: { confirmingTruncate != nil },
+            set: { if !$0 { confirmingTruncate = nil } }
+        )) {
+            Button("Truncate", role: .destructive) {
+                if let key = confirmingTruncate {
+                    let parts = key.split(separator: ".", maxSplits: 1)
+                    if parts.count == 2 {
+                        Task {
+                            try? await session?.connection?.execute(
+                                "TRUNCATE TABLE `\(parts[0])`.`\(parts[1])`"
+                            )
+                        }
+                    }
+                }
+                confirmingTruncate = nil
+            }
+            Button("Cancel", role: .cancel) { confirmingTruncate = nil }
+        } message: {
+            Text("This will permanently delete all rows. This cannot be undone.")
+        }
+        .alert("Drop Table?", isPresented: .init(
+            get: { confirmingDrop != nil },
+            set: { if !$0 { confirmingDrop = nil } }
+        )) {
+            Button("Drop", role: .destructive) {
+                if let key = confirmingDrop {
+                    let parts = key.split(separator: ".", maxSplits: 1)
+                    if parts.count == 2 {
+                        Task {
+                            try? await session?.connection?.execute(
+                                "DROP TABLE `\(parts[0])`.`\(parts[1])`"
+                            )
+                            tablesCache.removeValue(forKey: String(parts[0]))
+                            await loadTables(for: String(parts[0]))
+                        }
+                    }
+                }
+                confirmingDrop = nil
+            }
+            Button("Cancel", role: .cancel) { confirmingDrop = nil }
+        } message: {
+            Text("This will permanently delete the table and all its data. This cannot be undone.")
+        }
     }
+
+    // MARK: - Filtered Data
+
+    private var filteredDatabases: [String] {
+        guard !filterText.isEmpty else { return databases }
+        return databases.filter { db in
+            if db.localizedCaseInsensitiveContains(filterText) { return true }
+            if let tables = tablesCache[db] {
+                return tables.contains { $0.localizedCaseInsensitiveContains(filterText) }
+            }
+            return false
+        }
+    }
+
+    private func filteredTables(for database: String) -> [String]? {
+        guard let tables = tablesCache[database] else { return nil }
+        guard !filterText.isEmpty else { return tables }
+        return tables.filter { $0.localizedCaseInsensitiveContains(filterText) }
+    }
+
+    // MARK: - Schema Tree
 
     private var schemaTree: some View {
         List {
-            ForEach(databases, id: \.self) { database in
+            ForEach(filteredDatabases, id: \.self) { database in
                 DisclosureGroup(
                     isExpanded: Binding(
                         get: { expandedDatabases.contains(database) },
@@ -82,7 +154,7 @@ struct SchemaBrowserView: View {
                         }
                     )
                 ) {
-                    if let tables = tablesCache[database] {
+                    if let tables = filteredTables(for: database) {
                         ForEach(tables, id: \.self) { table in
                             tableRow(table, database: database)
                         }
@@ -95,8 +167,36 @@ struct SchemaBrowserView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
                 } label: {
-                    Label(database, systemImage: "cylinder")
-                        .font(.headline)
+                    Button {
+                        onSelectionChanged?(.database(database))
+                    } label: {
+                        Label(database, systemImage: "cylinder")
+                            .font(.headline)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button {
+                            Task {
+                                try? await sessionManager.executeQuery(
+                                    "USE `\(database)`", sessionID: sessionID
+                                )
+                            }
+                        } label: {
+                            Label("Set as Active Database", systemImage: "checkmark.circle")
+                        }
+                        Button {
+                            onSelectionChanged?(.query)
+                        } label: {
+                            Label("Open SQL Editor", systemImage: "text.page")
+                        }
+                        Divider()
+                        Button {
+                            tablesCache.removeValue(forKey: database)
+                            Task { await loadTables(for: database) }
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                    }
                 }
             }
         }
@@ -151,7 +251,58 @@ struct SchemaBrowserView: View {
                     }
             }
         } label: {
-            Label(table, systemImage: "tablecells")
+            Button {
+                onSelectionChanged?(.table(database: database, table: table))
+            } label: {
+                HStack {
+                    Label(table, systemImage: "tablecells")
+                    Spacer()
+                    if let count = rowCountCache[cacheKey] {
+                        Text(count.formatted())
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                Button {
+                    onSelectionChanged?(.table(database: database, table: table))
+                } label: {
+                    Label("Browse Data", systemImage: "tablecells")
+                }
+                Button {
+                    UIPasteboard.general.string = "`\(database)`.`\(table)`"
+                } label: {
+                    Label("Copy Table Name", systemImage: "doc.on.doc")
+                }
+                Button {
+                    UIPasteboard.general.string = "SELECT * FROM `\(database)`.`\(table)` LIMIT 100;"
+                } label: {
+                    Label("Copy SELECT Statement", systemImage: "text.page")
+                }
+                Divider()
+                Button {
+                    tablesCache.removeValue(forKey: database)
+                    Task { await loadTables(for: database) }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                Divider()
+                Button(role: .destructive) {
+                    confirmingTruncate = cacheKey
+                } label: {
+                    Label("Truncate Table...", systemImage: "trash")
+                }
+                Button(role: .destructive) {
+                    confirmingDrop = cacheKey
+                } label: {
+                    Label("Drop Table...", systemImage: "xmark.bin")
+                }
+            }
+            .task {
+                await loadRowCount(for: table, database: database)
+            }
         }
     }
 
@@ -191,6 +342,17 @@ struct SchemaBrowserView: View {
         } catch {
             loadErrors[cacheKey] = error.localizedDescription
             Logger.database.error("Failed to load columns for \(database).\(table): \(error)")
+        }
+    }
+
+    private func loadRowCount(for table: String, database: String) async {
+        guard let connection = session?.connection else { return }
+        let cacheKey = "\(database).\(table)"
+        guard rowCountCache[cacheKey] == nil else { return }
+        do {
+            rowCountCache[cacheKey] = try await connection.rowCount(table: table, database: database)
+        } catch {
+            Logger.database.error("Failed to load row count for \(database).\(table): \(error)")
         }
     }
 }

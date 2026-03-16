@@ -60,7 +60,15 @@ final class MySQLDatabaseConnection: DatabaseConnection, @unchecked Sendable {
     func execute(_ query: String) async throws -> QueryResult {
         let start = ContinuousClock.now
 
-        let rows = try await connection.query(query, []).get()
+        // MySQL rejects utility commands (USE, SET, SHOW, DESCRIBE, etc.)
+        // in the prepared statement protocol. Route them through simpleQuery.
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rows: [MySQLRow]
+        if Self.isUtilityCommand(trimmed) {
+            rows = try await connection.simpleQuery(trimmed).get()
+        } else {
+            rows = try await connection.query(trimmed, []).get()
+        }
 
         let elapsed = ContinuousClock.now - start
         let executionTime = Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000.0
@@ -97,6 +105,20 @@ final class MySQLDatabaseConnection: DatabaseConnection, @unchecked Sendable {
             affectedRows: nil,
             executionTime: executionTime
         )
+    }
+
+    /// Commands that MySQL does not support in the prepared statement protocol.
+    /// These must be sent via COM_QUERY (simpleQuery) instead of COM_STMT_PREPARE.
+    private static func isUtilityCommand(_ sql: String) -> Bool {
+        let upper = sql.uppercased()
+        let prefixes = [
+            "USE ", "SET ", "SHOW ", "DESCRIBE ", "DESC ",
+            "EXPLAIN ", "FLUSH ", "KILL ", "RESET ", "TRUNCATE ",
+            "CREATE ", "DROP ", "ALTER ", "GRANT ", "REVOKE ",
+            "LOCK ", "UNLOCK ", "BEGIN", "START ", "COMMIT", "ROLLBACK",
+            "SAVEPOINT ", "RELEASE ",
+        ]
+        return prefixes.contains { upper.hasPrefix($0) || upper == $0.trimmingCharacters(in: .whitespaces) }
     }
 
     func close() async throws {
@@ -157,6 +179,108 @@ final class MySQLDatabaseConnection: DatabaseConnection, @unchecked Sendable {
                 isPrimaryKey: isPK,
                 ordinalPosition: index
             )
+        }
+    }
+
+    func showCreateTable(_ table: String, database: String) async throws -> String {
+        let safeDB = Self.escapeIdentifier(database)
+        let safeTable = Self.escapeIdentifier(table)
+        let rows = try await connection.simpleQuery("SHOW CREATE TABLE `\(safeDB)`.`\(safeTable)`").get()
+        guard let row = rows.first,
+              let createSQL = row.column("Create Table")?.string else {
+            throw DatabaseError.unexpectedResult("SHOW CREATE TABLE returned no result")
+        }
+        return createSQL
+    }
+
+    func indexes(in table: String, database: String) async throws -> [IndexInfo] {
+        let safeTable = Self.escapeIdentifier(table)
+        let safeDB = Self.escapeIdentifier(database)
+        let rows = try await connection.simpleQuery("SHOW INDEX FROM `\(safeTable)` FROM `\(safeDB)`").get()
+        return rows.compactMap { row in
+            guard let keyName = row.column("Key_name")?.string,
+                  let columnName = row.column("Column_name")?.string,
+                  let indexType = row.column("Index_type")?.string else {
+                return nil
+            }
+            let nonUnique = row.column("Non_unique")?.string ?? "1"
+            let seqInIndex = Int(row.column("Seq_in_index")?.string ?? "1") ?? 1
+            return IndexInfo(
+                name: keyName,
+                columnName: columnName,
+                isUnique: nonUnique == "0",
+                type: indexType,
+                sequenceInIndex: seqInIndex
+            )
+        }
+    }
+
+    func foreignKeys(in table: String, database: String) async throws -> [ForeignKeyInfo] {
+        let safeDB = Self.escapeLiteral(database)
+        let safeTable = Self.escapeLiteral(table)
+        let result = try await execute(
+            "SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, ORDINAL_POSITION " +
+            "FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE " +
+            "WHERE TABLE_SCHEMA = '\(safeDB)' AND TABLE_NAME = '\(safeTable)' AND REFERENCED_TABLE_NAME IS NOT NULL " +
+            "ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION"
+        )
+        return result.rows.compactMap { row in
+            guard row.count >= 5,
+                  case .string(let constraintName) = row[0],
+                  case .string(let columnName) = row[1],
+                  case .string(let refTable) = row[2],
+                  case .string(let refColumn) = row[3] else {
+                return nil
+            }
+            let ordinal: Int
+            if case .string(let pos) = row[4] {
+                ordinal = Int(pos) ?? 0
+            } else {
+                ordinal = 0
+            }
+            return ForeignKeyInfo(
+                constraintName: constraintName,
+                columnName: columnName,
+                referencedTable: refTable,
+                referencedColumn: refColumn,
+                ordinalPosition: ordinal
+            )
+        }
+    }
+
+    func tableStatus(in database: String) async throws -> [TableStatus] {
+        let safeDB = Self.escapeIdentifier(database)
+        let rows = try await connection.simpleQuery("SHOW TABLE STATUS FROM `\(safeDB)`").get()
+        return rows.compactMap { row in
+            guard let name = row.column("Name")?.string else {
+                return nil
+            }
+            let engine = row.column("Engine")?.string
+            let rowCount = Int(row.column("Rows")?.string ?? "0") ?? 0
+            let dataLength = Int(row.column("Data_length")?.string ?? "0") ?? 0
+            let collation = row.column("Collation")?.string
+            return TableStatus(
+                name: name,
+                engine: engine,
+                rowCount: rowCount,
+                dataLength: dataLength,
+                collation: collation
+            )
+        }
+    }
+
+    func rowCount(table: String, database: String) async throws -> Int {
+        let safeDB = Self.escapeIdentifier(database)
+        let safeTable = Self.escapeIdentifier(table)
+        let result = try await execute("SELECT COUNT(*) FROM `\(safeDB)`.`\(safeTable)`")
+        guard let firstRow = result.rows.first,
+              let firstValue = firstRow.first else {
+            return 0
+        }
+        switch firstValue {
+        case .string(let s): return Int(s) ?? 0
+        case .int(let i): return Int(i)
+        default: return 0
         }
     }
 
