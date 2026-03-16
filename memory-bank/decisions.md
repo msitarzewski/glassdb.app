@@ -43,3 +43,33 @@
   - `StoredSSHKey` Codable is backward-compatible with glas.sh v1 format.
 - Consequences: SSH keys imported in glas.sh are immediately available in glassdb. Single source of truth for Keychain operations. Both apps stay in lockstep. iCloud Keychain sync is not possible (`ThisDeviceOnly` accessibility) — this is intentional for security.
 - Full plan: `/Users/michael/.claude/plans/buzzing-brewing-haven.md`
+
+## 2026-03-15: DBeaver-style unified workspace over separate windows
+- Status: Approved
+- Context: Original architecture had separate windows for query editor, schema browser, and results grid. User wanted a traditional IDE layout with sidebar + context-sensitive detail surface, inspired by DBeaver's interaction model.
+- Decision: Replace separate query-editor and schema WindowGroups with a single DatabaseWorkspaceView using NavigationSplitView. WorkspaceSelection enum drives detail switching. Schema browser becomes sidebar. Results grid remains detachable for spatial pinning.
+- Consequences: More cohesive UX. Sidebar selection drives the entire detail view. Fewer windows to manage. Window ID "query-editor" kept for backward compatibility with openWindow calls.
+
+## 2026-03-15: visionOS 26 SDK migration
+- Status: Approved
+- Context: Apple's visionOS 26 SDK deadline is April 28, 2026. Liquid Glass introduced at WWDC 2025 replaces manual glass patterns for navigation layer elements.
+- Decision: Raise deployment target to visionOS 26.0. Adopt Liquid Glass for ornaments (.toolbar(.bottomOrnament)), keep .ultraThinMaterial only for content-layer elements. Remove manual .ultraThinMaterial backgrounds from content windows (causes double-corner artifact with .windowStyle(.plain)). Add window lifecycle modifiers, accessibility labels, Look to Scroll.
+- Consequences: Clean visionOS 26 compliance. App Store ready by deadline. WindowRecoveryManager deleted (replaced by .defaultLaunchBehavior).
+
+## 2026-03-15: simpleQuery for MySQL utility commands
+- Status: Approved
+- Context: MySQL rejects USE, SET, SHOW, and DDL commands in the prepared statement protocol (COM_STMT_PREPARE). mysql-nio's `connection.query()` always uses prepared statements. Executing `USE database` threw "not supported in prepared statement protocol."
+- Decision: Added `isUtilityCommand()` check in MySQLAdapter.execute() that routes utility commands through `connection.simpleQuery()` (COM_QUERY text protocol) while keeping data queries on prepared statements.
+- Consequences: USE, SET, SHOW, CREATE, DROP, ALTER, and transaction commands all work. DatabaseSessionManager tracks currentDatabase after USE statements.
+
+## 2026-03-15: .inspector() unavailable on visionOS — use .sheet()
+- Status: Approved
+- Context: SwiftUI's `.inspector(isPresented:content:)` is explicitly `@available(visionOS, unavailable)` in the SDK headers despite the symbol existing. Apple considers visionOS's spatial paradigm incompatible with 2D inspector drawers. Also tried `.ornament(attachmentAnchor: .scene(.trailing))` but it rendered as a tiny detached floating panel.
+- Decision: Use `.sheet()` for the record editor. Full-size modal with NavigationStack + Form. When multiplatform support is added (v1.1), `.inspector()` can be used on iPad/Mac.
+- Consequences: Record editor is a proper full-screen modal on visionOS. Platform-specific editor presentation can be added later.
+
+## 2026-03-16: Multiplatform expansion planned for v1.1
+- Status: Planned
+- Context: iPad has no good native database client — massive market opportunity. Mac is crowded but iPad is wide open. The codebase is 90% standard SwiftUI. Only ~20 platform-specific modifiers need abstraction.
+- Decision: Target iPad as primary v1.1 platform, Mac secondary. Use View modifier extensions (one #if per extension, zero in views) instead of scattering #if os() throughout code. iCloud Keychain integration (AuthenticationServices / ASCredentialIdentityStore) for Face ID connection auth.
+- Consequences: Ship visionOS v1.0 first. Multiplatform work is a focused follow-up, not a rewrite. .inspector() available on iPad/Mac for record editor.

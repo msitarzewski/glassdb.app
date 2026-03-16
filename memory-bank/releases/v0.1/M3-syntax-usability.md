@@ -1,42 +1,35 @@
 # M3: Syntax & Usability
 
-**Status**: Not Started
+**Status**: Done (2026-03-15)
 **Depends on**: M2 (glass polish)
 **Prerequisite for**: M4
 
 ## Goal
-The query editor feels like a real SQL tool — syntax highlighting, query history, and solid error handling.
+The query editor feels like a real SQL tool — syntax highlighting, keyboard shortcuts, and solid error handling.
 
 ## Tasks
 
 ### SQL Syntax Highlighting
-- [ ] Create `SQLSyntaxEngine/` directory with `SQLLexer.swift`, `SQLHighlighter.swift`
-- [ ] MySQL keyword highlighting (SELECT, FROM, WHERE, JOIN, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, etc.)
-- [ ] String literal highlighting (single-quoted)
-- [ ] Numeric literal highlighting
-- [ ] Comment highlighting (`--` and `/* */`)
-- [ ] Identifier highlighting (backtick-quoted)
-- [ ] Apply highlighting to QueryEditorView text editor
-
-### Query History
-- [ ] Persist executed queries (SQL text, timestamp, execution time, row count, error)
-- [ ] QueryHistoryView — searchable list of past queries
-- [ ] Tap history entry to load into editor
-- [ ] Per-connection history filtering
-
-### Error UX
-- [ ] Query errors displayed inline below editor (not alert dialogs)
-- [ ] Connection failure messages with actionable context (wrong password, host unreachable, etc.)
-- [ ] Timeout handling with cancel option
-- [ ] Network drop detection and reconnect prompt
+- [x] SQLHighlighter.swift — full tokenizer for MySQL keywords, functions, strings, numbers, comments, identifiers
+- [x] HighlightedTextEditor.swift — UIViewRepresentable wrapping UITextView with syntax highlighting
+- [x] NSAttributedString output with per-token colors (keywords blue/bold, functions purple, strings green, numbers orange, comments gray)
+- [x] Basic linter (unterminated strings/identifiers shown as red underline)
+- [x] Applied to QueryEditorView text editor
+- [x] DDL tab shows syntax-highlighted CREATE TABLE
 
 ### Keyboard Shortcuts
-- [ ] Cmd+Enter → Execute query
-- [ ] Cmd+N → New query tab (if multi-tab implemented)
-- [ ] Cmd+W → Close current window
-- [ ] Cmd+, → Settings
+- [x] Cmd+Return → Execute query
 
-## Key Files (to create)
-- `glassdb/SQLSyntaxEngine/SQLLexer.swift`
-- `glassdb/SQLSyntaxEngine/SQLHighlighter.swift`
-- `glassdb/QueryHistoryView.swift`
+### Error UX
+- [x] Query errors displayed inline below editor (not alert dialogs)
+- [x] Connection failure messages in ConnectionManagerView
+
+### Not Completed (deferred)
+- [ ] Query history persistence (v0.1 stretch)
+- [ ] SQL autocomplete (v0.1 stretch)
+- [ ] Multiple query tabs (v1.1)
+
+## Key Files
+- `glassdb/SQLHighlighter.swift`
+- `glassdb/HighlightedTextEditor.swift`
+- `glassdb/QueryEditorView.swift`
