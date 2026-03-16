@@ -12,6 +12,13 @@
 
 		22B58E26C7444FF4802B4B17 /* GlassDBKit in Frameworks */ = {isa = PBXBuildFile; productRef = 469DAC2964D74CADB1B32DE2 /* GlassDBKit */; };
 		A1B2C3D4E5F64A7B8C9D0E1F /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */; };
+		28A1F3C5D7E84B6A9C0D2E4F /* DatabaseWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3E8A1F42B54C7D9E0F1A2B /* DatabaseWorkspaceView.swift */; };
+		2A1B3C4D5E6F78A9B0C1D2E3 /* SQLHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E5F6A7B8C9D0E1F2A3B4C5D /* SQLHighlighter.swift */; };
+		2B3C4D5E6F7A89B0C1D2E3F4 /* HighlightedTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F6A7B8C9D0E1F2A3B4C5D6E /* HighlightedTextEditor.swift */; };
+		2C4D5E6F7A8B90C1D2E3F4A5 /* TableDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A8B9C0D1E2F3A4B5C6D7E8F /* TableDetailView.swift */; };
+		3A4B5C6D7E8F9A0B1C2D3E4F /* RecordEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5A6B7C8D9E0F1 /* RecordEditorView.swift */; };
+		2D5E6F7A8B9C01D2E3F4A5B6 /* DatabaseDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B9C0D1E2F3A4B5C6D7E8F9A /* DatabaseDetailView.swift */; };
+		2E6F7A8B9C0D12E3F4A5B6C7 /* DataExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C0D1E2F3A4B5C6D7E8F9A0B /* DataExporter.swift */; };
 		29D787D970624B23ABE13289 /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF83AE0207B342A29E2ADEE7 /* ConnectionManager.swift */; };
 		3711EDCA0BA34F4E98E10CE0 /* ConnectionFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BFCB3DBBA154885A5CF2BFB /* ConnectionFormView.swift */; };
 		3B64A03BF9CD4108BE9A5DEC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 990BF6E8175444E180F44614 /* Assets.xcassets */; };
@@ -30,6 +37,13 @@
 /* Begin PBXFileReference section */
 		02EDAE92FBA4446990FFA07F /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
 		052A0594CD464778B75FA34A /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
+		4E5F6A7B8C9D0E1F2A3B4C5D /* SQLHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLHighlighter.swift; sourceTree = "<group>"; };
+		5F6A7B8C9D0E1F2A3B4C5D6E /* HighlightedTextEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightedTextEditor.swift; sourceTree = "<group>"; };
+		6D3E8A1F42B54C7D9E0F1A2B /* DatabaseWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseWorkspaceView.swift; sourceTree = "<group>"; };
+		7A8B9C0D1E2F3A4B5C6D7E8F /* TableDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TableDetailView.swift; sourceTree = "<group>"; };
+		8B9C0D1E2F3A4B5C6D7E8F9A /* DatabaseDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseDetailView.swift; sourceTree = "<group>"; };
+		9C0D1E2F3A4B5C6D7E8F9A0B /* DataExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataExporter.swift; sourceTree = "<group>"; };
+		A0B1C2D3E4F5A6B7C8D9E0F1 /* RecordEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordEditorView.swift; sourceTree = "<group>"; };
 		0EFD725D937543FE9945D407 /* ConnectionManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionManagerView.swift; sourceTree = "<group>"; };
 		3792B5DAA1074993A43635A7 /* QueryEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueryEditorView.swift; sourceTree = "<group>"; };
 		714C40D218664F40AB970674 /* glassdbApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = glassdbApp.swift; sourceTree = "<group>"; };
@@ -84,13 +98,20 @@
 				EF83AE0207B342A29E2ADEE7 /* ConnectionManager.swift */,
 				0EFD725D937543FE9945D407 /* ConnectionManagerView.swift */,
 				052A0594CD464778B75FA34A /* Constants.swift */,
+				9C0D1E2F3A4B5C6D7E8F9A0B /* DataExporter.swift */,
+				8B9C0D1E2F3A4B5C6D7E8F9A /* DatabaseDetailView.swift */,
 				CBBC442DB6AB4D709CB10272 /* DatabaseSessionManager.swift */,
+				6D3E8A1F42B54C7D9E0F1A2B /* DatabaseWorkspaceView.swift */,
+				5F6A7B8C9D0E1F2A3B4C5D6E /* HighlightedTextEditor.swift */,
 				F4FCE3E66A4A493E87AB6CF1 /* KeychainManager.swift */,
 				71AA2A7B03B84E35AED9D604 /* Logger.swift */,
 				C80284FE2C784ED1A35C853D /* Models.swift */,
 				3792B5DAA1074993A43635A7 /* QueryEditorView.swift */,
+				A0B1C2D3E4F5A6B7C8D9E0F1 /* RecordEditorView.swift */,
 				F06AA08C663E426587B3B46C /* ResultsGridView.swift */,
 				DF6C04803014428EA95F2A77 /* SchemaBrowserView.swift */,
+				4E5F6A7B8C9D0E1F2A3B4C5D /* SQLHighlighter.swift */,
+				7A8B9C0D1E2F3A4B5C6D7E8F /* TableDetailView.swift */,
 				02EDAE92FBA4446990FFA07F /* SettingsManager.swift */,
 				AE1A61DE012A4FE1BF43783B /* SettingsView.swift */,
 
@@ -182,12 +203,19 @@
 				29D787D970624B23ABE13289 /* ConnectionManager.swift in Sources */,
 				D2BD5FCF9C1E4E02ACB59DC0 /* ConnectionManagerView.swift in Sources */,
 				A9905B31EEE942A39D519D15 /* Constants.swift in Sources */,
+				2E6F7A8B9C0D12E3F4A5B6C7 /* DataExporter.swift in Sources */,
+				2D5E6F7A8B9C01D2E3F4A5B6 /* DatabaseDetailView.swift in Sources */,
+				28A1F3C5D7E84B6A9C0D2E4F /* DatabaseWorkspaceView.swift in Sources */,
+				2B3C4D5E6F7A89B0C1D2E3F4 /* HighlightedTextEditor.swift in Sources */,
 				4EEEE200E4F6459C9A24647C /* DatabaseSessionManager.swift in Sources */,
 				CBAD66A56D84484EA4FE21E5 /* KeychainManager.swift in Sources */,
 				F94F8A1208F54281AC20044A /* Logger.swift in Sources */,
 				620E35D812F34A89864DCD4B /* Models.swift in Sources */,
 				5760A471B09743FFA44D4265 /* QueryEditorView.swift in Sources */,
+				3A4B5C6D7E8F9A0B1C2D3E4F /* RecordEditorView.swift in Sources */,
 				15EE3E9B85434489A98B1152 /* ResultsGridView.swift in Sources */,
+				2A1B3C4D5E6F78A9B0C1D2E3 /* SQLHighlighter.swift in Sources */,
+				2C4D5E6F7A8B90C1D2E3F4A5 /* TableDetailView.swift in Sources */,
 				1013D5BE9DD24D3097DFF5E3 /* SchemaBrowserView.swift in Sources */,
 				5FF0BC99598B472C869B9ACD /* SettingsManager.swift in Sources */,
 				BBA6B24EC0A34E31AAFDCAB1 /* SettingsView.swift in Sources */,

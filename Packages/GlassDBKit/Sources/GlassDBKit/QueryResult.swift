@@ -93,3 +93,54 @@ public enum DatabaseValue: Sendable, Hashable {
         return false
     }
 }
+
+public struct IndexInfo: Identifiable, Sendable {
+    public let id = UUID()
+    public let name: String
+    public let columnName: String
+    public let isUnique: Bool
+    public let type: String
+    public let sequenceInIndex: Int
+
+    public init(name: String, columnName: String, isUnique: Bool, type: String, sequenceInIndex: Int) {
+        self.name = name
+        self.columnName = columnName
+        self.isUnique = isUnique
+        self.type = type
+        self.sequenceInIndex = sequenceInIndex
+    }
+}
+
+public struct ForeignKeyInfo: Identifiable, Sendable {
+    public let id = UUID()
+    public let constraintName: String
+    public let columnName: String
+    public let referencedTable: String
+    public let referencedColumn: String
+    public let ordinalPosition: Int
+
+    public init(constraintName: String, columnName: String, referencedTable: String, referencedColumn: String, ordinalPosition: Int) {
+        self.constraintName = constraintName
+        self.columnName = columnName
+        self.referencedTable = referencedTable
+        self.referencedColumn = referencedColumn
+        self.ordinalPosition = ordinalPosition
+    }
+}
+
+public struct TableStatus: Identifiable, Sendable {
+    public let id = UUID()
+    public let name: String
+    public let engine: String?
+    public let rowCount: Int
+    public let dataLength: Int
+    public let collation: String?
+
+    public init(name: String, engine: String?, rowCount: Int, dataLength: Int, collation: String?) {
+        self.name = name
+        self.engine = engine
+        self.rowCount = rowCount
+        self.dataLength = dataLength
+        self.collation = collation
+    }
+}
