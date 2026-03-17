@@ -24,6 +24,7 @@ class SettingsManager {
     var glassTint: String = "None"
     var showSidebarByDefault: Bool = true
     var editorFontSize: Double = 14.0
+    var dataGridFontSize: Double = 13.0
     var showLineNumbers: Bool = true
     var savedQueries: [SavedQuery] = []
     var sshKeys: [StoredSSHKey] = []
@@ -69,6 +70,9 @@ class SettingsManager {
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.editorFontSize) != nil {
             editorFontSize = UserDefaults.standard.double(forKey: UserDefaultsKeys.editorFontSize)
         }
+        if UserDefaults.standard.object(forKey: UserDefaultsKeys.dataGridFontSize) != nil {
+            dataGridFontSize = UserDefaults.standard.double(forKey: UserDefaultsKeys.dataGridFontSize)
+        }
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.showLineNumbers) != nil {
             showLineNumbers = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showLineNumbers)
         }
@@ -87,6 +91,7 @@ class SettingsManager {
         UserDefaults.standard.set(glassTint, forKey: UserDefaultsKeys.glassTint)
         UserDefaults.standard.set(showSidebarByDefault, forKey: UserDefaultsKeys.showSidebarByDefault)
         UserDefaults.standard.set(editorFontSize, forKey: UserDefaultsKeys.editorFontSize)
+        UserDefaults.standard.set(dataGridFontSize, forKey: UserDefaultsKeys.dataGridFontSize)
         UserDefaults.standard.set(showLineNumbers, forKey: UserDefaultsKeys.showLineNumbers)
     }
 

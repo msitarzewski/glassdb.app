@@ -43,6 +43,7 @@ struct glassdbApp: App {
             if let resultSetID {
                 ResultsGridView(resultSetID: resultSetID)
                     .environment(sessionManager)
+                    .environment(settingsManager)
             }
         }
         .windowStyle(.plain)

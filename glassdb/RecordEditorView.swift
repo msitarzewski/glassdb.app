@@ -42,11 +42,27 @@ struct StagedEdit: Identifiable {
 // MARK: - Record Editor
 
 struct RecordEditorView: View {
+    enum RecordEditorMode {
+        case edit(rowIndex: Int, originalRow: [DatabaseValue])
+        case add
+    }
+
     let columns: [ColumnInfo]
-    let rowIndex: Int
-    let originalRow: [DatabaseValue]
-    let onApply: ([StagedEdit]) -> Void
+    let mode: RecordEditorMode
+    let onSave: ([StagedEdit], RecordEditorMode) -> Void
     let onDiscard: () -> Void
+
+    private var isAddMode: Bool {
+        if case .add = mode { return true }
+        return false
+    }
+
+    private var title: String {
+        switch mode {
+        case .edit(let rowIndex, _): return "Edit Row \(rowIndex + 1)"
+        case .add: return "Add Row"
+        }
+    }
 
     @State private var edits: [StagedEdit] = []
     @State private var jsonErrors: [Int: String] = [:]
@@ -66,16 +82,20 @@ struct RecordEditorView: View {
                     fieldSection(edit: edit, index: idx)
                 }
             }
-            .navigationTitle("Edit Row \(rowIndex + 1)")
+            .navigationTitle(title)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { onDiscard() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Apply \(changeCount > 0 ? "(\(changeCount))" : "")") {
-                        onApply(edits.filter(\.isModified))
+                    Button(isAddMode ? "Insert" : "Apply \(changeCount > 0 ? "(\(changeCount))" : "")") {
+                        if isAddMode {
+                            onSave(edits.filter { !$0.isNull }, mode)
+                        } else {
+                            onSave(edits.filter(\.isModified), mode)
+                        }
                     }
-                    .disabled(!hasChanges || !jsonErrors.isEmpty)
+                    .disabled(isAddMode ? jsonErrors.isEmpty == false : (!hasChanges || !jsonErrors.isEmpty))
                 }
             }
         }
@@ -252,18 +272,34 @@ struct RecordEditorView: View {
 
     private func initializeEdits() {
         jsonErrors.removeAll()
-        edits = columns.enumerated().map { colIndex, col in
-            let value = colIndex < originalRow.count ? originalRow[colIndex] : .null
-            return StagedEdit(
-                columnIndex: colIndex,
-                columnName: col.name,
-                columnType: col.type,
-                isPrimaryKey: col.isPrimaryKey,
-                isNullable: col.isNullable,
-                originalValue: value,
-                editText: value.isNull ? "" : value.displayString,
-                isNull: value.isNull
-            )
+        switch mode {
+        case .edit(_, let originalRow):
+            edits = columns.enumerated().map { colIndex, col in
+                let value = colIndex < originalRow.count ? originalRow[colIndex] : .null
+                return StagedEdit(
+                    columnIndex: colIndex,
+                    columnName: col.name,
+                    columnType: col.type,
+                    isPrimaryKey: col.isPrimaryKey,
+                    isNullable: col.isNullable,
+                    originalValue: value,
+                    editText: value.isNull ? "" : value.displayString,
+                    isNull: value.isNull
+                )
+            }
+        case .add:
+            edits = columns.enumerated().map { colIndex, col in
+                StagedEdit(
+                    columnIndex: colIndex,
+                    columnName: col.name,
+                    columnType: col.type,
+                    isPrimaryKey: col.isPrimaryKey,
+                    isNullable: col.isNullable,
+                    originalValue: .null,
+                    editText: "",
+                    isNull: true
+                )
+            }
         }
     }
 }

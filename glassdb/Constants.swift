@@ -24,6 +24,7 @@ enum UserDefaultsKeys {
     static let glassTint = "glassdb.glassTint"
     static let showSidebarByDefault = "glassdb.showSidebarByDefault"
     static let editorFontSize = "glassdb.editorFontSize"
+    static let dataGridFontSize = "glassdb.dataGridFontSize"
     static let showLineNumbers = "glassdb.showLineNumbers"
 }
 

@@ -45,9 +45,16 @@ struct SettingsView: View {
 
                 Section("Editor") {
                     HStack {
-                        Text("Font size")
+                        Text("Editor font size")
                         Spacer()
                         TextField("Size", value: $settings.editorFontSize, format: .number)
+                            .frame(width: 60)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    HStack {
+                        Text("Grid font size")
+                        Spacer()
+                        TextField("Size", value: $settings.dataGridFontSize, format: .number)
                             .frame(width: 60)
                             .multilineTextAlignment(.trailing)
                     }
@@ -82,6 +89,7 @@ struct SettingsView: View {
         .onChange(of: settings.resultRowLimit) { settingsManager.saveSettings() }
         .onChange(of: settings.maxQueryHistoryItems) { settingsManager.saveSettings() }
         .onChange(of: settings.editorFontSize) { settingsManager.saveSettings() }
+        .onChange(of: settings.dataGridFontSize) { settingsManager.saveSettings() }
         .onChange(of: settings.showLineNumbers) { settingsManager.saveSettings() }
         .onChange(of: settings.windowOpacity) { settingsManager.saveSettings() }
         .onChange(of: settings.blurBackground) { settingsManager.saveSettings() }

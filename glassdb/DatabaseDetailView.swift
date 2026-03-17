@@ -15,6 +15,7 @@ struct DatabaseDetailView: View {
     var onOpenSQLEditor: (() -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
+    @Environment(SettingsManager.self) private var settingsManager
 
     @State private var tableStatuses: [TableStatus] = []
     @State private var isLoading = false
@@ -169,7 +170,7 @@ struct DatabaseDetailView: View {
 
     private func headerCell(_ text: String) -> some View {
         Text(text)
-            .font(.caption.bold())
+            .font(.system(size: settingsManager.dataGridFontSize, weight: .bold, design: .monospaced))
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(minWidth: 100, alignment: .leading)
@@ -179,7 +180,7 @@ struct DatabaseDetailView: View {
 
     private func dataCell(_ text: String, monospaced: Bool = false) -> some View {
         Text(text)
-            .font(monospaced ? .system(.caption, design: .monospaced) : .caption)
+            .font(.system(size: settingsManager.dataGridFontSize, design: monospaced ? .monospaced : .default))
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .frame(minWidth: 100, alignment: .leading)

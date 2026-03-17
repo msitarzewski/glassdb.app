@@ -14,4 +14,5 @@ extension Logger {
     static let settings = Logger(subsystem: "app.glassdb", category: "settings")
     static let connections = Logger(subsystem: "app.glassdb", category: "connections")
     static let query = Logger(subsystem: "app.glassdb", category: "query")
+    static let ai = Logger(subsystem: "app.glassdb", category: "ai")
 }

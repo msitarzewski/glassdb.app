@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4A7B8C9D0E1F2A3B4C5D6E7F /* AIAssistant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B4C5D6E7F8A9B0C1D2E3F4A /* AIAssistant.swift */; };
 		1013D5BE9DD24D3097DFF5E3 /* SchemaBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF6C04803014428EA95F2A77 /* SchemaBrowserView.swift */; };
 		15EE3E9B85434489A98B1152 /* ResultsGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06AA08C663E426587B3B46C /* ResultsGridView.swift */; };
 
@@ -35,6 +36,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		3B4C5D6E7F8A9B0C1D2E3F4A /* AIAssistant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIAssistant.swift; sourceTree = "<group>"; };
 		02EDAE92FBA4446990FFA07F /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
 		052A0594CD464778B75FA34A /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		4E5F6A7B8C9D0E1F2A3B4C5D /* SQLHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLHighlighter.swift; sourceTree = "<group>"; };
@@ -94,6 +96,7 @@
 		B508EA9569D04CB4A7967F65 /* glassdb */ = {
 			isa = PBXGroup;
 			children = (
+				3B4C5D6E7F8A9B0C1D2E3F4A /* AIAssistant.swift */,
 				7BFCB3DBBA154885A5CF2BFB /* ConnectionFormView.swift */,
 				EF83AE0207B342A29E2ADEE7 /* ConnectionManager.swift */,
 				0EFD725D937543FE9945D407 /* ConnectionManagerView.swift */,
@@ -199,6 +202,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4A7B8C9D0E1F2A3B4C5D6E7F /* AIAssistant.swift in Sources */,
 				3711EDCA0BA34F4E98E10CE0 /* ConnectionFormView.swift in Sources */,
 				29D787D970624B23ABE13289 /* ConnectionManager.swift in Sources */,
 				D2BD5FCF9C1E4E02ACB59DC0 /* ConnectionManagerView.swift in Sources */,

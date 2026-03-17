@@ -162,7 +162,7 @@ struct QueryEditorView: View {
                                 HStack(spacing: 0) {
                                     ForEach(Array(row.enumerated()), id: \.offset) { colIndex, value in
                                         Text(value.displayString)
-                                            .font(.system(.caption, design: .monospaced))
+                                            .font(.system(size: settingsManager.dataGridFontSize, design: .monospaced))
                                             .lineLimit(1)
                                             .padding(.horizontal, 12)
                                             .padding(.vertical, 6)
@@ -180,7 +180,7 @@ struct QueryEditorView: View {
                             HStack(spacing: 0) {
                                 ForEach(Array(result.columns.enumerated()), id: \.offset) { colIndex, col in
                                     Text(col.name)
-                                        .font(.caption.bold())
+                                        .font(.system(size: settingsManager.dataGridFontSize, weight: .bold, design: .monospaced))
                                         .lineLimit(1)
                                         .padding(.horizontal, 12)
                                         .padding(.vertical, 8)
@@ -211,7 +211,8 @@ struct QueryEditorView: View {
                     maxDataLen = max(maxDataLen, CGFloat(row[colIndex].displayString.count))
                 }
             }
-            let computed = max(headerLen, maxDataLen) * 8.5 + 24
+            let charWidth = settingsManager.dataGridFontSize * 0.65
+            let computed = max(headerLen, maxDataLen) * charWidth + 24
             return max(80, min(computed, 400))
         }
     }

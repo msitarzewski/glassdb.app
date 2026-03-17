@@ -12,6 +12,7 @@ struct ResultsGridView: View {
     let resultSetID: UUID
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
+    @Environment(SettingsManager.self) private var settingsManager
 
     private var result: QueryResult? {
         for (_, session) in sessionManager.sessions {
@@ -44,7 +45,7 @@ struct ResultsGridView: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(result.query)
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.system(size: settingsManager.dataGridFontSize, design: .monospaced))
                     .lineLimit(2)
                     .foregroundStyle(.secondary)
 
@@ -79,7 +80,7 @@ struct ResultsGridView: View {
                             HStack(spacing: 0) {
                                 ForEach(Array(row.enumerated()), id: \.offset) { colIndex, value in
                                     Text(value.displayString)
-                                        .font(.system(.caption, design: .monospaced))
+                                        .font(.system(size: settingsManager.dataGridFontSize, design: .monospaced))
                                         .lineLimit(1)
                                         .padding(.horizontal, 12)
                                         .padding(.vertical, 6)
@@ -111,7 +112,7 @@ struct ResultsGridView: View {
                             ForEach(Array(result.columns.enumerated()), id: \.offset) { colIndex, col in
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(col.name)
-                                        .font(.caption.bold())
+                                        .font(.system(size: settingsManager.dataGridFontSize, weight: .bold, design: .monospaced))
                                     Text(col.type)
                                         .font(.caption2)
                                         .foregroundStyle(.tertiary)
@@ -145,7 +146,8 @@ struct ResultsGridView: View {
                     maxDataLen = max(maxDataLen, CGFloat(row[colIndex].displayString.count))
                 }
             }
-            let computed = max(headerLen, maxDataLen) * 8.5 + 24
+            let charWidth = settingsManager.dataGridFontSize * 0.65
+            let computed = max(headerLen, maxDataLen) * charWidth + 24
             return max(80, min(computed, 400))
         }
     }

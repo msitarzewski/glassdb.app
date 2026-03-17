@@ -55,16 +55,13 @@ struct DatabaseWorkspaceView: View {
                               ? "sidebar.left" : "sidebar.leading")
                 }
             }
-            ToolbarItemGroup(placement: .primaryAction) {
-                if case .query = selection {
-                    // Query-mode toolbar items are provided by QueryEditorView
-                } else {
-                    Button {
-                        selection = .query
-                    } label: {
-                        Label("SQL Editor", systemImage: "text.page")
-                    }
+            ToolbarItemGroup(placement: .bottomOrnament) {
+                Button {
+                    selection = .query
+                } label: {
+                    Label("SQL Editor", systemImage: "text.page")
                 }
+                .disabled(selection == .query)
             }
         }
         .task {
