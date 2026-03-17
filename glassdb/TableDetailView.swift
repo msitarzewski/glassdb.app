@@ -44,6 +44,29 @@ struct TableDetailView: View {
         }
         .navigationTitle("\(database) · \(table)")
         .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if selectedTab == .data {
+                    #if canImport(FoundationModels)
+                    Button {
+                        NotificationCenter.default.post(name: .glassdbShowAI, object: nil)
+                    } label: {
+                        Image(systemName: "sparkles")
+                    }
+                    #endif
+
+                    Button {
+                        NotificationCenter.default.post(name: .glassdbExecuteQuery, object: nil)
+                    } label: {
+                        Image(systemName: "play.fill")
+                    }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .contextMenu {
+                        Button("Run every 10s") {
+                            NotificationCenter.default.post(name: .glassdbStartRepeat, object: nil)
+                        }
+                    }
+                }
+            }
             ToolbarItemGroup(placement: .bottomOrnament) {
                 if selectedTab == .data {
                     Button {
@@ -56,6 +79,11 @@ struct TableDetailView: View {
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
+                    Button {
+                        NotificationCenter.default.post(name: .glassdbExportCSV, object: nil)
+                    } label: {
+                        Label("Export CSV", systemImage: "square.and.arrow.up")
+                    }
                 }
             }
         }
@@ -66,6 +94,9 @@ extension Notification.Name {
     static let glassdbExecuteQuery = Notification.Name("glassdbExecuteQuery")
     static let glassdbAddRow = Notification.Name("glassdbAddRow")
     static let glassdbRefreshData = Notification.Name("glassdbRefreshData")
+    static let glassdbShowAI = Notification.Name("glassdbShowAI")
+    static let glassdbStartRepeat = Notification.Name("glassdbStartRepeat")
+    static let glassdbExportCSV = Notification.Name("glassdbExportCSV")
 }
 
 // MARK: - Tab Enum
@@ -96,6 +127,7 @@ struct DataTabView: View {
     @State private var editorHeight: CGFloat = 120
     @State private var isAutoQuery = true
     @State private var showAIAssistant = false
+    @State private var showExporter = false
 
     // Pager
     @State private var currentPage: Int = 1
@@ -123,50 +155,6 @@ struct DataTabView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // SQL editor header: play button + AI + repeat indicator
-            HStack(spacing: 8) {
-                Button {
-                    Task { await executeCurrentQuery() }
-                } label: {
-                    Image(systemName: "play.fill")
-                }
-                .keyboardShortcut(.return, modifiers: .command)
-                .contextMenu {
-                    Button("Run every \(Int(autoRepeatInterval))s") {
-                        startAutoRepeat()
-                    }
-                    Menu("Interval") {
-                        ForEach([5, 10, 30, 60], id: \.self) { seconds in
-                            Button("\(seconds)s") { autoRepeatInterval = TimeInterval(seconds) }
-                        }
-                    }
-                    if isAutoRepeating {
-                        Divider()
-                        Button("Stop Repeating", role: .destructive) {
-                            stopAutoRepeat()
-                        }
-                    }
-                }
-
-                #if canImport(FoundationModels)
-                Button {
-                    showAIAssistant = true
-                } label: {
-                    Image(systemName: "sparkles")
-                }
-                #endif
-
-                if isAutoRepeating {
-                    Label("Repeating \(Int(autoRepeatInterval))s", systemImage: "repeat")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-
             // SQL editor area with dark background
             HighlightedTextEditor(
                 text: $queryText,
@@ -236,7 +224,13 @@ struct DataTabView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Divider().frame(height: 16)
+                    if isAutoRepeating {
+                        Label("Repeating \(Int(autoRepeatInterval))s", systemImage: "repeat")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+
+                    Spacer()
 
                     Button {
                         currentPage = max(1, currentPage - 1)
@@ -255,14 +249,6 @@ struct DataTabView: View {
                         Image(systemName: "chevron.right")
                     }
                     .disabled(currentPage >= totalPages)
-
-                    if let total = totalRowCount {
-                        Text("(\(total.formatted()) total)")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    Spacer()
 
                     Text("Per page:")
                         .font(.caption)
@@ -333,6 +319,21 @@ struct DataTabView: View {
             queryText = ""
             Task { await loadData() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbShowAI)) { _ in
+            showAIAssistant = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbStartRepeat)) { _ in
+            startAutoRepeat()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbExportCSV)) { _ in
+            showExporter = true
+        }
+        .fileExporter(
+            isPresented: $showExporter,
+            document: result.map { CSVDocument(result: $0) },
+            contentType: .commaSeparatedText,
+            defaultFilename: "\(database)_\(table)"
+        ) { _ in }
         .onChange(of: currentPage) {
             if isAutoQuery {
                 queryText = generateAutoQuery()
