@@ -305,17 +305,21 @@ struct DataTabView: View {
         #if canImport(FoundationModels)
         .sheet(isPresented: $showAIAssistant) {
             AIAssistantView(
+                aiAssistant: AIAssistant(),
+                schemaContext: SchemaContext(
+                    databaseName: database,
+                    tables: columnMeta.isEmpty ? [] : [
+                        SchemaContext.TableInfo(
+                            name: table,
+                            columns: columnMeta.map { SchemaContext.ColumnInfo(name: $0.name, type: $0.type) }
+                        )
+                    ]
+                ),
                 onRunQuery: { sql in
                     queryText = sql
                     showAIAssistant = false
                     Task { await executeCurrentQuery() }
-                },
-                schemaContext: SchemaContext(
-                    databaseName: database,
-                    tables: columnMeta.isEmpty ? [] : [
-                        SchemaContext.TableInfo(name: table, columns: columnMeta)
-                    ]
-                )
+                }
             )
         }
         #endif
