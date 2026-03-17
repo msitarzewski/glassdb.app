@@ -1,10 +1,10 @@
 # Active Context
 
 ## Current Phase
-Late alpha / pre-beta. 23 Swift source files in main target, 4 in GlassDBKit package, 11 in GlasSecretStore shared package. Targeting visionOS 26.0+ with Swift 6.2 strict concurrency. Two major milestones completed since last update.
+Pre-beta. 24 Swift source files in main target, 4 in GlassDBKit package, 11 in GlasSecretStore shared package. Targeting visionOS 26.0+ with Swift 6.2 strict concurrency. M0-M3 complete, M4 (ship-ready) in final stretch.
 
 ## Current Focus
-M4 polish complete. All work merged to main. Final polish and TestFlight preparation.
+M4 final items: glass settings, query history, then TestFlight. SQL autocomplete builds in parallel with TestFlight feedback.
 
 ## Recent Changes
 
@@ -115,8 +115,8 @@ M4 polish complete. All work merged to main. Final polish and TestFlight prepara
 - Settings gear icon added to workspace ornament
 - AI sparkle button entry point refined
 
-## Next Steps
-1. SQL autocomplete (table names, column names, keywords)
-2. Query history persistence (survives app restart)
-3. Polish pass: loading states, error recovery, empty states
-4. TestFlight submission
+## Next Steps (M4 Ship-Ready)
+1. Glass/transparency/color settings (port from glas.sh — resolvedMaterial, tint color, opacity controls)
+2. Query history persistence (SavedQuery model exists in SettingsManager, needs disk storage + UI)
+3. Submit TestFlight build — what we have is already more functional than anything on visionOS
+4. SQL autocomplete (tables, columns, keywords) — build while TestFlight feedback comes in, ship in App Store v1.0
