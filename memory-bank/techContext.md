@@ -26,7 +26,7 @@
 - `.smartQuotesDisabled()` — unavailable. Use `.keyboardType(.asciiCapable)`.
 - `.buttonStyle(.glassProminent)` — unavailable. Use `.borderedProminent`.
 
-## File Inventory (main target — 23 files)
+## File Inventory (main target — 24 files)
 | File | Role |
 |------|------|
 | `glassdbApp.swift` | App entry, window scenes |
@@ -49,6 +49,7 @@
 | `KeychainManager.swift` | Thin wrapper over GlasSecretStore |
 | `Models.swift` | DatabaseConnectionConfig, enums |
 | `Constants.swift` | UserDefaults keys |
+| `AIAssistant.swift` | Foundation Models AI integration (SQL gen, error explain, summary) |
 | `Logger.swift` | os.Logger categories |
 
 ## GlassDBKit Package (4 files)
@@ -63,4 +64,5 @@
 - Citadel: vendored local package
 - swift-nio-ssh: vendored local package (patched for toolchain compat)
 - GlasSecretStore: local path dependency (../GlasSecretStore), shared with glas.sh
+- Foundation Models: system framework, `#if canImport(FoundationModels)` guarded (on-device AI)
 - Future: postgres-nio for PostgreSQL support (v2.0)

@@ -4,7 +4,7 @@
 Late alpha / pre-beta. 23 Swift source files in main target, 4 in GlassDBKit package, 11 in GlasSecretStore shared package. Targeting visionOS 26.0+ with Swift 6.2 strict concurrency. Two major milestones completed since last update.
 
 ## Current Focus
-M4 polish — bug fixes, scroll sync, remaining rough edges before TestFlight. The `fixes` branch has the complete v1.0 database manager and needs a PR to main.
+M4 polish complete. All work merged to main. Final polish and TestFlight preparation.
 
 ## Recent Changes
 
@@ -18,7 +18,7 @@ M4 polish — bug fixes, scroll sync, remaining rough edges before TestFlight. T
 - **Alternating row colors**: fixed to use `Color.primary.opacity` for adaptive theming
 - **Deployment target**: raised to visionOS 26.0
 
-### Round 6-8 (2026-03-15/16) — v1.0 Database Manager (commit f408fd9 on fixes branch)
+### Round 6-8 (2026-03-15/16) — v1.0 Database Manager (commit f408fd9)
 
 **Architecture overhaul:**
 - Replaced separate query editor + schema browser + results windows with unified `DatabaseWorkspaceView`
@@ -71,10 +71,52 @@ M4 polish — bug fixes, scroll sync, remaining rough edges before TestFlight. T
 - `.navigationSubtitle()` unavailable on visionOS — combined into title string
 - `.smartQuotesDisabled()` unavailable on visionOS — used `.keyboardType(.asciiCapable)`
 
+### Round 9 (2026-03-16) — M4 Polish Round 1 (commit 9e9b66b)
+
+**Split editor+results layout:**
+- SQL editor (top) + results grid (bottom) in Data tab — DBeaver/SQL Pro Studio pattern
+- Dark background on editor area for visual separation
+- Draggable resize handle between editor and results panes
+
+**Query execution improvements:**
+- Inline Execute button with Cmd+Return keyboard shortcut
+- Auto-repeat: context menu on Execute with interval picker (5s/10s/30s/60s)
+
+**Pagination:**
+- Page navigation bar with previous/next controls
+- Rows-per-page input field
+- Total row count display
+- LIMIT/OFFSET injection into queries
+- Row numbers continue across pages (not reset per page)
+
+**Record editor — Add Row mode:**
+- Add Row mode with INSERT SQL generation (alongside existing UPDATE mode)
+
+**Settings:**
+- `dataGridFontSize` setting (default 13.0) for data grid font customization
+
+**Toolbar architecture:**
+- Moved toolbar to bottom ornament — TabView was swallowing child toolbar items on visionOS
+- NotificationCenter-based communication from parent toolbar to child tab views
+
+**AI Assistant:**
+- Foundation Models integration (`#if canImport(FoundationModels)`)
+- Schema-aware SQL generation (same pattern as glas.sh AIAssistant)
+- Error explanation and query summary features
+- AI sparkle button entry point in workspace ornament
+
+### Round 10 (2026-03-16) — M4 Polish Round 3 (commit 8f56c06)
+
+- Removed duplicate row stats display
+- Execute button moved to header (play icon only, compact)
+- Multi-query support: split SQL on semicolons, execute sequentially
+- Pager syncs with query LIMIT clause (`isAutoQuery` flag prevents double-limiting)
+- Brighter syntax highlighting colors optimized for dark editor background
+- Settings gear icon added to workspace ornament
+- AI sparkle button entry point refined
+
 ## Next Steps
-1. PR `fixes` branch to main
-2. SQL autocomplete (table names, column names, keywords)
-3. Query history persistence (survives app restart)
-4. Data grid vertical scroll sync between row numbers and data columns
-5. Polish pass: loading states, error recovery, empty states
-6. TestFlight submission
+1. SQL autocomplete (table names, column names, keywords)
+2. Query history persistence (survives app restart)
+3. Polish pass: loading states, error recovery, empty states
+4. TestFlight submission

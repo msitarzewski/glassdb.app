@@ -38,6 +38,43 @@
 - `SQLHighlighter.highlight()` produces `NSAttributedString` with colors per token type.
 - `HighlightedTextEditor` wraps `UITextView` via `UIViewRepresentable`, re-highlights on every keystroke, preserves cursor.
 
+## Split Editor+Results Pattern (DataTabView)
+- SQL editor (top) + results grid (bottom) in Data tab, DBeaver/SQL Pro Studio layout.
+- Draggable resize handle between editor and results panes.
+- Dark background on editor area for visual contrast.
+- Editor is always visible above results — not a separate mode to switch to.
+
+## Pagination Pattern
+- Page navigation bar with previous/next controls in toolbar.
+- Rows-per-page input field, total row count display.
+- LIMIT/OFFSET injected into queries automatically.
+- `isAutoQuery` flag: when query already contains LIMIT (e.g., sidebar "Browse Data"), pager syncs with it instead of double-limiting.
+- Row numbers continue across pages (offset-based, not reset per page).
+
+## Multi-Query Execution
+- SQL text split on semicolons into individual statements.
+- Statements executed sequentially, results from last SELECT displayed.
+- Empty statements (trailing semicolons) filtered out.
+
+## Auto-Repeat Pattern
+- Context menu on Execute button offers interval picker (5s/10s/30s/60s).
+- Timer fires `executeQuery()` at selected interval.
+- Stopped on manual execute, disconnect, or view disappear.
+
+## Toolbar-to-Tab Communication (NotificationCenter)
+- TabView on visionOS swallows child view `.toolbar` items — they never appear.
+- Solution: parent `DatabaseWorkspaceView` owns the bottom ornament toolbar.
+- Toolbar buttons post `NotificationCenter` notifications (e.g., `.executeQuery`, `.addRow`).
+- Child tab views receive via `.onReceive(NotificationCenter.default.publisher(for:))`.
+- Settings gear and AI sparkle button also live in workspace ornament.
+
+## AI Assistant Pattern
+- `AIAssistant.swift` wraps Foundation Models framework (`#if canImport(FoundationModels)`).
+- Same architectural pattern as glas.sh AIAssistant.
+- Schema-aware: receives table/column metadata for context-grounded SQL generation.
+- Features: SQL generation from natural language, error explanation, query summary.
+- Entry point: AI sparkle button in workspace ornament.
+
 ## Query Execution Flow
 - User writes SQL in QueryEditorView or clicks table in sidebar.
 - `DatabaseSessionManager.executeQuery()` delegates to `connection.execute()`.
@@ -66,7 +103,7 @@
 - `.buttonStyle(.glassProminent)` — unavailable. Use `.borderedProminent`.
 
 ## Repo Layout
-- Runtime app code in `glassdb/` (23 Swift files).
+- Runtime app code in `glassdb/` (24 Swift files).
 - Shared package code in `Packages/GlassDBKit/` (DB protocol, adapters, models).
 - Vendored SSH packages in `Packages/Citadel/` and `Packages/swift-nio-ssh/`.
 - Shared Keychain package at `../GlasSecretStore/` (local path dependency).

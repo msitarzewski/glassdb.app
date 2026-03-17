@@ -64,12 +64,15 @@
 - [x] Modified field indicators
 - [x] Batch UPDATE with PK-based WHERE clause
 - [x] Column metadata loaded for PK detection
+- [x] Add Row mode with INSERT SQL generation
 
 ### Completed — SQL Tooling
 - [x] SQLHighlighter — full tokenizer (keywords, functions, strings, numbers, comments, identifiers)
 - [x] HighlightedTextEditor — UIViewRepresentable with UITextView, cursor preservation
 - [x] Basic linter (unterminated strings/identifiers)
 - [x] Cmd+Return keyboard shortcut for execute
+- [x] Multi-query support — split on semicolons, execute sequentially
+- [x] Brighter syntax highlighting colors for dark editor background
 
 ### Completed — visionOS 26 Migration (PR #1)
 - [x] Deployment target raised to visionOS 26.0
@@ -87,13 +90,31 @@
 - [x] LazyVStack with pinnedViews for sticky headers
 - [x] GeometryReader-based column width calculation
 - [x] Empty filler columns/rows (DBeaver-style spreadsheet)
-- [x] Frozen row numbers
+- [x] Frozen row numbers (scroll sync fixed, continue across pages)
 - [x] Row selection highlighting
+- [x] Split editor+results layout (SQL editor top, results bottom, draggable resize handle)
+- [x] Dark background on editor area
+- [x] Pagination: page nav bar, rows-per-page input, total row count, LIMIT/OFFSET
+- [x] Pager syncs with query LIMIT (isAutoQuery flag)
+- [x] Font size setting (dataGridFontSize, default 13.0)
+
+### Completed — Query Execution
+- [x] Auto-repeat: context menu on Execute with interval picker (5s/10s/30s/60s)
+- [x] Execute button in header (play icon)
+
+### Completed — Toolbar & Navigation
+- [x] Toolbar moved to bottom ornament (TabView swallows child toolbars on visionOS)
+- [x] NotificationCenter for toolbar-to-tab communication
+- [x] Settings gear in workspace ornament
+- [x] AI sparkle button entry point in workspace ornament
+
+### Completed — AI Assistant
+- [x] AIAssistant.swift — Foundation Models integration (`#if canImport(FoundationModels)`)
+- [x] Schema-aware SQL generation (same pattern as glas.sh)
+- [x] Error explanation and query summary features
 
 ### In Progress
 - [ ] Polish pass — loading states, error recovery, empty states
-- [ ] Data grid scroll sync (row numbers vs data columns)
-- [ ] PR fixes branch to main
 
 ### Blocked
 - Nothing currently blocked

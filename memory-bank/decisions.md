@@ -68,6 +68,24 @@
 - Decision: Use `.sheet()` for the record editor. Full-size modal with NavigationStack + Form. When multiplatform support is added (v1.1), `.inspector()` can be used on iPad/Mac.
 - Consequences: Record editor is a proper full-screen modal on visionOS. Platform-specific editor presentation can be added later.
 
+## 2026-03-17: NotificationCenter for toolbar-to-tab communication
+- Status: Approved
+- Context: visionOS TabView swallows child view `.toolbar` items — toolbar buttons defined inside tab content views never appear in the bottom ornament. This is a known visionOS limitation where TabView manages its own toolbar space.
+- Decision: Parent `DatabaseWorkspaceView` owns the bottom ornament toolbar and posts `NotificationCenter` notifications for actions like execute, add row, settings, and AI. Child tab views subscribe via `.onReceive(NotificationCenter.default.publisher(for:))`.
+- Consequences: All toolbar actions work reliably. Slight indirection but clean separation. When Apple fixes TabView toolbar forwarding, can migrate back to child-owned toolbars.
+
+## 2026-03-17: Split editor+results layout over separate modes
+- Status: Approved
+- Context: Original QueryEditorView was a full-screen editor that switched to a results view after execution. Professional database tools (DBeaver, SQL Pro Studio, DataGrip) show the editor and results simultaneously in a vertical split.
+- Decision: Data tab shows SQL editor (top) + results grid (bottom) with a draggable resize handle. Editor is always visible — no mode switching. Dark background on editor for visual separation.
+- Consequences: Matches user expectations from desktop database tools. Query iteration is faster (edit and see results without switching). Draggable handle lets users allocate space based on their workflow.
+
+## 2026-03-17: Foundation Models for on-device AI
+- Status: Approved
+- Context: visionOS 26 ships Foundation Models framework for on-device inference. glas.sh already has an AIAssistant with the same pattern. SQL generation from natural language is a high-value feature for database clients.
+- Decision: `AIAssistant.swift` wraps Foundation Models behind `#if canImport(FoundationModels)`. Schema-aware: passes table/column metadata as context for grounded SQL generation. Features: SQL generation, error explanation, query summary. Entry point is an AI sparkle button in the workspace ornament.
+- Consequences: On-device inference means no API keys or cloud dependency. Schema context prevents hallucinated table/column names. Graceful degradation on devices/simulators without Foundation Models support.
+
 ## 2026-03-16: Multiplatform expansion planned for v1.1
 - Status: Planned
 - Context: iPad has no good native database client — massive market opportunity. Mac is crowded but iPad is wide open. The codebase is 90% standard SwiftUI. Only ~20 platform-specific modifiers need abstraction.
