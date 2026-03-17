@@ -260,7 +260,7 @@ struct SQLHighlighter {
             string: sql,
             attributes: [
                 .font: UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
-                .foregroundColor: UIColor.label,
+                .foregroundColor: UIColor.white,
             ]
         )
 
@@ -269,28 +269,28 @@ struct SQLHighlighter {
             let color: UIColor
             switch token.kind {
             case .keyword:
-                color = UIColor.systemBlue
+                color = UIColor(red: 0.4, green: 0.6, blue: 1.0, alpha: 1.0)
                 attr.addAttribute(.font, value: UIFont.monospacedSystemFont(ofSize: fontSize, weight: .bold), range: nsRange)
             case .function:
-                color = UIColor.systemPurple
+                color = UIColor(red: 0.7, green: 0.5, blue: 1.0, alpha: 1.0)
             case .string:
                 color = UIColor.systemGreen
             case .number:
                 color = UIColor.systemOrange
             case .comment:
-                color = UIColor.secondaryLabel
+                color = UIColor(white: 0.55, alpha: 1.0)
             case .identifier:
-                color = UIColor.systemTeal
+                color = UIColor(red: 0.4, green: 0.8, blue: 0.8, alpha: 1.0)
             case .operator_:
-                color = UIColor.label
+                color = UIColor.white
             case .punctuation:
-                color = UIColor.secondaryLabel
+                color = UIColor(white: 0.6, alpha: 1.0)
             case .error:
                 color = UIColor.systemRed
                 attr.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: nsRange)
                 attr.addAttribute(.underlineColor, value: UIColor.systemRed, range: nsRange)
             case .plain:
-                color = UIColor.label
+                color = UIColor.white
             }
             attr.addAttribute(.foregroundColor, value: color, range: nsRange)
         }

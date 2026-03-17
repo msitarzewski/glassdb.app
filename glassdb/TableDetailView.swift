@@ -47,11 +47,6 @@ struct TableDetailView: View {
             ToolbarItemGroup(placement: .bottomOrnament) {
                 if selectedTab == .data {
                     Button {
-                        NotificationCenter.default.post(name: .glassdbExecuteQuery, object: nil)
-                    } label: {
-                        Label("Execute", systemImage: "play.fill")
-                    }
-                    Button {
                         NotificationCenter.default.post(name: .glassdbAddRow, object: nil)
                     } label: {
                         Label("Add Row", systemImage: "plus")
@@ -99,6 +94,8 @@ struct DataTabView: View {
     @State private var showEditor = false
     @State private var addingNewRow = false
     @State private var editorHeight: CGFloat = 120
+    @State private var isAutoQuery = true
+    @State private var showAIAssistant = false
 
     // Pager
     @State private var currentPage: Int = 1
@@ -126,38 +123,12 @@ struct DataTabView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // SQL editor area (top) with dark background
-            HighlightedTextEditor(
-                text: $queryText,
-                fontSize: CGFloat(settingsManager.editorFontSize)
-            )
-            .frame(height: editorHeight)
-            .background(Color.black.opacity(0.3))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-
-            // Inline toolbar: row count + Execute button
-            HStack(spacing: 12) {
-                if let result {
-                    Text("\(result.rowCount) rows")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("in \(String(format: "%.3f", result.executionTime))s")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if isAutoRepeating {
-                    Label("Repeating every \(Int(autoRepeatInterval))s", systemImage: "repeat")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                Spacer()
+            // SQL editor header: play button + AI + repeat indicator
+            HStack(spacing: 8) {
                 Button {
                     Task { await executeCurrentQuery() }
                 } label: {
-                    Label("Execute", systemImage: "play.fill")
-                        .font(.caption)
+                    Image(systemName: "play.fill")
                 }
                 .keyboardShortcut(.return, modifiers: .command)
                 .contextMenu {
@@ -176,9 +147,39 @@ struct DataTabView: View {
                         }
                     }
                 }
+
+                if isAutoRepeating {
+                    Label("Repeating \(Int(autoRepeatInterval))s", systemImage: "repeat")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+
+                Spacer()
+
+                #if canImport(FoundationModels)
+                Button {
+                    showAIAssistant = true
+                } label: {
+                    Image(systemName: "sparkles")
+                }
+                #endif
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 12)
             .padding(.vertical, 6)
+
+            // SQL editor area with dark background
+            HighlightedTextEditor(
+                text: $queryText,
+                fontSize: CGFloat(settingsManager.editorFontSize)
+            )
+            .frame(height: editorHeight)
+            .background(Color.black.opacity(0.3))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 12)
+            .onChange(of: queryText) {
+                // User edited the query — disable auto-query sync
+                isAutoQuery = false
+            }
 
             // Drag handle to resize
             HStack {
@@ -225,9 +226,18 @@ struct DataTabView: View {
             }
 
             // Pager bar at bottom
-            if result != nil {
+            if let result {
                 Divider()
                 HStack(spacing: 12) {
+                    Text("\(result.rowCount) rows")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("in \(String(format: "%.3f", result.executionTime))s")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Divider().frame(height: 16)
+
                     Button {
                         currentPage = max(1, currentPage - 1)
                     } label: {
@@ -292,6 +302,23 @@ struct DataTabView: View {
                 onDiscard: { addingNewRow = false }
             )
         }
+        #if canImport(FoundationModels)
+        .sheet(isPresented: $showAIAssistant) {
+            AIAssistantView(
+                onRunQuery: { sql in
+                    queryText = sql
+                    showAIAssistant = false
+                    Task { await executeCurrentQuery() }
+                },
+                schemaContext: SchemaContext(
+                    databaseName: database,
+                    tables: columnMeta.isEmpty ? [] : [
+                        SchemaContext.TableInfo(name: table, columns: columnMeta)
+                    ]
+                )
+            )
+        }
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .glassdbExecuteQuery)) { _ in
             Task { await executeCurrentQuery() }
         }
@@ -303,7 +330,17 @@ struct DataTabView: View {
             Task { await loadData() }
         }
         .onChange(of: currentPage) {
-            Task { await loadData() }
+            if isAutoQuery {
+                queryText = generateAutoQuery()
+            }
+            Task { await executeCurrentQuery() }
+        }
+        .onChange(of: pageSize) {
+            if isAutoQuery {
+                currentPage = 1
+                queryText = generateAutoQuery()
+                Task { await executeCurrentQuery() }
+            }
         }
         .task(id: "\(database).\(table)") {
             await loadData()
@@ -314,18 +351,6 @@ struct DataTabView: View {
 
     private func dataGrid(_ result: QueryResult) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("\(result.rowCount) rows")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("in \(String(format: "%.3f", result.executionTime))s")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-
             GeometryReader { geometry in
                 let fontSize = settingsManager.dataGridFontSize
                 let widths = columnWidths(columns: result.columns, rows: result.rows)
@@ -342,7 +367,7 @@ struct DataTabView: View {
                             ForEach(Array(result.rows.enumerated()), id: \.offset) { rowIndex, row in
                                 HStack(spacing: 0) {
                                     // Row number (inline, scrolls with data)
-                                    Text("\(rowIndex + 1)")
+                                    Text("\((currentPage - 1) * pageSize + rowIndex + 1)")
                                         .font(.system(size: fontSize - 1, design: .monospaced))
                                         .foregroundStyle(.secondary)
                                         .frame(width: rowNumWidth, height: rowHeight, alignment: .center)
@@ -447,13 +472,15 @@ struct DataTabView: View {
 
     // MARK: - Data Loading
 
+    private func generateAutoQuery() -> String {
+        let offset = (currentPage - 1) * pageSize
+        return "SELECT * FROM `\(database)`.`\(table)` LIMIT \(pageSize) OFFSET \(offset)"
+    }
+
     private func loadData() async {
         guard let connection = session?.connection else { return }
-        let offset = (currentPage - 1) * pageSize
-        let sql = "SELECT * FROM `\(database)`.`\(table)` LIMIT \(pageSize) OFFSET \(offset)"
-        if queryText.isEmpty || queryText.hasPrefix("SELECT * FROM") {
-            queryText = sql
-        }
+        isAutoQuery = true
+        queryText = generateAutoQuery()
         isLoading = true
         errorMessage = nil
         selectedRowIndex = nil
@@ -479,7 +506,16 @@ struct DataTabView: View {
         selectedRowIndex = nil
         showEditor = false
         do {
-            result = try await sessionManager.executeQuery(sql, sessionID: sessionID)
+            // Split on semicolons for multi-query support
+            let statements = sql.split(separator: ";")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            var lastResult: QueryResult?
+            for statement in statements {
+                lastResult = try await sessionManager.executeQuery(statement, sessionID: sessionID)
+            }
+            result = lastResult
         } catch {
             errorMessage = error.localizedDescription
         }

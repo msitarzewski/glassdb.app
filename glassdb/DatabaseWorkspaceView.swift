@@ -24,6 +24,7 @@ struct DatabaseWorkspaceView: View {
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
+    @Environment(\.openWindow) private var openWindow
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var selection: WorkspaceSelection? = .query
     @State private var databases: [String] = []
@@ -62,6 +63,12 @@ struct DatabaseWorkspaceView: View {
                     Label("SQL Editor", systemImage: "text.page")
                 }
                 .disabled(selection == .query)
+
+                Button {
+                    openWindow(id: "settings")
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
             }
         }
         .task {
