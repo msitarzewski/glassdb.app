@@ -62,7 +62,6 @@ struct DatabaseWorkspaceView: View {
                 } label: {
                     Label("SQL Editor", systemImage: "text.page")
                 }
-                .disabled(selection == .query)
 
                 Button {
                     openWindow(id: "settings")

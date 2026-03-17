@@ -40,7 +40,7 @@ struct QueryEditorView: View {
             }
         }
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .bottomOrnament) {
                 Button {
                     Task { await executeQuery() }
                 } label: {
@@ -48,7 +48,6 @@ struct QueryEditorView: View {
                 }
                 .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
                 .keyboardShortcut(.return, modifiers: .command)
-                .accessibilityHint("Keyboard shortcut: Command Return")
 
                 Button {
                     queryText = ""

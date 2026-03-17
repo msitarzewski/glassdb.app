@@ -148,14 +148,6 @@ struct DataTabView: View {
                     }
                 }
 
-                if isAutoRepeating {
-                    Label("Repeating \(Int(autoRepeatInterval))s", systemImage: "repeat")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-
-                Spacer()
-
                 #if canImport(FoundationModels)
                 Button {
                     showAIAssistant = true
@@ -163,6 +155,14 @@ struct DataTabView: View {
                     Image(systemName: "sparkles")
                 }
                 #endif
+
+                if isAutoRepeating {
+                    Label("Repeating \(Int(autoRepeatInterval))s", systemImage: "repeat")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+
+                Spacer()
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
