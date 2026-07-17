@@ -62,10 +62,16 @@ final class ExecHandler: ChannelDuplexHandler {
     }
     
     func channelInactive(context: ChannelHandlerContext) {
+        let channel = context.channel
+        let commandContext = self.context
+        self.context = nil
+        self.pipeChannel = nil
         Task {
-            try await self.context?.terminate()
-            self.context = nil
-            self.pipeChannel = nil
+            do {
+                try await commandContext?.terminate()
+            } catch {
+                channel.pipeline.fireErrorCaught(error)
+            }
         }
         context.fireChannelInactive()
     }
@@ -82,13 +88,24 @@ final class ExecHandler: ChannelDuplexHandler {
             }
         case let event as SSHChannelRequestEvent.EnvironmentRequest:
             if let delegate = delegate {
+                let channel = context.channel
                 Task {
-                    try await delegate.setEnvironmentValue(event.value, forKey: event.name)
+                    do {
+                        try await delegate.setEnvironmentValue(event.value, forKey: event.name)
+                    } catch {
+                        channel.pipeline.fireErrorCaught(error)
+                    }
                 }
             }
         case ChannelEvent.inputClosed:
+            let channel = context.channel
+            let commandContext = self.context
             Task {
-                try await self.context?.inputClosed()
+                do {
+                    try await commandContext?.inputClosed()
+                } catch {
+                    channel.pipeline.fireErrorCaught(error)
+                }
             }
         default:
             context.fireUserInboundEventTriggered(event)
@@ -140,9 +157,9 @@ final class ExecHandler: ChannelDuplexHandler {
                 .channelOption(ChannelOptions.allowRemoteHalfClosure, value: true)
                 .channelInitializer { pipeChannel in
                     pipeChannel.pipeline.addHandlers(SSHInboundChannelDataWrapper(), theirs)
-                }.withPipes(
-                    inputDescriptor: dup(handler.stdoutPipe.fileHandleForReading.fileDescriptor),
-                    outputDescriptor: dup(handler.stdinPipe.fileHandleForWriting.fileDescriptor)
+                }.takingOwnershipOfDescriptors(
+                    input: dup(handler.stdoutPipe.fileHandleForReading.fileDescriptor),
+                    output: dup(handler.stdinPipe.fileHandleForWriting.fileDescriptor)
                 )
         }.flatMap { pipeChannel -> EventLoopFuture<Channel> in
             self.pipeChannel = pipeChannel

@@ -11,12 +11,12 @@
 glassdb.app is a native visionOS database management client with a glass-first spatial UI. It is the database counterpart to [glas.sh](https://github.com/msitarzewski/glas.sh) (native visionOS SSH terminal).
 
 **Key facts**:
-- visionOS 2.0+ target, Swift 6.2 toolchain
+- visionOS 26.0+ target, Apple Silicon only, Swift 6 strict concurrency (verified with Swift 6.4)
 - SwiftUI + visionOS ornaments + glass materials (`.windowStyle(.plain)`, `.ultraThinMaterial`)
-- MySQL first (via mysql-nio), PostgreSQL planned for v0.2
+- MySQL (mysql-nio), PostgreSQL (postgres-nio), and managed-copy SQLite engines
 - SSH tunnel support via vendored Citadel package (shared with glas.sh)
 - `@Observable` (Observation framework) for all managers
-- Multi-window architecture: Connections, Query Editor, Results Grid, Schema Browser, Settings
+- Multi-window architecture: Connections, transparent Database Workspace, detached Results Grid, and Settings
 - Architectural patterns derived from glas.sh — study `PROJECT_SCAFFOLD.md` for mapping
 
 **Sister project reference**: When uncertain about visionOS patterns, consult glas.sh source. Key files:

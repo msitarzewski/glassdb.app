@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 import GlassDBKit
 
 struct ResultsGridView: View {
@@ -13,6 +14,8 @@ struct ResultsGridView: View {
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
+    @State private var showExporter = false
+    @State private var exportFormat: GridExportFormat = .csv
 
     private var result: QueryResult? {
         for (_, session) in sessionManager.sessions {
@@ -39,6 +42,19 @@ struct ResultsGridView: View {
                 )
             }
         }
+        .fileExporter(
+            isPresented: $showExporter,
+            document: result.map {
+                GridExportDocument(
+                    result: $0,
+                    format: exportFormat,
+                    database: inferredDatabase(from: $0),
+                    table: inferredTable(from: $0)
+                )
+            },
+            contentType: exportFormat.contentType,
+            defaultFilename: "result_\(resultSetID.uuidString.prefix(8)).\(exportFormat.rawValue)"
+        ) { _ in }
     }
 
     private func resultHeader(_ result: QueryResult) -> some View {
@@ -51,6 +67,10 @@ struct ResultsGridView: View {
 
                 HStack(spacing: 12) {
                     Label("\(result.rowCount) rows", systemImage: "tablecells")
+                    if result.isTruncated, let limit = result.appliedRowLimit {
+                        Label("More available; limited to \(limit)", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
                     Label("\(result.columnCount) columns", systemImage: "rectangle.split.3x1")
                     Label(String(format: "%.3fs", result.executionTime), systemImage: "clock")
                 }
@@ -58,6 +78,28 @@ struct ResultsGridView: View {
                 .foregroundStyle(.tertiary)
             }
             Spacer()
+            Button {
+                guard !result.rows.isEmpty, !result.columns.isEmpty else { return }
+                UIPasteboard.general.string = GridExportFormatter.tsv(
+                    result: result,
+                    rowRange: 0...(result.rows.count - 1),
+                    columnRange: 0...(result.columns.count - 1)
+                )
+            } label: {
+                Label("Copy All", systemImage: "doc.on.doc")
+            }
+            .keyboardShortcut("c", modifiers: .command)
+
+            Menu {
+                ForEach(GridExportFormat.allCases) { format in
+                    Button(format.displayName) {
+                        exportFormat = format
+                        showExporter = true
+                    }
+                }
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+            }
         }
         .padding(16)
         .accessibilityElement(children: .combine)
@@ -150,5 +192,13 @@ struct ResultsGridView: View {
             let computed = max(headerLen, maxDataLen) * charWidth + 24
             return max(80, min(computed, 400))
         }
+    }
+
+    private func inferredDatabase(from result: QueryResult) -> String {
+        result.columns.compactMap(\.sourceSchema).first ?? "export"
+    }
+
+    private func inferredTable(from result: QueryResult) -> String {
+        result.columns.compactMap(\.sourceTable).first ?? "result_set"
     }
 }

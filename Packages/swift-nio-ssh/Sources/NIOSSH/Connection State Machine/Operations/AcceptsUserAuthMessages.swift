@@ -56,7 +56,9 @@ extension AcceptsUserAuthMessages {
         let result = try self.userAuthStateMachine.receiveServiceAccept(message)
 
         if let future = result {
-            return .possibleFutureMessage(future.map(Self.transform(_:)))
+            return .possibleFutureMessage(
+                future.assumeIsolated().map(Self.transform(_:)).nonisolated()
+            )
         } else {
             return .noMessage
         }
@@ -66,13 +68,24 @@ extension AcceptsUserAuthMessages {
         let result = try self.userAuthStateMachine.receiveUserAuthRequest(message)
         
         if let future = result {
-            var banner: SSHServerConfiguration.UserAuthBanner?
+            let banner: SSHServerConfiguration.UserAuthBanner?
             if case .server(let config) = role {
                 banner = config.banner
+            } else {
+                banner = nil
             }
 
             let connectionAttributes = self.connectionAttributes
-            return .possibleFutureMessage(future.map { Self.transform($0, connectionAttributes: connectionAttributes, username: message.username, banner: banner) })
+            return .possibleFutureMessage(
+                future.assumeIsolated().map {
+                    Self.transform(
+                        $0,
+                        connectionAttributes: connectionAttributes,
+                        username: message.username,
+                        banner: banner
+                    )
+                }.nonisolated()
+            )
         } else {
             return .noMessage
         }
@@ -90,7 +103,9 @@ extension AcceptsUserAuthMessages {
         let result = try self.userAuthStateMachine.receiveUserAuthFailure(message)
 
         if let future = result {
-            return .possibleFutureMessage(future.map(Self.transform(_:)))
+            return .possibleFutureMessage(
+                future.assumeIsolated().map(Self.transform(_:)).nonisolated()
+            )
         } else {
             return .noMessage
         }

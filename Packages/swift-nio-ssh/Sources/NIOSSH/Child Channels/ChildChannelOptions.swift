@@ -68,7 +68,7 @@ public extension SSHChildChannelOptions.Types {
     }
     
     /// `UsernameOption` allows users to query the authenticated username of the channel.
-    public struct UsernameOption: ChannelOption {
+    struct UsernameOption: ChannelOption {
         public typealias Value = String?
         
         public init() {}

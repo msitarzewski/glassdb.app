@@ -7,6 +7,7 @@
 
 import SwiftUI
 import GlasSecretStore
+import GlassDBKit
 
 struct SettingsView: View {
     @Environment(SettingsManager.self) private var settingsManager
@@ -15,17 +16,13 @@ struct SettingsView: View {
     @State private var renamingKey: StoredSSHKey?
     @State private var renameText = ""
     @State private var deletingKey: StoredSSHKey?
+    @State private var keychainError: String?
 
     var body: some View {
         @Bindable var settings = settingsManager
 
         NavigationStack {
             Form {
-                Section("Connection") {
-                    Toggle("Auto-reconnect on disconnect", isOn: $settings.autoReconnect)
-                    Toggle("Confirm before closing", isOn: $settings.confirmBeforeClosing)
-                }
-
                 Section("Query") {
                     HStack {
                         Text("Result row limit")
@@ -41,6 +38,7 @@ struct SettingsView: View {
                             .frame(width: 100)
                             .multilineTextAlignment(.trailing)
                     }
+                    Toggle("Redact literals in query history", isOn: $settings.redactQueryHistoryLiterals)
                 }
 
                 Section("Editor") {
@@ -64,30 +62,39 @@ struct SettingsView: View {
                 sshKeysSection
 
                 Section("Appearance") {
-                    HStack {
-                        Text("Window opacity")
-                        Spacer()
-                        Slider(value: $settings.windowOpacity, in: 0.5...1.0, step: 0.05)
-                            .frame(width: 200)
-                        Text(String(format: "%.0f%%", settings.windowOpacity * 100))
-                            .font(.caption)
-                            .frame(width: 40)
+                    Slider(value: $settings.windowOpacity, in: 0.0...1.0) {
+                        Text("Database workspace opacity")
+                    } minimumValueLabel: {
+                        Text("Transparent")
+                    } maximumValueLabel: {
+                        Text("Opaque")
                     }
-                    Toggle("Blur background", isOn: $settings.blurBackground)
+
+                    Slider(value: $settings.blurBackground, in: 0.0...1.0) {
+                        Text("Database workspace blur")
+                    } minimumValueLabel: {
+                        Text("None")
+                    } maximumValueLabel: {
+                        Text("Maximum")
+                    }
+
+                    Text("Opacity and blur apply only to live database workspaces. Set both to zero for a completely transparent SQL and row-management window. Connections, Settings, and detached results keep their system materials.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     Toggle("Show sidebar by default", isOn: $settings.showSidebarByDefault)
                 }
 
                 Section("About") {
                     LabeledContent("Version", value: "0.1.0")
-                    LabeledContent("Engine", value: "MySQL (via mysql-nio)")
+                    LabeledContent("Engines", value: "MySQL, PostgreSQL, SQLite")
                 }
             }
             .navigationTitle("Settings")
         }
-        .onChange(of: settings.autoReconnect) { settingsManager.saveSettings() }
-        .onChange(of: settings.confirmBeforeClosing) { settingsManager.saveSettings() }
         .onChange(of: settings.resultRowLimit) { settingsManager.saveSettings() }
         .onChange(of: settings.maxQueryHistoryItems) { settingsManager.saveSettings() }
+        .onChange(of: settings.redactQueryHistoryLiterals) { settingsManager.saveSettings() }
         .onChange(of: settings.editorFontSize) { settingsManager.saveSettings() }
         .onChange(of: settings.dataGridFontSize) { settingsManager.saveSettings() }
         .onChange(of: settings.showLineNumbers) { settingsManager.saveSettings() }
@@ -125,13 +132,25 @@ struct SettingsView: View {
         )) {
             Button("Delete", role: .destructive) {
                 if let key = deletingKey {
-                    settingsManager.deleteSSHKey(key)
+                    do {
+                        try settingsManager.deleteSSHKey(key)
+                    } catch {
+                        keychainError = "The SSH key was not removed because Keychain deletion failed. \(error.localizedDescription)"
+                    }
                 }
                 deletingKey = nil
             }
             Button("Cancel", role: .cancel) { deletingKey = nil }
         } message: {
             Text("This will permanently remove the SSH key from Keychain.")
+        }
+        .alert("Keychain Error", isPresented: .init(
+            get: { keychainError != nil },
+            set: { if !$0 { keychainError = nil } }
+        )) {
+            Button("OK", role: .cancel) { keychainError = nil }
+        } message: {
+            Text(keychainError ?? "")
         }
     }
 
@@ -149,7 +168,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(key.name)
                                 .font(.headline)
-                            Text(key.keyTypeBadge)
+                            Text(sshKeyBadge(key))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -178,6 +197,16 @@ struct SettingsView: View {
         } header: {
             Text("SSH Keys")
         }
+    }
+
+    private func sshKeyBadge(_ key: StoredSSHKey) -> String {
+        if key.storageKind == .secureEnclave {
+            if key.keyTag == nil {
+                return "Hardware Secure Enclave \(key.algorithmKind.badgeName) — glas.sh only"
+            }
+            return "Secure Enclave–wrapped \(key.algorithmKind.badgeName)"
+        }
+        return key.keyTypeBadge
     }
 }
 
@@ -230,8 +259,8 @@ struct AddSSHKeyView: View {
 
     private func saveKey() {
         let trimmedKey = privateKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let algorithmKind = detectAlgorithm(from: trimmedKey)
         do {
+            let algorithmKind = try detectAlgorithm(from: trimmedKey)
             try onSave(
                 name.trimmingCharacters(in: .whitespacesAndNewlines),
                 trimmedKey,
@@ -244,21 +273,14 @@ struct AddSSHKeyView: View {
         }
     }
 
-    private func detectAlgorithm(from key: String) -> SSHKeyAlgorithmKind {
-        if key.contains("BEGIN RSA PRIVATE KEY") || key.contains("BEGIN RSA PRIVATE") {
+    private func detectAlgorithm(from key: String) throws -> SSHKeyAlgorithmKind {
+        switch try SSHTunnelManager.detectPrivateKeyAlgorithm(from: key) {
+        case .rsa:
             return .rsa
-        } else if key.contains("BEGIN OPENSSH PRIVATE KEY") {
-            // OpenSSH format can be ed25519, ecdsa, or rsa — check the key body
-            if key.contains("ssh-ed25519") {
-                return .ed25519
-            } else if key.contains("ecdsa-sha2") {
-                return .ecdsaP256
-            }
-            // Default for OpenSSH format — could be ed25519 or rsa, try ed25519 as most common modern key
+        case .ed25519:
             return .ed25519
-        } else if key.contains("BEGIN EC PRIVATE KEY") {
+        case .secureEnclaveP256:
             return .ecdsaP256
         }
-        return .unknown
     }
 }

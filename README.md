@@ -1,35 +1,19 @@
 # glassdb
 
-A native visionOS database client built for spatial computing. Glass-first UI, DBeaver-style workspace, on-device AI, and zero cloud dependencies.
+A native visionOS database client built for spatial computing. Glass-first UI, a DBeaver-style workspace, and optional on-device AI with no AI cloud service.
 
 **[glassdb.app](https://glassdb.app)** &nbsp;|&nbsp; **[Sponsor](https://github.com/sponsors/msitarzewski)**
 
 ![Platform: visionOS 26+](https://img.shields.io/badge/platform-visionOS_26+-1a1a2e?style=flat-square)
-![Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138?style=flat-square&logo=swift&logoColor=white)
+![Swift 6](https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
-![Price: $10](https://img.shields.io/badge/App_Store-$10-0D96F6?style=flat-square&logo=apple&logoColor=white)
+![Planned price: $10](https://img.shields.io/badge/planned_price-$10-0D96F6?style=flat-square&logo=apple&logoColor=white)
 
 ---
 
 ## Why glassdb
 
-Every database client on visionOS is a port from iPad. glassdb is built from scratch for spatial computing -- glass materials, ornament toolbars, and a workspace layout designed for eye-and-hand interaction.
-
-| Capability | glassdb | DBeaver | TablePlus | DataGrip |
-|-----------|---------|---------|-----------|----------|
-| Native visionOS | Yes | No | No | No |
-| Native iPad (planned) | P3 | No | Yes | No |
-| On-device AI | Foundation Models | No | No | No |
-| Glass spatial UI | Yes | No | No | No |
-| SSH tunnel + key auth | Yes | Yes | Yes | Yes |
-| Table data browser | Yes | Yes | Yes | Yes |
-| Syntax highlighting | Yes | Yes | Yes | Yes |
-| Multi-query execution | Yes | Yes | Yes | Yes |
-| Record editor (staging) | Yes | No | Yes | Yes |
-| DDL viewer | Yes | Yes | Yes | Yes |
-| CSV export | Yes | Yes | Yes | Yes |
-| Open source | MIT | CE only | No | No |
-| Price | $10 | Free/Paid | $99 | $229/yr |
+glassdb is built specifically for Vision Pro: transparent database workspaces, system ornaments, and an eye/hand/keyboard-friendly query-and-grid layout rather than a repackaged desktop or iPad application.
 
 ---
 
@@ -37,30 +21,31 @@ Every database client on visionOS is a port from iPad. glassdb is built from scr
 
 ### Connection Management
 - Save, organize, and color-tag database connections
-- SSH tunneling with password or key authentication (Ed25519, RSA, Secure Enclave P256)
+- SSH tunneling with password or key authentication (Ed25519, RSA, and Secure Enclave-wrapped P256)
 - Passwords and SSH keys stored in the system Keychain
-- Cross-app SSH key sharing with glas.sh via Keychain access groups
+- Compatible/exportable SSH key sharing with glas.sh via Keychain access groups
 - Connection testing and state indicators
 
 ### Database Workspace
 - DBeaver-style NavigationSplitView sidebar with database and table hierarchy
 - Context-sensitive detail surface -- click a table, get a full multi-tab editor
-- Click a database, get properties and table statistics
-- Context menus on databases (Set Active, SQL Editor, Refresh) and tables (Browse Data, Copy Name, Copy SELECT, Truncate, Drop)
+- Click a database to see capability-supported properties and statistics
+- Capability-gated context menus for database and table actions
 - Row count badges in sidebar (lazy-loaded)
 - Filter/search field for navigating large schemas
 - Sidebar toggle for focused work
 
 ### Query Editor
 - SQL syntax highlighting (keywords, functions, strings, numbers, comments, identifiers)
-- Dark editor background with high-contrast color theme
-- Multi-statement execution (split on semicolons)
-- Cmd+Return to execute
-- Auto-repeat with configurable interval (5/10/30/60 seconds) via long-press
-- Draggable resize handle between editor and results
+- Parser-backed statement selection and multi-statement execution
+- Schema-aware completion, formatting, diagnostics, and capability-gated explain plans
+- Multiple tabs plus native SQL document open/save; tabs retain text, selection, and latest result
+- Persistent, searchable, privacy-aware query history and saved queries
+- Configurable bounded results with explicit truncation status
+- Keyboard shortcuts for statement and script execution
 
 ### Table Browser
-- Five-tab detail view per table: **Data**, **Structure**, **DDL**, **Indexes**, **Foreign Keys**
+- Capability-gated table detail tabs: **Data**, **Structure**, **DDL**, **Indexes**, and **Foreign Keys**
 - Paginated data grid with configurable rows per page
 - Row numbers that continue across pages
 - Content-width columns with empty filler cells (spreadsheet-style)
@@ -75,36 +60,28 @@ Every database client on visionOS is a port from iPad. glassdb is built from scr
 - Type-specific input fields: text, JSON (with format/validate), booleans, dates, numbers
 - NULL as placeholder text -- type to replace, button to set NULL
 - Modified field indicators with change count
-- Batch apply via primary key WHERE clause
+- Optimistic updates use stable identity plus original-row predicates
 
-### AI Assistant (On-Device, Private)
+### AI Assistant (On-Device, Private; visionOS 27+)
 - **SQL Query Assistant**: Describe what you want in natural language, get a SQL query with risk assessment (safe/moderate/destructive)
-- **Error Explainer**: Detects MySQL errors and explains what went wrong with a suggested fix
-- **Query Summary**: Complex SQL explained in plain English
-- Schema-aware -- passes database, table, and column context for accurate generation
-- Powered by Foundation Models -- runs entirely on-device, no data leaves your Vision Pro
+- Uses privacy-bounded metadata for the currently selected table; row values are excluded by default
+- Inserts generated SQL into the editor for review; deterministic app policy controls execution
+- Powered by Foundation Models entirely on-device when available
 
 ### Data Export
-- Export query results or table data to CSV
+- Export bounded query results or table data to CSV, JSON, or SQL; copy selected ranges as TSV
 - Triggered from bottom ornament toolbar
 
 ### Accessibility
 - VoiceOver labels on grid headers, data cells, connection status indicators
-- Look to Scroll on all scrollable views
+- Look to Scroll on major database/editor grid surfaces
 - Keyboard shortcut support (Cmd+Return)
 
 ---
 
-## Screenshots
+## App Icon
 
-<!-- TODO: Add screenshots -->
-<!--
-- Connection manager with saved connections
-- Database workspace showing sidebar + table data view
-- Query editor with syntax highlighting and results grid
-- Record editor with staged changes
-- AI assistant generating SQL
--->
+![glassdb optical-glass database icon](glassdb/Assets.xcassets/AppIcon.solidimagestack/Front.solidimagestacklayer/Content.imageset/glassdb-app-icon.png)
 
 ---
 
@@ -112,29 +89,32 @@ Every database client on visionOS is a port from iPad. glassdb is built from scr
 
 ### Requirements
 
-- Xcode 26 beta or later with visionOS 26 SDK
+- Xcode 27.0 beta (27A5209h) with the visionOS 27.0 SDK
 - Apple Vision Pro or visionOS Simulator
-- Swift 6.2 toolchain (ships with Xcode 26)
+- Apple Silicon development Mac
 - GlasSecretStore package at `../GlasSecretStore/` (shared with glas.sh)
 
 ### Build from Source
 
 ```bash
+git clone https://github.com/msitarzewski/GlasSecretStore.git
 git clone https://github.com/msitarzewski/glassdb.app.git
 cd glassdb.app
 open glassdb.xcodeproj
 ```
 
-Select the **glassdb** scheme, choose a visionOS Simulator or your Apple Vision Pro, and hit Cmd+R. Swift Package Manager resolves `mysql-nio` automatically. Citadel and swift-nio-ssh are vendored in `Packages/`.
+Keep both repositories in the same parent directory so the checked-in `../GlasSecretStore` local-package reference resolves. The app workspace lockfile pins all remote Swift package revisions.
 
-**Note:** If you also have glas.sh open in Xcode, close it first -- Xcode cannot have the same local package (GlasSecretStore) open from two projects simultaneously.
+Select the **glassdb** scheme, choose a visionOS Simulator or your Apple Vision Pro, and hit Cmd+R. Swift Package Manager resolves the MySQL, PostgreSQL, TLS, and supporting dependencies. Citadel and swift-nio-ssh are vendored in `Packages/`.
+
+**Note:** If local-package resolution fails while glas.sh is open in the same Xcode installation, closing the other workspace resolves the observed GlasSecretStore package conflict.
 
 ---
 
 ## Architecture
 
 ```
-glassdb/                         Main app (24 Swift source files)
+glassdb/                         Main app (22 top-level Swift source files)
 ├── glassdbApp.swift             Window scenes + bootstrap
 ├── DatabaseWorkspaceView.swift  Unified workspace, selection routing
 ├── SchemaBrowserView.swift      Database tree sidebar
@@ -148,7 +128,7 @@ glassdb/                         Main app (24 Swift source files)
 ├── AIAssistant.swift            Foundation Models integration
 ├── SQLHighlighter.swift         SQL tokenizer + NSAttributedString
 ├── HighlightedTextEditor.swift  UITextView wrapper for syntax highlighting
-├── DataExporter.swift           CSV export document
+├── DataExporter.swift           CSV/TSV/JSON/SQL export workflows
 ├── ConnectionManager.swift      Connection CRUD
 ├── DatabaseSessionManager.swift Session lifecycle + query execution
 ├── SettingsManager.swift        Settings persistence
@@ -159,7 +139,7 @@ glassdb/                         Main app (24 Swift source files)
 └── Logger.swift                 os.Logger categories
 
 Packages/
-├── GlassDBKit/                  DatabaseProtocol + MySQLAdapter + models
+├── GlassDBKit/                  Capability contracts + MySQL/PostgreSQL/SQLite adapters
 ├── Citadel/                     Vendored SSH library (shared with glas.sh)
 └── swift-nio-ssh/               Vendored NIO SSH transport
 
@@ -171,20 +151,20 @@ Packages/
 - `@Observable` + `@MainActor` for all managers (Observation framework, not Combine)
 - `WorkspaceSelection` enum drives context-sensitive detail surface
 - `NavigationSplitView` with sidebar + detail for workspace layout
-- `.windowStyle(.plain)` for system glass chrome on all windows
+- `.windowStyle(.plain)` only for the user-adjustable transparent database workspace; general app windows keep system materials
 - `.toolbar(.bottomOrnament)` for Liquid Glass ornament bars
 - `LazyVStack(pinnedViews: .sectionHeaders)` for data grids with sticky headers
 - `NotificationCenter` for toolbar-to-TabView-child communication (TabView swallows child toolbars on visionOS)
-- `#if canImport(FoundationModels)` gates for AI features
+- availability gates keep Foundation Models features off the visionOS 26 runtime path
 - `simpleQuery` routing for MySQL utility commands (USE, SET, SHOW, DDL)
 
 ### Database Layer
 
-`DatabaseProtocol` in GlassDBKit defines the engine interface. `MySQLAdapter` implements it using mysql-nio from the Vapor ecosystem. SSH tunneling runs through Citadel's DirectTCPIP channel forwarding. The protocol is designed for multi-engine support -- PostgreSQL adapter slots in without touching existing code.
+`DatabaseProtocol` in GlassDBKit defines capability-based engine interfaces. MySQL uses mysql-nio, PostgreSQL uses postgres-nio, and SQLite uses the system SQLite library with a managed private copy of imported files. SSH tunneling runs through Citadel's DirectTCPIP channel forwarding for network engines.
 
 ### Security
 
-`GlasSecretStore` provides `SecureBytes` and `SSHKeyKeychainStore` APIs for Keychain operations. SSH keys and database passwords never touch UserDefaults. Shared Keychain access group enables cross-app credential sharing with glas.sh.
+`GlasSecretStore` provides `SecureBytes` and Keychain-backed credential, SSH-key, and host-trust APIs. SSH private keys and database passwords never touch UserDefaults. The shared Keychain access group enables eligible credentials to be shared with glas.sh on the same device. Cross-device synchronization is planned for eligible exportable secrets; Secure Enclave and user-presence-protected material remains device-bound.
 
 ---
 
@@ -192,27 +172,11 @@ Packages/
 
 The full roadmap tracks feature parity against DBeaver CE, TablePlus, and DataGrip. See [parity release plan](memory-bank/releases/parity/release.md) for details.
 
-### Next Up -- P1: Core Parity
-- SQL autocomplete (tables, columns, keywords)
-- Query history (persisted, searchable)
-- Multiple query tabs
-- Inline data editing (TablePlus staging model in the grid)
-- Data filtering and sorting
-- JSON and SQL INSERT export formats
-- View support in navigator
-
-### Later -- P2: Power User
+### Next Up -- Power User
 - Table creation and ALTER TABLE GUI
 - Stored procedures and triggers
-- Transaction controls (commit/rollback/auto-commit)
-- Data import (CSV, JSON, SQL)
-- Saved queries and bookmarks
-
-### Later -- P3: Multi-Engine + Multiplatform
-- PostgreSQL engine via postgres-nio
-- iPad and Mac targets (View modifier extensions, no #if os in views)
-- iCloud Keychain integration (Face ID to connect)
-- SQLite support
+- View support in the navigator
+- Rich stored procedure/function viewers
 
 ### Later -- P4: Advanced
 - ER diagram visualization (3D spatial on visionOS)
@@ -233,7 +197,7 @@ The full roadmap tracks feature parity against DBeaver CE, TablePlus, and DataGr
 - Glass-first spatial UI patterns
 - Foundation Models AI integration
 
-If you import an SSH key in glas.sh, it is immediately available in glassdb's SSH tunnel configuration.
+An eligible exportable SSH key imported in glas.sh is available to glassdb on the same device. Secure Enclave and user-presence-protected keys require per-device provisioning; cross-device synchronization for eligible credentials remains tracked work.
 
 ---
 
@@ -242,10 +206,10 @@ If you import an SSH key in glas.sh, it is immediately available in glassdb's SS
 If you find glassdb useful, consider supporting development:
 
 - **[Sponsor on GitHub](https://github.com/sponsors/msitarzewski)** -- recurring or one-time
-- **Buy on the App Store** when it ships -- $10 one-time purchase
+- **Buy on the App Store** when it ships -- planned $10 one-time purchase
 - **Star the repo** -- helps visibility
 - **File issues** -- bug reports and feature requests welcome
-- **Contribute** -- PRs welcome, especially for PostgreSQL adapter work
+- **Contribute** -- PRs welcome, especially for query streaming, engine metadata, accessibility, and power-user workflows
 
 ---
 
@@ -253,19 +217,21 @@ If you find glassdb useful, consider supporting development:
 
 | Channel | Price |
 |---------|-------|
-| App Store | $10 one-time purchase |
+| App Store | Planned $10 one-time purchase |
 | GitHub | Free -- clone and build it yourself |
 
 ---
 
 ## Known Limitations
 
-- MySQL only (PostgreSQL planned for P3)
+- The shipping application is Vision Pro/visionOS only; GlassDBKit also contains PostgreSQL and SQLite adapters.
+- Network-engine cancellation is abortive: it closes the transport, terminates the query, and marks the session disconnected. PostgreSQL complete DDL reconstruction and table statistics remain capability-gated as unavailable.
+- SQLite imports a private managed copy so the original file remains unchanged.
 - `.inspector()` is unavailable on visionOS -- record editor uses `.sheet()` instead
 - `.smartQuotesDisabled()` is unavailable on visionOS -- uses `.keyboardType(.asciiCapable)`
-- Secure Enclave keys are device-bound and cannot be transferred
-- Foundation Models AI requires visionOS 26 on hardware (not available in Simulator)
-- GlasSecretStore must be closed in other Xcode projects before building
+- Imported P256 material may be Secure Enclave-wrapped; true non-exportable hardware signing keys remain device-bound and glas.sh-only
+- Foundation Models AI requires visionOS 27-compatible hardware and an available on-device model; core database workflows remain available on visionOS 26.
+- An observed Xcode local-package conflict may require closing another workspace that has GlasSecretStore open
 
 ## Built With
 

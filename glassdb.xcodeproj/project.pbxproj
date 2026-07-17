@@ -35,6 +35,16 @@
 		F94F8A1208F54281AC20044A /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71AA2A7B03B84E35AED9D604 /* Logger.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		D0DB0000000000000000000A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 60A05457F3744C3190CD5238 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B994B64E74CA47298534AEF3;
+			remoteInfo = glassdb;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		3B4C5D6E7F8A9B0C1D2E3F4A /* AIAssistant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIAssistant.swift; sourceTree = "<group>"; };
 		02EDAE92FBA4446990FFA07F /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
@@ -55,6 +65,7 @@
 
 		AE1A61DE012A4FE1BF43783B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		C0149C38F9584EDF8F43B6A9 /* glassdb.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glassdb.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D0DB00000000000000000001 /* glassdbTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glassdbTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C80284FE2C784ED1A35C853D /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		CBBC442DB6AB4D709CB10272 /* DatabaseSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseSessionManager.swift; sourceTree = "<group>"; };
 		DF6C04803014428EA95F2A77 /* SchemaBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaBrowserView.swift; sourceTree = "<group>"; };
@@ -62,6 +73,14 @@
 		F06AA08C663E426587B3B46C /* ResultsGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultsGridView.swift; sourceTree = "<group>"; };
 		F4FCE3E66A4A493E87AB6CF1 /* KeychainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		D0DB00000000000000000002 /* glassdbTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = glassdbTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		ADA2B3566B6941DB91660EC0 /* Frameworks */ = {
@@ -73,6 +92,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D0DB00000000000000000008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -80,6 +106,7 @@
 			isa = PBXGroup;
 			children = (
 				B508EA9569D04CB4A7967F65 /* glassdb */,
+				D0DB00000000000000000002 /* glassdbTests */,
 				E8921312CAD44E5488E3CCB6 /* Packages */,
 				9A75A586B2504699B8C19A5C /* Products */,
 			);
@@ -89,6 +116,7 @@
 			isa = PBXGroup;
 			children = (
 				C0149C38F9584EDF8F43B6A9 /* glassdb.app */,
+				D0DB00000000000000000001 /* glassdbTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -155,6 +183,29 @@
 			productReference = C0149C38F9584EDF8F43B6A9 /* glassdb.app */;
 			productType = "com.apple.product-type.application";
 		};
+		D0DB00000000000000000003 /* glassdbTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D0DB00000000000000000004 /* Build configuration list for PBXNativeTarget "glassdbTests" */;
+			buildPhases = (
+				D0DB00000000000000000007 /* Sources */,
+				D0DB00000000000000000008 /* Frameworks */,
+				D0DB00000000000000000009 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D0DB0000000000000000000B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D0DB00000000000000000002 /* glassdbTests */,
+			);
+			name = glassdbTests;
+			packageProductDependencies = (
+			);
+			productName = glassdbTests;
+			productReference = D0DB00000000000000000001 /* glassdbTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -163,6 +214,12 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					D0DB00000000000000000003 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = B994B64E74CA47298534AEF3;
+					};
+				};
 			};
 			buildConfigurationList = 902F2C99CA384D8E8E964562 /* Build configuration list for PBXProject "glassdb" */;
 			developmentRegion = en;
@@ -182,6 +239,7 @@
 			projectRoot = "";
 			targets = (
 				B994B64E74CA47298534AEF3 /* glassdb */,
+				D0DB00000000000000000003 /* glassdbTests */,
 			);
 		};
 /* End PBXProject section */
@@ -192,6 +250,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				3B64A03BF9CD4108BE9A5DEC /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0DB00000000000000000009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -228,7 +293,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D0DB00000000000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		D0DB0000000000000000000B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B994B64E74CA47298534AEF3 /* glassdb */;
+			targetProxy = D0DB0000000000000000000A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1380AF6473F444FFA572702E /* Release */ = {
@@ -279,6 +359,7 @@
 		35E3555780EE46058CBBBEA5 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = glassdb/glassdb.entitlements;
@@ -363,6 +444,7 @@
 		F2ED1119C6BD4953AAFE755E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = glassdb/glassdb.entitlements;
@@ -391,6 +473,52 @@
 			};
 			name = Debug;
 		};
+		D0DB00000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.glassdb.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/glassdb.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/glassdb";
+				XROS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		D0DB00000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.glassdb.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/glassdb.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/glassdb";
+				XROS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -408,6 +536,15 @@
 			buildConfigurations = (
 				80AA96C8BD8F4C2890C0BFA8 /* Debug */,
 				1380AF6473F444FFA572702E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D0DB00000000000000000004 /* Build configuration list for PBXNativeTarget "glassdbTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0DB00000000000000000005 /* Debug */,
+				D0DB00000000000000000006 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

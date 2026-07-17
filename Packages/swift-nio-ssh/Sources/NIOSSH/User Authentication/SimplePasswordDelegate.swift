@@ -28,9 +28,9 @@ extension SimplePasswordDelegate: NIOSSHClientUserAuthenticationDelegate {
         if let authRequest = self.authRequest, availableMethods.contains(.password) {
             // We need to nil out our copy because any future calls must return nil
             self.authRequest = nil
-            nextChallengePromise.succeed(authRequest)
+            nextChallengePromise.assumeIsolated().succeed(authRequest)
         } else {
-            nextChallengePromise.succeed(nil)
+            nextChallengePromise.assumeIsolated().succeed(nil)
         }
     }
 }

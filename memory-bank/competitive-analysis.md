@@ -172,24 +172,24 @@ Connection (color-coded by type)
 
 | # | Feature | Status |
 |---|---------|--------|
-| 11 | Inline data editing (TablePlus staging model) | Not started |
+| 11 | Inline data editing (TablePlus staging model) | Implemented; release validation in progress |
 | 12 | Index viewer | Done (v1.0) |
 | 13 | Foreign key viewer | Done (v1.0) |
-| 14 | SQL autocomplete (tables, columns, keywords) | Not started |
-| 15 | Multiple query tabs | Not started |
-| 16 | JSON/SQL export formats | Not started |
+| 14 | SQL autocomplete (tables, columns, keywords) | Implemented; release validation in progress |
+| 15 | Multiple query tabs | Implemented; release validation in progress |
+| 16 | JSON/SQL export formats | Implemented; release validation in progress |
 | 17 | View support in navigator | Not started |
-| 18 | Query history (persisted) | Not started |
+| 18 | Query history (persisted) | Implemented; release validation in progress |
 | 19 | Table creation GUI | Not started |
 | 20 | Stored procedure/function viewer | Not started |
-| 21 | iPad + Mac targets | Planned |
-| 22 | iCloud Keychain integration | Planned |
+| 21 | Native iPad + Mac targets | Deferred; visionOS-only release |
+| 22 | Eligible-secret cross-device synchronization | C3 requirement; not implemented |
 
 ### Nice-to-Have v2.0 (differentiators)
 
 | # | Feature | Status |
 |---|---------|--------|
-| 23 | Data import (CSV, JSON, SQL) | Not started |
+| 23 | Data import (CSV, JSON, SQL) | Implemented with limits; release validation in progress |
 | 24 | ER diagram (visual relationships) | Not started |
 | 25 | Schema comparison (diff databases) | Not started |
 | 26 | Explain plan visualization | Not started |

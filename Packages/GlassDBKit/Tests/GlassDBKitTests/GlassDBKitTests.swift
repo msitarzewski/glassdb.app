@@ -3,10 +3,18 @@
 //  GlassDBKit
 //
 
+import Foundation
+import MySQLNIO
 import Testing
 @testable import GlassDBKit
 
 @Suite struct QueryResultTests {
+    private func privateKeyEnvelope(type: String, body: String) -> String {
+        let begin = ["-----", "BEGIN \(type) PRIVATE KEY", "-----"].joined()
+        let end = ["-----", "END \(type) PRIVATE KEY", "-----"].joined()
+        return "\(begin)\n\(body)\n\(end)"
+    }
+
     @Test func queryResultCreation() {
         let result = QueryResult(
             query: "SELECT 1",
@@ -14,19 +22,325 @@ import Testing
                 ColumnInfo(name: "1", type: "INT")
             ],
             rows: [[.int(1)]],
+            affectedRows: 1,
+            lastInsertID: 42,
+            warningCount: 0,
             executionTime: 0.001
         )
         #expect(result.rowCount == 1)
         #expect(result.columnCount == 1)
         #expect(!result.isError)
+        #expect(result.affectedRows == 1)
+        #expect(result.lastInsertID == 42)
+        #expect(result.warningCount == 0)
+        #expect(result.appliedRowLimit == nil)
+        #expect(!result.isTruncated)
+    }
+
+    @Test func queryResultTruncationMetadataIsExplicit() {
+        let result = QueryResult(
+            query: "SELECT * FROM events",
+            rows: [[.int(1)], [.int(2)]],
+            executionTime: 0.01,
+            appliedRowLimit: 2,
+            isTruncated: true
+        )
+
+        #expect(result.rowCount == 2)
+        #expect(result.appliedRowLimit == 2)
+        #expect(result.isTruncated)
     }
 
     @Test func databaseValueDisplay() {
         #expect(DatabaseValue.string("hello").displayString == "hello")
         #expect(DatabaseValue.int(42).displayString == "42")
+        #expect(DatabaseValue.uint(UInt64.max).displayString == String(UInt64.max))
+        #expect(DatabaseValue.decimal("1234567890.0000000001").displayString == "1234567890.0000000001")
+        #expect(DatabaseValue.json("{\"ok\":true}").displayString == "{\"ok\":true}")
+        #expect(DatabaseValue.temporal(.init(rawValue: "2026-07-17 09:30:00.123456", kind: .timestamp)).displayString == "2026-07-17 09:30:00.123456")
+        #expect(DatabaseValue.bit(Data([0b1010_0101])).displayString == "10100101")
+        #expect(DatabaseValue.data(Data([0, 1, 2])).exportString == "AAEC")
         #expect(DatabaseValue.null.displayString == "NULL")
         #expect(DatabaseValue.null.isNull)
         #expect(!DatabaseValue.string("test").isNull)
+    }
+
+    @Test func mysqlParameterBindingPreservesBoundaries() throws {
+        let signed = try MySQLDatabaseConnection.mysqlData(for: .int(Int64.min))
+        #expect(signed.int64 == Int64.min)
+
+        let unsigned = try MySQLDatabaseConnection.mysqlData(for: .uint(UInt64.max))
+        #expect(unsigned.isUnsigned)
+        #expect(unsigned.uint64 == UInt64.max)
+
+        let binary = try MySQLDatabaseConnection.mysqlData(for: .data(Data([0, 255, 127])))
+        #expect(binary.buffer?.readableBytes == 3)
+
+        let null = try MySQLDatabaseConnection.mysqlData(for: .null)
+        #expect(null.buffer == nil)
+
+        #expect(throws: DatabaseError.self) {
+            try MySQLDatabaseConnection.mysqlData(for: .decimal("not-a-number"))
+        }
+        #expect(throws: DatabaseError.self) {
+            try MySQLDatabaseConnection.mysqlData(for: .json("{invalid"))
+        }
+    }
+
+    @Test func mysqlBinaryDecodingPreservesTypedText() throws {
+        let exactDecimal = "12345678901234567890.000000000123456789"
+        let decimalData = try MySQLDatabaseConnection.mysqlData(for: .decimal(exactDecimal))
+        #expect(
+            MySQLDatabaseConnection.decodeValue(
+                decimalData,
+                columnLength: 40,
+                isBinaryCharacterSet: false
+            ) == .decimal(exactDecimal)
+        )
+
+        let json = "{\"big\":18446744073709551615}"
+        let jsonData = try MySQLDatabaseConnection.mysqlData(for: .json(json))
+        #expect(
+            MySQLDatabaseConnection.decodeValue(
+                jsonData,
+                columnLength: 32,
+                isBinaryCharacterSet: false
+            ) == .json(json)
+        )
+
+        let binaryData = try MySQLDatabaseConnection.mysqlData(for: .data(Data([0, 255])))
+        #expect(
+            MySQLDatabaseConnection.decodeValue(
+                binaryData,
+                columnLength: 2,
+                isBinaryCharacterSet: true
+            ) == .data(Data([0, 255]))
+        )
+    }
+
+    @Test func transportPoliciesAreExplicit() {
+        #expect(!DatabaseTLSPolicy.disabled.isRequired)
+        #expect(DatabaseTLSPolicy.requiredSystemTrust.isRequired)
+        #expect(DatabaseTLSPolicy.requiredSystemTrustForHost("db.example.com").isRequired)
+        #expect(DatabaseTLSPolicy.requiredCertificates([], serverName: nil).isRequired)
+        #expect(SSHAlgorithmPolicy.modernOnly == .modernOnly)
+    }
+
+    @Test func mysqlTLSGreetingPreflightFailsClosed() {
+        var greeting = [UInt8(10)] + Array("8.0.40".utf8) + [0]
+        greeting += [1, 0, 0, 0]
+        greeting += Array(repeating: 0, count: 8)
+        greeting += [0]
+
+        var withoutTLS = greeting
+        withoutTLS += [0, 0]
+        #expect(!MySQLTLSCapabilityProbe.serverSupportsTLS(in: withoutTLS))
+
+        var withTLS = greeting
+        withTLS += [0x00, 0x08]
+        #expect(MySQLTLSCapabilityProbe.serverSupportsTLS(in: withTLS))
+        #expect(!MySQLTLSCapabilityProbe.serverSupportsTLS(in: []))
+    }
+
+    @Test func requiredTLSRejectsMissingAndMalformedTrustRootsBeforeNetworkUse() async {
+        let policies: [DatabaseTLSPolicy] = [
+            .requiredCertificates([], serverName: nil),
+            .requiredCertificates([
+                .init(bytes: Data("not a certificate".utf8), format: .pem)
+            ], serverName: "db.example.com"),
+            .requiredCertificates([
+                .init(bytes: Data([0, 1, 2, 3]), format: .der)
+            ], serverName: "db.example.com"),
+        ]
+
+        for policy in policies {
+            await #expect(throws: DatabaseError.self) {
+                _ = try await MySQLEngine().connect(
+                    host: "127.0.0.1",
+                    port: 1,
+                    username: "user",
+                    password: "password",
+                    database: nil,
+                    tlsPolicy: policy
+                )
+            }
+            await #expect(throws: DatabaseError.self) {
+                _ = try await PostgreSQLEngine().connect(
+                    host: "127.0.0.1",
+                    port: 1,
+                    username: "user",
+                    password: "password",
+                    database: nil,
+                    tlsPolicy: policy
+                )
+            }
+        }
+    }
+
+    @Test func sshTrustPolicyRejectsUnknownAndRotatedKeys() throws {
+        let algorithm = Data("ssh-ed25519".utf8)
+        var wireKey = Data([0, 0, 0, UInt8(algorithm.count)])
+        wireKey.append(algorithm)
+        wireKey.append(Data([1, 2, 3, 4]))
+
+        let unknown = try #require(SSHHostKeyTrustPolicy.challenge(
+            for: wireKey,
+            host: " DB.EXAMPLE.COM ",
+            port: 22,
+            trustedKeys: []
+        ))
+        #expect(unknown.reason == .unknown)
+        #expect(unknown.host == "db.example.com")
+        #expect(unknown.algorithm == "ssh-ed25519")
+        #expect(unknown.fingerprintSHA256.hasPrefix("SHA256:"))
+
+        let changed = try #require(SSHHostKeyTrustPolicy.challenge(
+            for: wireKey,
+            host: "db.example.com",
+            port: 22,
+            trustedKeys: [Data([9, 9, 9])]
+        ))
+        #expect(changed.reason == .changed)
+        #expect(SSHHostKeyTrustPolicy.challenge(
+            for: wireKey,
+            host: "db.example.com",
+            port: 22,
+            trustedKeys: [wireKey]
+        ) == nil)
+    }
+
+    @Test func sshConfigurationRejectsMalformedCredentialsAndEndpointsBeforeNetworkUse() async {
+        let invalidConfigurations = [
+            SSHTunnelConfig(sshHost: "", sshUsername: "user", sshPassword: "password"),
+            SSHTunnelConfig(sshHost: "host", sshPort: 0, sshUsername: "user", sshPassword: "password"),
+            SSHTunnelConfig(sshHost: "host", sshUsername: "", sshPassword: "password"),
+            SSHTunnelConfig(sshHost: "host", sshUsername: "user", sshPassword: "password", remoteHost: ""),
+            SSHTunnelConfig(sshHost: "host", sshUsername: "user", sshPassword: "password", remotePort: 65_536),
+        ]
+        for config in invalidConfigurations {
+            await #expect(throws: SSHTunnelError.self) {
+                _ = try await SSHTunnelManager().establish(config: config)
+            }
+        }
+        await #expect(throws: SSHTunnelError.self) {
+            _ = try await SSHTunnelManager().establish(config: SSHTunnelConfig(
+                sshHost: "host",
+                sshUsername: "user",
+                sshPassword: ""
+            ))
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await SSHTunnelManager().establish(config: SSHTunnelConfig(
+                sshHost: "host",
+                sshUsername: "user",
+                sshPrivateKey: "SECURE_ENCLAVE_P256:not-base64"
+            ))
+        }
+    }
+
+    @Test func openSSHPrivateKeyDetectionRoutesRSAAndEd25519WithoutTextGuessing() throws {
+        func uint32(_ value: Int) -> [UInt8] {
+            [
+                UInt8((value >> 24) & 0xff),
+                UInt8((value >> 16) & 0xff),
+                UInt8((value >> 8) & 0xff),
+                UInt8(value & 0xff),
+            ]
+        }
+        func sshString(_ bytes: [UInt8]) -> [UInt8] {
+            uint32(bytes.count) + bytes
+        }
+        func openSSHEnvelope(publicKeyType: String) -> String {
+            var payload = Array("openssh-key-v1\0".utf8)
+            payload += sshString(Array("none".utf8))
+            payload += sshString(Array("none".utf8))
+            payload += sshString([])
+            payload += uint32(1)
+            payload += sshString(sshString(Array(publicKeyType.utf8)))
+            return privateKeyEnvelope(
+                type: "OPENSSH",
+                body: Data(payload).base64EncodedString()
+            )
+        }
+
+        #expect(try SSHTunnelManager.detectPrivateKeyAlgorithm(
+            from: openSSHEnvelope(publicKeyType: "ssh-rsa")
+        ) == .rsa)
+        #expect(try SSHTunnelManager.detectPrivateKeyAlgorithm(
+            from: openSSHEnvelope(publicKeyType: "ssh-ed25519")
+        ) == .ed25519)
+    }
+
+    @Test func malformedAndLegacyPrivateKeysReturnActionableTunnelErrors() {
+        #expect(throws: SSHTunnelError.self) {
+            _ = try SSHTunnelManager.authenticationMethod(
+                username: "user",
+                privateKey: privateKeyEnvelope(type: "OPENSSH", body: "not-base64"),
+                passphrase: "unique-test-passphrase"
+            )
+        }
+
+        do {
+            _ = try SSHTunnelManager.detectPrivateKeyAlgorithm(
+                from: privateKeyEnvelope(type: "RSA", body: "unsupported-pkcs1")
+            )
+            Issue.record("Expected legacy PEM rejection")
+        } catch {
+            #expect(error.localizedDescription.contains("OpenSSH format"))
+            #expect(!error.localizedDescription.contains("unsupported-pkcs1"))
+        }
+    }
+
+    @Test func CRLFEd25519PrivateKeyParsesWithoutNetworkUse() throws {
+        let body = """
+        b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+        QyNTUxOQAAACAi19yxbgtZH0Y26GZGr2vyVErGFskeOY9HwHLxYbmkAwAAAKAPNV8QDzVf
+        EAAAAAtzc2gtZWQyNTUxOQAAACAi19yxbgtZH0Y26GZGr2vyVErGFskeOY9HwHLxYbmkAw
+        AAAED3UDHB29MB7vQDpb7PGFjEMAYT9FzpnadYWrCPSUma5SLX3LFuC1kfRjboZkava/JU
+        SsYWyR45j0fAcvFhuaQDAAAAHGphYXBASmFhcHMtTWFjQm9vay1Qcm8ubG9jYWwB
+        """
+        let key = privateKeyEnvelope(type: "OPENSSH", body: body)
+            .replacingOccurrences(of: "\n", with: "\r\n")
+
+        _ = try SSHTunnelManager.authenticationMethod(
+            username: "user",
+            privateKey: key,
+            passphrase: nil
+        )
+    }
+
+    @Test func identifiersAreQuotedAsOneComponent() {
+        let connection = TestConnection()
+        #expect(connection.quotedIdentifier("users") == "`users`")
+        #expect(connection.quotedIdentifier("db`name") == "`db``name`")
+        #expect(connection.quotedIdentifier("db.users") == "`db.users`")
+    }
+
+    @Test func engineCapabilitiesAreExplicit() async throws {
+        #expect(PostgreSQLEngine().capabilities.contains(.queryTimeout))
+        #expect(PostgreSQLEngine().capabilities.contains(.cancellation))
+        #expect(SQLiteEngine().capabilities.contains(.cancellation))
+        #expect(!SQLiteEngine().capabilities.contains(.transportTLS))
+        #expect(MySQLEngine().capabilities.contains(.transportTLS))
+
+        let sqlite = try await SQLiteEngine().connect(path: ":memory:")
+        #expect(sqlite.quotedIdentifier("table\"name") == "\"table\"\"name\"")
+        try await sqlite.close()
+    }
+
+    @Test func postgresParameterBoundariesAreExplicit() throws {
+        let signed = try PostgreSQLDatabaseConnection.postgresData(for: .int(Int64.min))
+        #expect(signed.int64 == Int64.min)
+        let numeric = try PostgreSQLDatabaseConnection.postgresData(
+            for: .decimal("12345678901234567890.000000000123456789")
+        )
+        #expect(numeric.numeric?.string == "12345678901234567890.000000000123456789")
+        #expect(throws: DatabaseError.self) {
+            try PostgreSQLDatabaseConnection.postgresData(for: .uint(UInt64.max))
+        }
+        #expect(throws: DatabaseError.self) {
+            try PostgreSQLDatabaseConnection.postgresData(for: .json("{invalid"))
+        }
     }
 
     @Test func errorResult() {
@@ -38,4 +352,319 @@ import Testing
         #expect(result.isError)
         #expect(result.rowCount == 0)
     }
+}
+
+@Suite struct SQLiteAdapterTests {
+    @Test func bindingsPreserveNULAndRejectSmuggledOrMismatchedStatements() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        defer { Task { try? await connection.close() } }
+        _ = try await connection.execute("CREATE TABLE values_table (payload TEXT)", parameters: [])
+
+        let adversarialValue = "prefix\0'; DROP TABLE values_table; -- suffix"
+        _ = try await connection.execute(
+            "INSERT INTO values_table (payload) VALUES (?)",
+            parameters: [.string(adversarialValue)]
+        )
+        let result = try await connection.execute(
+            "SELECT payload FROM values_table WHERE payload = ?",
+            parameters: [.string(adversarialValue)]
+        )
+        #expect(result.rows == [[.string(adversarialValue)]])
+
+        await #expect(throws: DatabaseError.self) {
+            _ = try await connection.execute("SELECT ?", parameters: [])
+        }
+        await #expect(throws: DatabaseError.self) {
+            _ = try await connection.execute("SELECT 1", parameters: [.int(1)])
+        }
+        await #expect(throws: DatabaseError.self) {
+            _ = try await connection.execute("SELECT 1; DROP TABLE values_table", parameters: [])
+        }
+        await #expect(throws: DatabaseError.self) {
+            _ = try await connection.execute("SELECT 1\0; DROP TABLE values_table", parameters: [])
+        }
+        #expect(try await connection.rowCount(table: "values_table", database: "main") == 1)
+        try await connection.close()
+    }
+
+    @Test func realFileRoundTripMetadataTransactionsTimeoutAndCancellation() async throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("glassdb-sqlite-\(UUID().uuidString).sqlite")
+            .path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let connection = try await SQLiteEngine().connect(path: path)
+        _ = try await connection.execute(
+            """
+            CREATE TABLE records (
+                id INTEGER PRIMARY KEY,
+                payload TEXT NOT NULL,
+                amount REAL,
+                bytes BLOB
+            )
+            """
+        )
+        let injection = "Robert'); DROP TABLE records;--"
+        let insert = try await connection.execute(
+            "INSERT INTO records (payload, amount, bytes) VALUES (?, ?, ?)",
+            parameters: [.string(injection), .double(3.5), .data(Data([0, 255]))]
+        )
+        #expect(insert.affectedRows == 1)
+        #expect(insert.lastInsertID == 1)
+
+        let selected = try await connection.execute(
+            "SELECT payload, amount, bytes FROM records WHERE payload = ?",
+            parameters: [.string(injection)]
+        )
+        #expect(selected.rows == [[.string(injection), .double(3.5), .data(Data([0, 255]))]])
+
+        try await connection.beginTransaction()
+        _ = try await connection.execute(
+            "INSERT INTO records (payload) VALUES (?)",
+            parameters: [.string("rolled back")]
+        )
+        try await connection.rollbackTransaction()
+        #expect(try await connection.rowCount(table: "records", database: "main") == 1)
+
+        #expect(try await connection.databases().contains("main"))
+        #expect(try await connection.tables(in: "main").contains("records"))
+        #expect(try await connection.columns(in: "records", database: "main").count == 4)
+        #expect(try await connection.showCreateTable("records", database: "main").contains("CREATE TABLE"))
+        #expect(!(try await connection.serverVersion()).isEmpty)
+        #expect(!(try await connection.explain("SELECT * FROM records", parameters: [])).rows.isEmpty)
+
+        await #expect(throws: DatabaseError.self) {
+            try await connection.execute(
+                """
+                WITH RECURSIVE counter(value) AS (
+                    VALUES(0) UNION ALL SELECT value + 1 FROM counter WHERE value < 1000000000
+                ) SELECT sum(value) FROM counter
+                """,
+                parameters: [],
+                timeout: .milliseconds(1)
+            )
+        }
+
+        let longQuery = Task {
+            try await connection.execute(
+                """
+                WITH RECURSIVE counter(value) AS (
+                    VALUES(0) UNION ALL SELECT value + 1 FROM counter WHERE value < 1000000000
+                ) SELECT sum(value) FROM counter
+                """
+            )
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        try await connection.cancelCurrentQuery()
+        await #expect(throws: CancellationError.self) { try await longQuery.value }
+
+        await #expect(throws: DatabaseError.self) {
+            try await SQLiteEngine().connect(
+                host: path,
+                port: 0,
+                username: "",
+                password: "",
+                database: nil,
+                tlsPolicy: .requiredSystemTrust
+            )
+        }
+        try await connection.close()
+    }
+}
+
+@Suite struct LiveEngineIntegrationTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["GLASSDB_MYSQL_TEST_PASSWORD"] != nil))
+    func mysql8LiveRoundTrip() async throws {
+        let password = try #require(ProcessInfo.processInfo.environment["GLASSDB_MYSQL_TEST_PASSWORD"])
+        let engine = MySQLEngine()
+        let connection = try await engine.connect(
+            host: "127.0.0.1",
+            port: 33_306,
+            username: "glassdb_test",
+            password: password,
+            database: "glassdb_test",
+            tlsPolicy: .disabled
+        )
+        let table = "glassdb_live_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let quoted = connection.quotedIdentifier(table)
+        _ = try await connection.execute(
+            "CREATE TABLE \(quoted) (id BIGINT PRIMARY KEY AUTO_INCREMENT, payload TEXT NOT NULL, amount DECIMAL(40,18), bytes BLOB, flag BOOLEAN)"
+        )
+        let injection = "x'); DROP TABLE \(table);--"
+        let insert = try await connection.execute(
+            "INSERT INTO \(quoted) (payload, amount, bytes, flag) VALUES (?, ?, ?, ?)",
+            parameters: [
+                .string(injection),
+                .decimal("12345678901234567890.000000000123456789"),
+                .data(Data([0, 255])),
+                .bool(true),
+            ]
+        )
+        #expect(insert.affectedRows == 1)
+        #expect(insert.lastInsertID != nil)
+        let selected = try await connection.execute(
+            "SELECT payload, amount, bytes, flag FROM \(quoted) WHERE payload = ?",
+            parameters: [.string(injection)]
+        )
+        #expect(selected.rows.first?[0] == .string(injection))
+        #expect(selected.rows.first?[1] == .decimal("12345678901234567890.000000000123456789"))
+        #expect(selected.rows.first?[2] == .data(Data([0, 255])))
+
+        try await connection.beginTransaction()
+        _ = try await connection.execute(
+            "INSERT INTO \(quoted) (payload) VALUES (?)",
+            parameters: [.string("rolled back")]
+        )
+        try await connection.rollbackTransaction()
+        #expect(try await connection.rowCount(table: table, database: "glassdb_test") == 1)
+        #expect(try await connection.tables(in: "glassdb_test").contains(table))
+        #expect(!(try await connection.columns(in: table, database: "glassdb_test")).isEmpty)
+        #expect(try await connection.showCreateTable(table, database: "glassdb_test").contains("CREATE TABLE"))
+        #expect(!(try await connection.serverVersion()).isEmpty)
+        #expect(!(try await connection.explain("SELECT * FROM \(quoted)", parameters: [])).rows.isEmpty)
+        _ = try await connection.execute("DROP TABLE \(quoted)")
+
+        let timeoutStart = ContinuousClock.now
+        await #expect(throws: DatabaseError.self) {
+            try await connection.execute("SELECT SLEEP(5)", parameters: [], timeout: .milliseconds(25))
+        }
+        #expect(ContinuousClock.now - timeoutStart < .seconds(2))
+        #expect(!(await connection.isConnected))
+
+        await #expect(throws: Error.self) {
+            let tlsConnection = try await engine.connect(
+                host: "127.0.0.1",
+                port: 33_306,
+                username: "glassdb_test",
+                password: password,
+                database: "glassdb_test",
+                tlsPolicy: .requiredSystemTrust
+            )
+            try await tlsConnection.close()
+        }
+
+        if let caPath = ProcessInfo.processInfo.environment["GLASSDB_MYSQL_TLS_CA_PATH"],
+           let serverName = ProcessInfo.processInfo.environment["GLASSDB_MYSQL_TLS_SERVER_NAME"] {
+            let ca = try Data(contentsOf: URL(fileURLWithPath: caPath))
+            let tlsConnection = try await engine.connect(
+                host: "127.0.0.1",
+                port: 33_306,
+                username: "glassdb_test",
+                password: password,
+                database: "glassdb_test",
+                tlsPolicy: .requiredCertificates(
+                    [DatabaseTLSCertificate(bytes: ca, format: .pem)],
+                    serverName: serverName
+                )
+            )
+            #expect(await tlsConnection.isConnected)
+            try await tlsConnection.close()
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["GLASSDB_POSTGRES_TEST_PASSWORD"] != nil))
+    func postgres17LiveRoundTrip() async throws {
+        let password = try #require(ProcessInfo.processInfo.environment["GLASSDB_POSTGRES_TEST_PASSWORD"])
+        let engine = PostgreSQLEngine()
+        let connection = try await engine.connect(
+            host: "127.0.0.1",
+            port: 35_432,
+            username: "glassdb_test",
+            password: password,
+            database: "glassdb_test",
+            tlsPolicy: .disabled
+        )
+        let table = "glassdb_live_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())"
+        let quoted = connection.quotedIdentifier(table)
+        _ = try await connection.execute(
+            "CREATE TABLE \(quoted) (id BIGSERIAL PRIMARY KEY, payload TEXT NOT NULL, amount NUMERIC(40,18), bytes BYTEA, document JSONB, flag BOOLEAN)"
+        )
+        let injection = "x'); DROP TABLE \(table);--"
+        let insert = try await connection.execute(
+            "INSERT INTO \(quoted) (payload, amount, bytes, document, flag) VALUES ($1, $2, $3, $4, $5)",
+            parameters: [
+                .string(injection),
+                .decimal("12345678901234567890.000000000123456789"),
+                .data(Data([0, 255])),
+                .json("{\"safe\":true}"),
+                .bool(true),
+            ]
+        )
+        #expect(insert.affectedRows == 1)
+        let selected = try await connection.execute(
+            "SELECT payload, amount, bytes, document, flag FROM \(quoted) WHERE payload = $1",
+            parameters: [.string(injection)]
+        )
+        #expect(selected.rows.first?[0] == .string(injection))
+        #expect(selected.rows.first?[1] == .decimal("12345678901234567890.000000000123456789"))
+        #expect(selected.rows.first?[2] == .data(Data([0, 255])))
+        #expect(selected.rows.first?[3] == .json("{\"safe\": true}"))
+        #expect(selected.rows.first?[4] == .bool(true))
+
+        try await connection.beginTransaction()
+        _ = try await connection.execute(
+            "INSERT INTO \(quoted) (payload) VALUES ($1)",
+            parameters: [.string("rolled back")]
+        )
+        try await connection.rollbackTransaction()
+        #expect(try await connection.rowCount(table: table, database: "public") == 1)
+        #expect(try await connection.databases().contains("public"))
+        #expect(try await connection.tables(in: "public").contains(table))
+        #expect(!(try await connection.columns(in: table, database: "public")).isEmpty)
+        #expect(!(try await connection.serverVersion()).isEmpty)
+        #expect(!(try await connection.explain("SELECT * FROM \(quoted)", parameters: [])).rows.isEmpty)
+        await #expect(throws: DatabaseError.self) {
+            try await connection.execute(
+                "SELECT pg_sleep(1)",
+                parameters: [],
+                timeout: .milliseconds(10)
+            )
+        }
+        await #expect(throws: DatabaseError.self) {
+            try await connection.showCreateTable(table, database: "public")
+        }
+        _ = try await connection.execute("DROP TABLE \(quoted)")
+
+        let query = Task {
+            try await connection.execute("SELECT pg_sleep(5)", parameters: [])
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let cancellationStart = ContinuousClock.now
+        try await connection.cancelCurrentQuery()
+        await #expect(throws: Error.self) {
+            _ = try await query.value
+        }
+        #expect(ContinuousClock.now - cancellationStart < .seconds(2))
+        #expect(!(await connection.isConnected))
+
+        await #expect(throws: Error.self) {
+            let tlsConnection = try await engine.connect(
+                host: "127.0.0.1",
+                port: 35_432,
+                username: "glassdb_test",
+                password: password,
+                database: "glassdb_test",
+                tlsPolicy: .requiredSystemTrust
+            )
+            try await tlsConnection.close()
+        }
+    }
+}
+
+private struct TestConnection: DatabaseConnection {
+    var isConnected: Bool { get async { true } }
+
+    func execute(_ query: String, parameters: [DatabaseValue]) async throws -> QueryResult {
+        QueryResult(query: query, executionTime: 0)
+    }
+
+    func close() async throws {}
+    func databases() async throws -> [String] { [] }
+    func tables(in database: String) async throws -> [String] { [] }
+    func columns(in table: String, database: String) async throws -> [ColumnInfo] { [] }
+    func showCreateTable(_ table: String, database: String) async throws -> String { "" }
+    func indexes(in table: String, database: String) async throws -> [IndexInfo] { [] }
+    func foreignKeys(in table: String, database: String) async throws -> [ForeignKeyInfo] { [] }
+    func tableStatus(in database: String) async throws -> [TableStatus] { [] }
+    func rowCount(table: String, database: String) async throws -> Int { 0 }
 }

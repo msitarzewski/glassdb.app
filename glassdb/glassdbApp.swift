@@ -46,7 +46,6 @@ struct glassdbApp: App {
                     .environment(settingsManager)
             }
         }
-        .windowStyle(.plain)
         .defaultSize(width: 1000, height: 600)
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(.suppressed)
@@ -56,7 +55,6 @@ struct glassdbApp: App {
             SettingsView()
                 .environment(settingsManager)
         }
-        .windowStyle(.plain)
         .defaultSize(width: 700, height: 600)
         .defaultLaunchBehavior(.suppressed)
     }

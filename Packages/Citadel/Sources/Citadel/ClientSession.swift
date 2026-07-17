@@ -127,10 +127,14 @@ final class SSHClientSession: Sendable {
     let sshHandler: NIOLoopBoundBox<NIOSSHHandler>
     let inboundChannelHandler: SSHClientInboundChannelHandler
     
-    init(channel: Channel, inboundChannelHandler: SSHClientInboundChannelHandler, sshHandler: NIOSSHHandler) {
+    init(
+        channel: Channel,
+        inboundChannelHandler: SSHClientInboundChannelHandler,
+        sshHandler: NIOLoopBoundBox<NIOSSHHandler>
+    ) {
         self.channel = channel
         self.inboundChannelHandler = inboundChannelHandler
-        self.sshHandler = NIOLoopBoundBox(sshHandler, eventLoop: channel.eventLoop)
+        self.sshHandler = sshHandler
     }
     
     /// Creates a new SSH session on the given channel. This allows you to use an existing channel for the SSH session.
@@ -228,10 +232,13 @@ final class SSHClientSession: Sendable {
         return try await bootstrap.connect(host: settings.host, port: settings.port).flatMap { channel in
             channel.pipeline.handler(type: ClientHandshakeHandler.self).flatMap { handshakeHandler in
                 handshakeHandler.authenticated
-            }.flatMap {
-                channel.pipeline.handler(type: NIOSSHHandler.self)
-            }.map { sshHandler in
-                SSHClientSession(channel: channel, inboundChannelHandler: inboundChannelHandler, sshHandler: sshHandler)
+            }.flatMapThrowing {
+                let sshHandler = try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
+                return SSHClientSession(
+                    channel: channel,
+                    inboundChannelHandler: inboundChannelHandler,
+                    sshHandler: NIOLoopBoundBox(sshHandler, eventLoop: channel.eventLoop)
+                )
             }
         }.get()
     }

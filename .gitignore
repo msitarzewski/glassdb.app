@@ -15,7 +15,9 @@ build/
 # Swift Package Manager
 .build/
 .swiftpm/
-Package.resolved
+# Applications commit their workspace Package.resolved for reproducible builds.
+# Standalone package scratch lockfiles remain ignored by the explicit rules below.
+Packages/*/Package.resolved
 
 # macOS
 .DS_Store

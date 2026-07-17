@@ -15,7 +15,7 @@
 import NIOCore
 
 /// A namespace for SSH channel request events.
-public enum SSHChannelRequestEvent {
+public enum SSHChannelRequestEvent: Sendable {
     /// A request for the peer to allocate a pseudo-terminal.
     public struct PseudoTerminalRequest: Hashable, NIOSSHSendable {
         /// Whether a reply to this PTY request is desired.
@@ -123,7 +123,7 @@ public enum SSHChannelRequestEvent {
     }
 
     /// A request for this session to exec a command.
-    public struct ExecRequest: Hashable {
+    public struct ExecRequest: Hashable, Sendable {
         /// The command to exec.
         public var command: String
 
@@ -307,16 +307,16 @@ extension SSHChannelRequestEvent {
     /// Constructs a channel request event and wraps it up in an Any.
     ///
     /// This is usually used just prior to firing this into the pipeline.
-    static func fromMessage(_ message: SSHMessage.ChannelRequestMessage) -> Any? {
+    static func fromMessage(_ message: SSHMessage.ChannelRequestMessage) -> (any Sendable)? {
         switch message.type {
         case .env(let name, let value):
-            return EnvironmentRequest(wantReply: message.wantReply, name: name, value: value) as Any
+            return EnvironmentRequest(wantReply: message.wantReply, name: name, value: value)
         case .exec(let command):
-            return ExecRequest(command: command, wantReply: message.wantReply) as Any
+            return ExecRequest(command: command, wantReply: message.wantReply)
         case .exitStatus(let code):
-            return ExitStatus(exitStatus: code) as Any
+            return ExitStatus(exitStatus: code)
         case .exitSignal(let name, let dumpedCore, let errorMessage, let language):
-            return ExitSignal(signalName: name, errorMessage: errorMessage, language: language, dumpedCore: dumpedCore) as Any
+            return ExitSignal(signalName: name, errorMessage: errorMessage, language: language, dumpedCore: dumpedCore)
         case .ptyReq(let ptyReq):
             return PseudoTerminalRequest(wantReply: message.wantReply,
                                          term: ptyReq.termVariable,
@@ -326,16 +326,16 @@ extension SSHChannelRequestEvent {
                                          terminalPixelHeight: ptyReq.pixelHeight,
                                          terminalModes: ptyReq.terminalModes)
         case .shell:
-            return ShellRequest(wantReply: message.wantReply) as Any
+            return ShellRequest(wantReply: message.wantReply)
         case .subsystem(let subsystem):
-            return SubsystemRequest(subsystem: subsystem, wantReply: message.wantReply) as Any
+            return SubsystemRequest(subsystem: subsystem, wantReply: message.wantReply)
         case .windowChange(let windowChange):
             return WindowChangeRequest(terminalCharacterWidth: windowChange.characterWidth,
                                        terminalRowHeight: windowChange.rowHeight,
                                        terminalPixelWidth: windowChange.pixelWidth,
                                        terminalPixelHeight: windowChange.pixelHeight)
         case .xonXoff(let clientCanDo):
-            return LocalFlowControlRequest(clientCanDo: clientCanDo) as Any
+            return LocalFlowControlRequest(clientCanDo: clientCanDo)
         case .signal(let signalName):
             return SignalRequest(signal: signalName)
         case .unknown:

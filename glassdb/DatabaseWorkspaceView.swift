@@ -41,6 +41,18 @@ struct DatabaseWorkspaceView: View {
         } detail: {
             detailSurface
         }
+        // Match glas.sh's terminal-window composition: paint and blur are
+        // independent, and zero for both leaves the plain scene unbacked.
+        .background {
+            Rectangle()
+                .fill(Color.black)
+                .opacity(settingsManager.windowOpacity)
+                .allowsHitTesting(false)
+        }
+        .modifier(DatabaseWorkspaceBackground(
+            material: .ultraThinMaterial,
+            blurAmount: settingsManager.blurBackground
+        ))
         .navigationTitle(detailTitle)
         .toolbar(removing: .sidebarToggle)
         .toolbar {
@@ -113,6 +125,26 @@ struct DatabaseWorkspaceView: View {
             databases = try await connection.databases()
         } catch {
             // Non-critical — sidebar also loads databases independently
+        }
+    }
+}
+
+// MARK: - Workspace Background
+
+/// Composites passthrough blur behind the workspace independently from its
+/// opaque fill. A zero blur amount emits no material backing.
+private struct DatabaseWorkspaceBackground: ViewModifier {
+    let material: Material
+    let blurAmount: Double
+
+    func body(content: Content) -> some View {
+        content.background {
+            if blurAmount > 0 {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(material)
+                    .opacity(blurAmount)
+                    .allowsHitTesting(false)
+            }
         }
     }
 }

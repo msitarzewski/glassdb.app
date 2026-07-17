@@ -9,6 +9,15 @@
 import SwiftUI
 import UIKit
 import os
+import GlasSecretStore
+import GlassDBKit
+
+private struct PendingHostTrustAttempt {
+    let connection: DatabaseConnectionConfig
+    let password: String
+    let sshPassword: String?
+    let challenge: SSHHostKeyChallenge
+}
 
 struct ConnectionManagerView: View {
     @Environment(ConnectionManager.self) private var connectionManager
@@ -22,6 +31,7 @@ struct ConnectionManagerView: View {
     @State private var connectionError: String?
     @State private var showingAddConnection = false
     @State private var editingConnection: DatabaseConnectionConfig?
+    @State private var pendingHostTrustAttempt: PendingHostTrustAttempt?
 
     var body: some View {
         NavigationSplitView {
@@ -31,27 +41,58 @@ struct ConnectionManagerView: View {
         }
         .sheet(isPresented: $showingAddConnection) {
             ConnectionFormView(mode: .add) { connection, password, sshPassword in
+                try saveCredentials(
+                    password: password,
+                    sshPassword: sshPassword,
+                    for: connection,
+                    replacing: nil
+                )
                 connectionManager.add(connection)
-                saveCredentials(password: password, sshPassword: sshPassword, for: connection)
             }
             .environment(sessionManager)
             .environment(settingsManager)
         }
         .sheet(item: $editingConnection) { connection in
             ConnectionFormView(mode: .edit(connection)) { updated, password, sshPassword in
+                try saveCredentials(
+                    password: password,
+                    sshPassword: sshPassword,
+                    for: updated,
+                    replacing: connection
+                )
                 connectionManager.update(updated)
-                saveCredentials(password: password, sshPassword: sshPassword, for: updated)
             }
             .environment(sessionManager)
             .environment(settingsManager)
         }
         .alert("Connection Error", isPresented: .init(
-            get: { connectionError != nil },
-            set: { if !$0 { connectionError = nil } }
+            get: { connectionError != nil || connectionManager.credentialError != nil },
+            set: {
+                if !$0 {
+                    connectionError = nil
+                    connectionManager.credentialError = nil
+                }
+            }
         )) {
             Button("OK") { connectionError = nil }
         } message: {
-            Text(connectionError ?? "")
+            Text(connectionError ?? connectionManager.credentialError ?? "")
+        }
+        .alert(
+            pendingHostTrustAttempt?.challenge.reason == .changed ? "SSH Host Key Changed" : "Verify SSH Host",
+            isPresented: .init(
+                get: { pendingHostTrustAttempt != nil },
+                set: { if !$0 { pendingHostTrustAttempt = nil } }
+            )
+        ) {
+            Button("Trust & Retry", role: pendingHostTrustAttempt?.challenge.reason == .changed ? .destructive : nil) {
+                trustPendingHostAndRetry()
+            }
+            Button("Cancel", role: .cancel) { pendingHostTrustAttempt = nil }
+        } message: {
+            if let challenge = pendingHostTrustAttempt?.challenge {
+                Text("Host: \(challenge.host):\(challenge.port)\nAlgorithm: \(challenge.algorithm)\nFingerprint: \(challenge.fingerprintSHA256)\n\n\(challenge.reason == .changed ? "The saved host identity no longer matches. Confirm the server’s new fingerprint through a trusted channel before continuing." : "Confirm this fingerprint through a trusted channel before saving it.")")
+            }
         }
     }
 
@@ -145,7 +186,11 @@ struct ConnectionManagerView: View {
             Divider()
             Button("Edit...") { editingConnection = connection }
             Button("Delete", role: .destructive) {
-                connectionManager.delete(connection)
+                do {
+                    try connectionManager.delete(connection)
+                } catch {
+                    connectionError = "The connection was not deleted because its saved credentials could not be removed. \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -227,13 +272,30 @@ struct ConnectionManagerView: View {
     // MARK: - Connection Logic
 
     private func initiateConnection(_ connection: DatabaseConnectionConfig) {
-        let dbPassword = (try? KeychainManager.retrievePassword(for: connection)) ?? ""
-        let usesSSHKey = connection.sshAuthMethod == .sshKey
-        var sshPassword: String? = nil
-        if connection.useSSHTunnel && !usesSSHKey {
-            sshPassword = try? KeychainManager.retrieveSSHPassword(for: connection)
+        do {
+            let dbPassword: String
+            if connection.engine.supportsCredentials {
+                do {
+                    dbPassword = try KeychainManager.retrievePassword(for: connection)
+                } catch SecretStoreError.notFound {
+                    dbPassword = ""
+                }
+            } else {
+                dbPassword = ""
+            }
+            let usesSSHKey = connection.sshAuthMethod == .sshKey
+            var sshPassword: String?
+            if connection.useSSHTunnel && !usesSSHKey {
+                do {
+                    sshPassword = try KeychainManager.retrieveSSHPassword(for: connection)
+                } catch SecretStoreError.notFound {
+                    sshPassword = ""
+                }
+            }
+            Task { await connectWith(connection, password: dbPassword, sshPassword: sshPassword) }
+        } catch {
+            connectionError = "Saved credentials are unavailable. Edit this connection and save its credentials again. \(error.localizedDescription)"
         }
-        Task { await connectWith(connection, password: dbPassword, sshPassword: sshPassword) }
     }
 
     private func connectWith(_ connection: DatabaseConnectionConfig, password: String, sshPassword: String? = nil) async {
@@ -246,10 +308,35 @@ struct ConnectionManagerView: View {
             )
             connectionManager.updateLastConnected(connection.id)
             openWindow(id: "query-editor", value: sessionID)
+        } catch let trustError as SSHHostKeyTrustRequiredError {
+            pendingHostTrustAttempt = PendingHostTrustAttempt(
+                connection: connection,
+                password: password,
+                sshPassword: sshPassword,
+                challenge: trustError.challenge
+            )
         } catch {
             connectionError = error.localizedDescription
         }
         connectingConnectionID = nil
+    }
+
+    private func trustPendingHostAndRetry() {
+        guard let attempt = pendingHostTrustAttempt else { return }
+        do {
+            try KeychainManager.saveHostKey(attempt.challenge)
+            pendingHostTrustAttempt = nil
+            Task {
+                await connectWith(
+                    attempt.connection,
+                    password: attempt.password,
+                    sshPassword: attempt.sshPassword
+                )
+            }
+        } catch {
+            pendingHostTrustAttempt = nil
+            connectionError = "The SSH host key was not trusted because it could not be saved securely. \(error.localizedDescription)"
+        }
     }
 
     private func activeSessionID(for connection: DatabaseConnectionConfig) -> UUID? {
@@ -260,22 +347,31 @@ struct ConnectionManagerView: View {
 
     // MARK: - Credential Persistence
 
-    private func saveCredentials(password: String, sshPassword: String?, for connection: DatabaseConnectionConfig) {
+    private func saveCredentials(
+        password: String,
+        sshPassword: String?,
+        for connection: DatabaseConnectionConfig,
+        replacing previousConnection: DatabaseConnectionConfig?
+    ) throws {
+        let report = try KeychainManager.saveCredentials(
+            databasePassword: password,
+            sshPassword: sshPassword,
+            for: connection,
+            replacing: previousConnection
+        )
+        if connection.engine == .sqlite,
+           let previousConnection,
+           previousConnection.engine.supportsCredentials {
+            try KeychainManager.deletePassword(for: previousConnection)
+        }
         if !password.isEmpty {
-            do {
-                try KeychainManager.savePassword(password, for: connection)
-                Logger.connections.info("Saved database password for \(connection.username)@\(connection.host):\(connection.port)")
-            } catch {
-                Logger.connections.error("Failed to save database password: \(error)")
-            }
+            Logger.connections.info("Saved database password for connection \(connection.id, privacy: .public)")
         }
         if let sshPassword, !sshPassword.isEmpty {
-            do {
-                try KeychainManager.saveSSHPassword(sshPassword, for: connection)
-                Logger.connections.info("Saved SSH password for \(connection.sshUsername ?? "")@\(connection.sshHost ?? "")")
-            } catch {
-                Logger.connections.error("Failed to save SSH password: \(error)")
-            }
+            Logger.connections.info("Saved SSH password for connection \(connection.id, privacy: .public)")
+        }
+        if !report.cleanupWarnings.isEmpty {
+            connectionManager.credentialError = report.cleanupWarnings.joined(separator: " ")
         }
     }
 

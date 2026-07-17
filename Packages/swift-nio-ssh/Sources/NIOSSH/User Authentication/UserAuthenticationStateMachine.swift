@@ -383,9 +383,9 @@ private extension UserAuthenticationStateMachine {
         delegate.nextAuthenticationType(availableMethods: methods, nextChallengePromise: promise)
 
         // The explicit capture list is here to force a copy of the buffer, rather than capturing self.
-        return promise.futureResult.flatMapThrowing { [sessionID = self.sessionID] request in
+        return promise.futureResult.assumeIsolated().flatMapThrowing { [sessionID = self.sessionID] request in
             try request.map { try SSHMessage.UserAuthRequestMessage(request: $0, sessionID: sessionID) }
-        }
+        }.nonisolated()
     }
 }
 
@@ -400,9 +400,9 @@ private extension UserAuthenticationStateMachine {
             delegate.requestReceived(request: request, responsePromise: promise)
             let supportedMethods = delegate.supportedAuthenticationMethods
 
-            return promise.futureResult.map { outcome in
+            return promise.futureResult.assumeIsolated().map { outcome in
                 .init(outcome, supportedMethods: supportedMethods)
-            }
+            }.nonisolated()
 
         case .publicKey(.known(key: let key, signature: .some(let signature))):
             // This is a direct request to auth, just pass it through.
@@ -411,7 +411,7 @@ private extension UserAuthenticationStateMachine {
 
             guard key.isValidSignature(signature, for: dataToSign) else {
                 // Whoops, signature not valid.
-                return self.loop.makeSucceededFuture(.failure(.init(authentications: supportedMethods.strings, partialSuccess: false)))
+                return self.loop.assumeIsolated().makeSucceededFuture(.failure(.init(authentications: supportedMethods.strings, partialSuccess: false)))
             }
 
             // Signature is valid, ask if the delegate is happy.
@@ -419,18 +419,18 @@ private extension UserAuthenticationStateMachine {
             let promise = self.loop.makePromise(of: NIOSSHUserAuthenticationOutcome.self)
             delegate.requestReceived(request: request, responsePromise: promise)
 
-            return promise.futureResult.map { outcome in
+            return promise.futureResult.assumeIsolated().map { outcome in
                 .init(outcome, supportedMethods: supportedMethods)
-            }
+            }.nonisolated()
 
         case .publicKey(.known(key: let key, signature: .none)):
             // This is a weird wrinkle in public key auth: it's a request to ask whether a given key is valid, but not to validate that key itself.
             // For now we do a shortcut: we just say that all keys are acceptable, rather than ask the delegate.
-            return self.loop.makeSucceededFuture(.publicKeyOK(.init(key: key)))
+            return self.loop.assumeIsolated().makeSucceededFuture(.publicKeyOK(.init(key: key)))
 
         case .publicKey(.unknown):
             // We don't known the algorithm, the auth attempt has failed.
-            return self.loop.makeSucceededFuture(.failure(.init(authentications: delegate.supportedAuthenticationMethods.strings, partialSuccess: false)))
+            return self.loop.assumeIsolated().makeSucceededFuture(.failure(.init(authentications: delegate.supportedAuthenticationMethods.strings, partialSuccess: false)))
 
         case .none:
             let request = NIOSSHUserAuthenticationRequest(username: request.username, serviceName: request.service, request: .none)
@@ -438,9 +438,9 @@ private extension UserAuthenticationStateMachine {
             delegate.requestReceived(request: request, responsePromise: promise)
             let supportedMethods = delegate.supportedAuthenticationMethods
 
-            return promise.futureResult.map { outcome in
+            return promise.futureResult.assumeIsolated().map { outcome in
                 .init(outcome, supportedMethods: supportedMethods)
-            }
+            }.nonisolated()
         }
     }
 }

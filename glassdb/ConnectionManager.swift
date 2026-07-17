@@ -15,6 +15,7 @@ import os
 @Observable
 class ConnectionManager {
     var connections: [DatabaseConnectionConfig] = []
+    var credentialError: String?
 
     private var hasLoaded = false
 
@@ -28,6 +29,12 @@ class ConnectionManager {
         guard !hasLoaded else { return }
         hasLoaded = true
         load()
+        do {
+            _ = try KeychainManager.runMigrationsIfNeeded(connections: connections)
+        } catch {
+            credentialError = error.localizedDescription
+            Logger.keychain.error("Credential migration failed without exposing credential material: \(error.localizedDescription)")
+        }
     }
 
     func load() {
@@ -69,10 +76,14 @@ class ConnectionManager {
         connections.first { $0.id == id }
     }
 
-    func delete(_ connection: DatabaseConnectionConfig) {
+    func delete(_ connection: DatabaseConnectionConfig) throws {
+        if connection.engine.supportsCredentials {
+            try KeychainManager.deletePassword(for: connection)
+        }
+        if connection.useSSHTunnel, connection.sshAuthMethod != .sshKey {
+            try KeychainManager.deleteSSHPassword(for: connection)
+        }
         connections.removeAll { $0.id == connection.id }
-        try? KeychainManager.deletePassword(for: connection)
-        try? KeychainManager.deleteSSHPassword(for: connection)
         save()
     }
 

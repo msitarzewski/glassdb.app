@@ -24,6 +24,8 @@ struct DatabaseConnectionConfig: Identifiable, Codable, Hashable {
     var sshUsername: String?
     var sshAuthMethod: AuthenticationMethod?
     var sshKeyID: UUID?
+    var databaseCredentialPolicy: CredentialStoragePolicy
+    var sshCredentialPolicy: CredentialStoragePolicy
     var useTLS: Bool
     var isFavorite: Bool
     var colorTag: ConnectionColorTag
@@ -45,6 +47,8 @@ struct DatabaseConnectionConfig: Identifiable, Codable, Hashable {
         sshUsername: String? = nil,
         sshAuthMethod: AuthenticationMethod? = nil,
         sshKeyID: UUID? = nil,
+        databaseCredentialPolicy: CredentialStoragePolicy = .glassdbOnly,
+        sshCredentialPolicy: CredentialStoragePolicy = .glassdbOnly,
         useTLS: Bool = false,
         isFavorite: Bool = false,
         colorTag: ConnectionColorTag = .none,
@@ -65,6 +69,8 @@ struct DatabaseConnectionConfig: Identifiable, Codable, Hashable {
         self.sshUsername = sshUsername
         self.sshAuthMethod = sshAuthMethod
         self.sshKeyID = sshKeyID
+        self.databaseCredentialPolicy = databaseCredentialPolicy
+        self.sshCredentialPolicy = sshCredentialPolicy
         self.useTLS = useTLS
         self.isFavorite = isFavorite
         self.colorTag = colorTag
@@ -73,7 +79,51 @@ struct DatabaseConnectionConfig: Identifiable, Codable, Hashable {
         self.tags = tags
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case id, name, engine, host, port, username, defaultDatabase
+        case useSSHTunnel, sshHost, sshPort, sshUsername, sshAuthMethod, sshKeyID
+        case databaseCredentialPolicy, sshCredentialPolicy
+        case useTLS, isFavorite, colorTag, dateAdded, lastConnected, tags
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        engine = try values.decodeIfPresent(DatabaseEngineType.self, forKey: .engine) ?? .mysql
+        host = try values.decode(String.self, forKey: .host)
+        port = try values.decode(Int.self, forKey: .port)
+        username = try values.decode(String.self, forKey: .username)
+        defaultDatabase = try values.decodeIfPresent(String.self, forKey: .defaultDatabase)
+        useSSHTunnel = try values.decodeIfPresent(Bool.self, forKey: .useSSHTunnel) ?? false
+        sshHost = try values.decodeIfPresent(String.self, forKey: .sshHost)
+        sshPort = try values.decodeIfPresent(Int.self, forKey: .sshPort)
+        sshUsername = try values.decodeIfPresent(String.self, forKey: .sshUsername)
+        sshAuthMethod = try values.decodeIfPresent(AuthenticationMethod.self, forKey: .sshAuthMethod)
+        sshKeyID = try values.decodeIfPresent(UUID.self, forKey: .sshKeyID)
+        // Records written before G04 were always stored in the shared glas.sh
+        // access group. Preserve that location until the user explicitly changes it.
+        databaseCredentialPolicy = try values.decodeIfPresent(
+            CredentialStoragePolicy.self,
+            forKey: .databaseCredentialPolicy
+        ) ?? .sharedWithGlas
+        sshCredentialPolicy = try values.decodeIfPresent(
+            CredentialStoragePolicy.self,
+            forKey: .sshCredentialPolicy
+        ) ?? .sharedWithGlas
+        useTLS = try values.decodeIfPresent(Bool.self, forKey: .useTLS) ?? false
+        isFavorite = try values.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        colorTag = try values.decodeIfPresent(ConnectionColorTag.self, forKey: .colorTag) ?? .none
+        dateAdded = try values.decodeIfPresent(Date.self, forKey: .dateAdded) ?? Date()
+        lastConnected = try values.decodeIfPresent(Date.self, forKey: .lastConnected)
+        tags = try values.decodeIfPresent([String].self, forKey: .tags) ?? []
+    }
+
     var displaySubtitle: String {
+        if engine == .sqlite {
+            let filename = URL(fileURLWithPath: host).lastPathComponent
+            return filename.isEmpty ? "Local SQLite database" : filename
+        }
         var parts = ["\(username)@\(host):\(port)"]
         if let db = defaultDatabase, !db.isEmpty {
             parts.append(db)
@@ -86,26 +136,73 @@ struct DatabaseConnectionConfig: Identifiable, Codable, Hashable {
 
 enum DatabaseEngineType: String, Codable, CaseIterable, Identifiable {
     case mysql
-    // case postgresql  // Phase 2
+    case postgresql
+    case sqlite
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
         case .mysql: return "MySQL"
+        case .postgresql: return "PostgreSQL"
+        case .sqlite: return "SQLite"
         }
     }
 
     var defaultPort: Int {
         switch self {
         case .mysql: return 3306
+        case .postgresql: return 5432
+        case .sqlite: return 0
         }
     }
 
     var iconName: String {
         switch self {
         case .mysql: return "cylinder"
+        case .postgresql: return "cylinder.split.1x2"
+        case .sqlite: return "externaldrive"
         }
+    }
+
+    var defaultHost: String {
+        switch self {
+        case .mysql, .postgresql: "127.0.0.1"
+        case .sqlite: ""
+        }
+    }
+
+    var defaultUsername: String {
+        switch self {
+        case .mysql: "root"
+        case .postgresql: "postgres"
+        case .sqlite: ""
+        }
+    }
+
+    var supportsNetworkTransport: Bool { self != .sqlite }
+    var supportsCredentials: Bool { self != .sqlite }
+    var supportsTLS: Bool { self != .sqlite }
+    var supportsSSHTunnel: Bool { self != .sqlite }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self).lowercased()
+        switch value {
+        case "mysql", "mariadb": self = .mysql
+        case "postgres", "postgresql", "postgres-nio": self = .postgresql
+        case "sqlite", "sqlite3": self = .sqlite
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported database engine ‘\(value)’"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
@@ -117,6 +214,33 @@ enum AuthenticationMethod: String, Codable, CaseIterable {
         switch self {
         case .password: return "Password"
         case .sshKey: return "SSH Key"
+        }
+    }
+}
+
+enum CredentialStoragePolicy: String, Codable, CaseIterable, Identifiable, Sendable {
+    case sharedWithGlas
+    case glassdbOnly
+    case requireAuthentication
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .sharedWithGlas: return "Shared with glas.sh"
+        case .glassdbOnly: return "glassdb only"
+        case .requireAuthentication: return "Require authentication"
+        }
+    }
+
+    var policyDescription: String {
+        switch self {
+        case .sharedWithGlas:
+            return "Available to glassdb and glas.sh on this device while it is unlocked."
+        case .glassdbOnly:
+            return "Stored in glassdb's private, device-only Keychain namespace."
+        case .requireAuthentication:
+            return "Private to glassdb and requires device-owner authentication before every use."
         }
     }
 }
@@ -203,5 +327,69 @@ struct SavedQuery: Identifiable, Codable, Hashable {
         self.lastUsed = lastUsed
         self.useCount = useCount
         self.createdAt = createdAt
+    }
+}
+
+// MARK: - Mutation Audit
+
+enum MutationOutcome: String, Codable, Sendable {
+    case committed
+    case rolledBack
+    case serverStateUnknown
+    case notStarted
+}
+
+struct MutationAuditRecord: Identifiable, Codable, Sendable {
+    let id: UUID
+    let connectionID: UUID
+    let database: String?
+    let object: String?
+    let normalizedOperation: String
+    let source: String
+    let timestamp: Date
+    let outcome: MutationOutcome
+    let affectedRows: UInt64?
+
+    init(
+        id: UUID = UUID(),
+        connectionID: UUID,
+        database: String?,
+        object: String?,
+        normalizedOperation: String,
+        source: String,
+        timestamp: Date = Date(),
+        outcome: MutationOutcome,
+        affectedRows: UInt64?
+    ) {
+        self.id = id
+        self.connectionID = connectionID
+        self.database = database
+        self.object = object
+        self.normalizedOperation = normalizedOperation
+        self.source = source
+        self.timestamp = timestamp
+        self.outcome = outcome
+        self.affectedRows = affectedRows
+    }
+}
+
+@MainActor
+enum MutationAuditStore {
+    private static let storageKey = "glassdb.mutationAudit.v1"
+    private static let maximumRecords = 1_000
+
+    static func append(_ record: MutationAuditRecord, defaults: UserDefaults = .standard) {
+        var records: [MutationAuditRecord] = []
+        if let data = defaults.data(forKey: storageKey),
+           let decoded = try? JSONDecoder().decode([MutationAuditRecord].self, from: data) {
+            records = decoded
+        }
+        records.append(record)
+        if records.count > maximumRecords {
+            records.removeFirst(records.count - maximumRecords)
+        }
+        if let encoded = try? JSONEncoder().encode(records) {
+            defaults.set(encoded, forKey: storageKey)
+        }
     }
 }

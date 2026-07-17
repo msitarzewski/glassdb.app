@@ -60,6 +60,7 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Atomics", package: "swift-atomics"),
             ],
+            exclude: ["Docs.docc"],
             swiftSettings: strictConcurrencySettings
         ),
         .executableTarget(

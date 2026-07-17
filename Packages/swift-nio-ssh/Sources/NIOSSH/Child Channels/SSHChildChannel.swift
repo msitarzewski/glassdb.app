@@ -654,7 +654,7 @@ private extension SSHChildChannel {
                 let update = SSHMessage.ChannelWindowAdjustMessage(recipientChannel: self.state.remoteChannelIdentifier!, bytesToAdd: UInt32(increment))
                 self.processOutboundMessage(.channelWindowAdjust(update), promise: nil)
             }
-            self.pipeline.fireChannelRead(NIOAny(data))
+            self.pipeline.syncOperations.fireChannelRead(NIOAny(data))
 
         case .eof:
             self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)

@@ -39,19 +39,17 @@ public final class SFTPClient: Sendable {
     
     fileprivate static func setupChannelHanders(channel: Channel, logger: Logger) -> EventLoopFuture<SFTPClient> {
         let responses = SFTPResponses(sftpVersion: channel.eventLoop.makePromise())
-        
-        let deserializeHandler = ByteToMessageHandler(SFTPMessageParser())
-        let serializeHandler = MessageToByteHandler(SFTPMessageSerializer())
-        let sftpInboundHandler = SFTPClientInboundHandler(responses: responses, logger: logger)
-        
-        return channel.pipeline.addHandlers(
-            SSHChannelDataUnwrapper(),
-            SSHOutboundChannelDataWrapper(),
-            deserializeHandler,
-            serializeHandler,
-            sftpInboundHandler,
-            CloseErrorHandler(logger: logger)
-        ).map {
+
+        return channel.eventLoop.submit {
+            try channel.pipeline.syncOperations.addHandlers(
+                SSHChannelDataUnwrapper(),
+                SSHOutboundChannelDataWrapper(),
+                ByteToMessageHandler(SFTPMessageParser()),
+                MessageToByteHandler(SFTPMessageSerializer()),
+                SFTPClientInboundHandler(responses: responses, logger: logger),
+                CloseErrorHandler(logger: logger)
+            )
+
             let client = SFTPClient(channel: channel, responses: responses, logger: logger)
 
             client.channel.closeFuture.whenComplete { _ in

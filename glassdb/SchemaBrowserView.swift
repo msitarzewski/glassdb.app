@@ -10,6 +10,22 @@ import SwiftUI
 import GlassDBKit
 import os
 
+private struct SchemaMutationTarget: Identifiable {
+    let database: String
+    let table: String
+    var id: String { "\(database.utf8.count):\(database)\(table)" }
+}
+
+private enum SchemaMutationOperation: String {
+    case truncate
+    case drop
+}
+
+private struct SchemaMutationFailure: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 struct SchemaBrowserView: View {
     let sessionID: UUID
     var onSelectionChanged: ((WorkspaceSelection) -> Void)?
@@ -25,8 +41,10 @@ struct SchemaBrowserView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var filterText = ""
-    @State private var confirmingTruncate: String?
-    @State private var confirmingDrop: String?
+    @State private var confirmingTruncate: SchemaMutationTarget?
+    @State private var confirmingDrop: SchemaMutationTarget?
+    @State private var destructiveOperation: String?
+    @State private var operationError: String?
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
@@ -57,7 +75,7 @@ struct SchemaBrowserView: View {
                 )
             }
         }
-        .navigationTitle("Databases")
+        .navigationTitle(session?.connection?.dialect == .postgresql ? "Schemas" : "Databases")
         .searchable(text: $filterText, placement: .sidebar, prompt: "Filter")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -71,49 +89,48 @@ struct SchemaBrowserView: View {
         .task {
             await loadDatabases()
         }
+        .overlay {
+            if let destructiveOperation {
+                ProgressView(destructiveOperation)
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            }
+        }
         .alert("Truncate Table?", isPresented: .init(
             get: { confirmingTruncate != nil },
             set: { if !$0 { confirmingTruncate = nil } }
         )) {
             Button("Truncate", role: .destructive) {
-                if let key = confirmingTruncate {
-                    let parts = key.split(separator: ".", maxSplits: 1)
-                    if parts.count == 2 {
-                        Task {
-                            try? await session?.connection?.execute(
-                                "TRUNCATE TABLE `\(parts[0])`.`\(parts[1])`"
-                            )
-                        }
-                    }
+                if let target = confirmingTruncate {
+                    Task { await executeSchemaMutation(.truncate, target: target) }
                 }
                 confirmingTruncate = nil
             }
             Button("Cancel", role: .cancel) { confirmingTruncate = nil }
         } message: {
-            Text("This will permanently delete all rows. This cannot be undone.")
+            Text(schemaMutationPreview(operation: "TRUNCATE", target: confirmingTruncate))
         }
         .alert("Drop Table?", isPresented: .init(
             get: { confirmingDrop != nil },
             set: { if !$0 { confirmingDrop = nil } }
         )) {
             Button("Drop", role: .destructive) {
-                if let key = confirmingDrop {
-                    let parts = key.split(separator: ".", maxSplits: 1)
-                    if parts.count == 2 {
-                        Task {
-                            try? await session?.connection?.execute(
-                                "DROP TABLE `\(parts[0])`.`\(parts[1])`"
-                            )
-                            tablesCache.removeValue(forKey: String(parts[0]))
-                            await loadTables(for: String(parts[0]))
-                        }
-                    }
+                if let target = confirmingDrop {
+                    Task { await executeSchemaMutation(.drop, target: target) }
                 }
                 confirmingDrop = nil
             }
             Button("Cancel", role: .cancel) { confirmingDrop = nil }
         } message: {
-            Text("This will permanently delete the table and all its data. This cannot be undone.")
+            Text(schemaMutationPreview(operation: "DROP TABLE", target: confirmingDrop))
+        }
+        .alert("Database Operation Failed", isPresented: .init(
+            get: { operationError != nil },
+            set: { if !$0 { operationError = nil } }
+        )) {
+            Button("OK", role: .cancel) { operationError = nil }
+        } message: {
+            Text(operationError ?? "")
         }
     }
 
@@ -175,14 +192,22 @@ struct SchemaBrowserView: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
-                        Button {
-                            Task {
-                                try? await sessionManager.executeQuery(
-                                    "USE `\(database)`", sessionID: sessionID
-                                )
+                        if session?.connection?.dialect == .mysql {
+                            Button {
+                                Task {
+                                    do {
+                                        guard let connection = session?.connection else { return }
+                                        let result = try await sessionManager.executeQuery(
+                                            "USE \(connection.quotedIdentifier(database))", sessionID: sessionID
+                                        )
+                                        if let serverError = result.error { operationError = serverError }
+                                    } catch {
+                                        operationError = "Could not select ‘\(database)’: \(error.localizedDescription)"
+                                    }
+                                }
+                            } label: {
+                                Label("Set as Active Database", systemImage: "checkmark.circle")
                             }
-                        } label: {
-                            Label("Set as Active Database", systemImage: "checkmark.circle")
                         }
                         Button {
                             onSelectionChanged?(.query)
@@ -272,12 +297,15 @@ struct SchemaBrowserView: View {
                     Label("Browse Data", systemImage: "tablecells")
                 }
                 Button {
-                    UIPasteboard.general.string = "`\(database)`.`\(table)`"
+                    guard let connection = session?.connection else { return }
+                    UIPasteboard.general.string = "\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))"
                 } label: {
                     Label("Copy Table Name", systemImage: "doc.on.doc")
                 }
                 Button {
-                    UIPasteboard.general.string = "SELECT * FROM `\(database)`.`\(table)` LIMIT 100;"
+                    guard let connection = session?.connection else { return }
+                    let object = "\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))"
+                    UIPasteboard.general.string = "SELECT * FROM \(object) LIMIT 100;"
                 } label: {
                     Label("Copy SELECT Statement", systemImage: "text.page")
                 }
@@ -289,13 +317,15 @@ struct SchemaBrowserView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 Divider()
-                Button(role: .destructive) {
-                    confirmingTruncate = cacheKey
-                } label: {
-                    Label("Truncate Table...", systemImage: "trash")
+                if session?.connection?.capabilities.contains(.truncateTable) == true {
+                    Button(role: .destructive) {
+                        confirmingTruncate = SchemaMutationTarget(database: database, table: table)
+                    } label: {
+                        Label("Truncate Table...", systemImage: "trash")
+                    }
                 }
                 Button(role: .destructive) {
-                    confirmingDrop = cacheKey
+                    confirmingDrop = SchemaMutationTarget(database: database, table: table)
                 } label: {
                     Label("Drop Table...", systemImage: "xmark.bin")
                 }
@@ -307,6 +337,59 @@ struct SchemaBrowserView: View {
     }
 
     // MARK: - Data Loading
+
+    private func schemaMutationPreview(operation: String, target: SchemaMutationTarget?) -> String {
+        guard let target else { return "" }
+        let connection = session?.connectionConfig
+        let transactionWarning = connection?.engine == .mysql
+            ? "MySQL DDL may commit implicitly and cannot be rolled back"
+            : "DDL transaction behavior follows the connected engine"
+        return "Connection: \(connection?.name ?? "Disconnected")\nEnvironment tag: \(connection?.colorTag.displayName ?? "None")\nDatabase: \(target.database)\nTable: \(target.table)\nOperation: \(operation)\nEstimated scope: the entire table\nTransaction: \(transactionWarning)\n\nThis action is permanent."
+    }
+
+    private func executeSchemaMutation(_ operation: SchemaMutationOperation, target: SchemaMutationTarget) async {
+        guard let connection = session?.connection, let config = session?.connectionConfig else { return }
+        if operation == .truncate, !connection.capabilities.contains(.truncateTable) {
+            operationError = "\(connection.engineName) does not support TRUNCATE TABLE."
+            return
+        }
+        destructiveOperation = operation == .truncate ? "Truncating table…" : "Dropping table…"
+        defer { destructiveOperation = nil }
+
+        let object = "\(connection.quotedIdentifier(target.database)).\(connection.quotedIdentifier(target.table))"
+        let sql = operation == .truncate ? "TRUNCATE TABLE \(object)" : "DROP TABLE \(object)"
+        do {
+            let result = try await connection.execute(sql, parameters: [])
+            if let serverError = result.error { throw SchemaMutationFailure(message: serverError) }
+            MutationAuditStore.append(MutationAuditRecord(
+                connectionID: config.id,
+                database: target.database,
+                object: target.table,
+                normalizedOperation: operation.rawValue,
+                source: "schema-browser",
+                outcome: .committed,
+                affectedRows: result.affectedRows
+            ))
+            if operation == .drop {
+                tablesCache.removeValue(forKey: target.database)
+                columnsCache.removeValue(forKey: "\(target.database).\(target.table)")
+                await loadTables(for: target.database)
+            } else {
+                rowCountCache["\(target.database).\(target.table)"] = 0
+            }
+        } catch {
+            MutationAuditStore.append(MutationAuditRecord(
+                connectionID: config.id,
+                database: target.database,
+                object: target.table,
+                normalizedOperation: operation.rawValue,
+                source: "schema-browser",
+                outcome: .serverStateUnknown,
+                affectedRows: nil
+            ))
+            operationError = "\(operation == .truncate ? "Truncate" : "Drop") failed. Verify the table state before retrying. \(error.localizedDescription)"
+        }
+    }
 
     private func loadDatabases() async {
         guard let connection = session?.connection else { return }

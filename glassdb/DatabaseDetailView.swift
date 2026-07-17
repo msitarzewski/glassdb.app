@@ -41,6 +41,12 @@ struct DatabaseDetailView: View {
                     ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(error))
                 } else if !tableStatuses.isEmpty {
                     tablesSummarySection
+                } else if session?.connection?.capabilities.contains(.tableStatistics) == false {
+                    ContentUnavailableView(
+                        "Statistics Unavailable",
+                        systemImage: "chart.bar.xaxis",
+                        description: Text("\(session?.connection?.engineName ?? "This engine") does not expose table-size statistics through glassdb yet. Tables and row counts remain available in the schema browser.")
+                    )
                 }
             }
             .padding(32)
@@ -112,11 +118,7 @@ struct DatabaseDetailView: View {
         HStack(spacing: 16) {
             if !isActiveDatabase {
                 Button {
-                    Task {
-                        try? await sessionManager.executeQuery(
-                            "USE `\(database)`", sessionID: sessionID
-                        )
-                    }
+                    Task { await setActiveAndLoad() }
                 } label: {
                     Label("Set as Active", systemImage: "checkmark.circle")
                 }
@@ -190,13 +192,34 @@ struct DatabaseDetailView: View {
 
     private func setActiveAndLoad() async {
         if !isActiveDatabase {
-            try? await sessionManager.executeQuery("USE `\(database)`", sessionID: sessionID)
+            guard let connection = session?.connection else {
+                errorMessage = "The database session is no longer available."
+                return
+            }
+            if connection.dialect == .mysql {
+                do {
+                    _ = try await sessionManager.executeQuery(
+                        "USE \(connection.quotedIdentifier(database))",
+                        sessionID: sessionID
+                    )
+                } catch {
+                    errorMessage = "Could not activate \(database): \(error.localizedDescription)"
+                    return
+                }
+            } else {
+                session?.currentDatabase = database
+            }
         }
         await loadStatus()
     }
 
     private func loadStatus() async {
         guard let connection = session?.connection else { return }
+        guard connection.capabilities.contains(.tableStatistics) else {
+            tableStatuses = []
+            errorMessage = nil
+            return
+        }
         isLoading = true
         errorMessage = nil
         do {
