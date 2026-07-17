@@ -1,11 +1,11 @@
 # Project Rules
 
 ## Code Standards
-- Swift 6.2, strict concurrency
+- Swift 6 strict concurrency; release verification currently uses Swift 6.4
 - @Observable for all state managers (NOT ObservableObject)
 - SwiftUI-first, UIKit only when absolutely required
-- All windows: `.windowStyle(.plain)`
-- Glass material: `.background(.ultraThinMaterial, in: .rect(cornerRadius: 24))`
+- Only the live database workspace uses `.windowStyle(.plain)` so its background can reach full transparency
+- Connections, Settings, detached results, alerts, and sheets use Apple-recommended system window materials
 - Ornament-based chrome for contextual controls
 
 ## Naming

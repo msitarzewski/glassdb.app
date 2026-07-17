@@ -15,23 +15,31 @@ import os
 @MainActor
 @Observable
 class SettingsManager {
-    var autoReconnect: Bool = true
-    var confirmBeforeClosing: Bool = true
+    static let defaultSharedDefaults = UserDefaults(suiteName: "group.sh.glas.shared") ?? .standard
+    private static let sharedSSHKeysKey = "sshKeys"
     var maxQueryHistoryItems: Int = 500
     var resultRowLimit: Int = 1000
     var windowOpacity: Double = 0.95
-    var blurBackground: Bool = true
-    var glassTint: String = "None"
+    var blurBackground: Double = 1.0
     var showSidebarByDefault: Bool = true
     var editorFontSize: Double = 14.0
     var dataGridFontSize: Double = 13.0
     var showLineNumbers: Bool = true
+    var redactQueryHistoryLiterals: Bool = false
     var savedQueries: [SavedQuery] = []
     var sshKeys: [StoredSSHKey] = []
 
     private var hasLoaded = false
+    private let defaults: UserDefaults
+    private let sharedDefaults: UserDefaults
 
-    init(loadImmediately: Bool = true) {
+    init(
+        loadImmediately: Bool = true,
+        defaults: UserDefaults = .standard,
+        sharedDefaults: UserDefaults = SettingsManager.defaultSharedDefaults
+    ) {
+        self.defaults = defaults
+        self.sharedDefaults = sharedDefaults
         if loadImmediately {
             loadIfNeeded()
         }
@@ -41,40 +49,40 @@ class SettingsManager {
         guard !hasLoaded else { return }
         hasLoaded = true
 
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.autoReconnect) != nil {
-            autoReconnect = UserDefaults.standard.bool(forKey: UserDefaultsKeys.autoReconnect)
-        }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.confirmBeforeClosing) != nil {
-            confirmBeforeClosing = UserDefaults.standard.bool(forKey: UserDefaultsKeys.confirmBeforeClosing)
-        }
-        let savedMaxHistory = UserDefaults.standard.integer(forKey: UserDefaultsKeys.maxQueryHistoryItems)
+        let savedMaxHistory = defaults.integer(forKey: UserDefaultsKeys.maxQueryHistoryItems)
         if savedMaxHistory > 0 {
             maxQueryHistoryItems = savedMaxHistory
         }
-        let savedRowLimit = UserDefaults.standard.integer(forKey: UserDefaultsKeys.resultRowLimit)
+        let savedRowLimit = defaults.integer(forKey: UserDefaultsKeys.resultRowLimit)
         if savedRowLimit > 0 {
             resultRowLimit = savedRowLimit
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.windowOpacity) != nil {
-            windowOpacity = UserDefaults.standard.double(forKey: UserDefaultsKeys.windowOpacity)
+        if defaults.object(forKey: UserDefaultsKeys.windowOpacity) != nil {
+            windowOpacity = defaults.double(forKey: UserDefaultsKeys.windowOpacity)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.blurBackground) != nil {
-            blurBackground = UserDefaults.standard.bool(forKey: UserDefaultsKeys.blurBackground)
+        if let savedBlur = defaults.object(forKey: UserDefaultsKeys.blurBackground) {
+            // Migrate the original Boolean toggle without collapsing later slider values.
+            if let number = savedBlur as? NSNumber,
+               CFGetTypeID(number) == CFBooleanGetTypeID() {
+                blurBackground = number.boolValue ? 1.0 : 0.0
+            } else if let number = savedBlur as? NSNumber {
+                blurBackground = min(max(number.doubleValue, 0.0), 1.0)
+            }
         }
-        if let savedGlassTint = UserDefaults.standard.string(forKey: UserDefaultsKeys.glassTint) {
-            glassTint = savedGlassTint
+        if defaults.object(forKey: UserDefaultsKeys.showSidebarByDefault) != nil {
+            showSidebarByDefault = defaults.bool(forKey: UserDefaultsKeys.showSidebarByDefault)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.showSidebarByDefault) != nil {
-            showSidebarByDefault = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showSidebarByDefault)
+        if defaults.object(forKey: UserDefaultsKeys.editorFontSize) != nil {
+            editorFontSize = defaults.double(forKey: UserDefaultsKeys.editorFontSize)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.editorFontSize) != nil {
-            editorFontSize = UserDefaults.standard.double(forKey: UserDefaultsKeys.editorFontSize)
+        if defaults.object(forKey: UserDefaultsKeys.dataGridFontSize) != nil {
+            dataGridFontSize = defaults.double(forKey: UserDefaultsKeys.dataGridFontSize)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.dataGridFontSize) != nil {
-            dataGridFontSize = UserDefaults.standard.double(forKey: UserDefaultsKeys.dataGridFontSize)
+        if defaults.object(forKey: UserDefaultsKeys.showLineNumbers) != nil {
+            showLineNumbers = defaults.bool(forKey: UserDefaultsKeys.showLineNumbers)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.showLineNumbers) != nil {
-            showLineNumbers = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showLineNumbers)
+        if defaults.object(forKey: UserDefaultsKeys.redactQueryHistoryLiterals) != nil {
+            redactQueryHistoryLiterals = defaults.bool(forKey: UserDefaultsKeys.redactQueryHistoryLiterals)
         }
 
         loadSavedQueries()
@@ -82,23 +90,27 @@ class SettingsManager {
     }
 
     func saveSettings() {
-        UserDefaults.standard.set(autoReconnect, forKey: UserDefaultsKeys.autoReconnect)
-        UserDefaults.standard.set(confirmBeforeClosing, forKey: UserDefaultsKeys.confirmBeforeClosing)
-        UserDefaults.standard.set(maxQueryHistoryItems, forKey: UserDefaultsKeys.maxQueryHistoryItems)
-        UserDefaults.standard.set(resultRowLimit, forKey: UserDefaultsKeys.resultRowLimit)
-        UserDefaults.standard.set(windowOpacity, forKey: UserDefaultsKeys.windowOpacity)
-        UserDefaults.standard.set(blurBackground, forKey: UserDefaultsKeys.blurBackground)
-        UserDefaults.standard.set(glassTint, forKey: UserDefaultsKeys.glassTint)
-        UserDefaults.standard.set(showSidebarByDefault, forKey: UserDefaultsKeys.showSidebarByDefault)
-        UserDefaults.standard.set(editorFontSize, forKey: UserDefaultsKeys.editorFontSize)
-        UserDefaults.standard.set(dataGridFontSize, forKey: UserDefaultsKeys.dataGridFontSize)
-        UserDefaults.standard.set(showLineNumbers, forKey: UserDefaultsKeys.showLineNumbers)
+        maxQueryHistoryItems = min(max(maxQueryHistoryItems, 1), 10_000)
+        resultRowLimit = min(max(resultRowLimit, 1), 100_000)
+        editorFontSize = min(max(editorFontSize, 10), 32)
+        dataGridFontSize = min(max(dataGridFontSize, 10), 32)
+        windowOpacity = min(max(windowOpacity, 0.0), 1.0)
+        blurBackground = min(max(blurBackground, 0.0), 1.0)
+        defaults.set(maxQueryHistoryItems, forKey: UserDefaultsKeys.maxQueryHistoryItems)
+        defaults.set(resultRowLimit, forKey: UserDefaultsKeys.resultRowLimit)
+        defaults.set(windowOpacity, forKey: UserDefaultsKeys.windowOpacity)
+        defaults.set(blurBackground, forKey: UserDefaultsKeys.blurBackground)
+        defaults.set(showSidebarByDefault, forKey: UserDefaultsKeys.showSidebarByDefault)
+        defaults.set(editorFontSize, forKey: UserDefaultsKeys.editorFontSize)
+        defaults.set(dataGridFontSize, forKey: UserDefaultsKeys.dataGridFontSize)
+        defaults.set(showLineNumbers, forKey: UserDefaultsKeys.showLineNumbers)
+        defaults.set(redactQueryHistoryLiterals, forKey: UserDefaultsKeys.redactQueryHistoryLiterals)
     }
 
     // MARK: - Saved Queries
 
     func loadSavedQueries() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.savedQueries) else {
+        guard let data = defaults.data(forKey: UserDefaultsKeys.savedQueries) else {
             savedQueries = []
             return
         }
@@ -113,7 +125,7 @@ class SettingsManager {
     private func saveSavedQueries() {
         do {
             let data = try JSONEncoder().encode(savedQueries)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.savedQueries)
+            defaults.set(data, forKey: UserDefaultsKeys.savedQueries)
         } catch {
             Logger.settings.error("Failed to save queries: \(error)")
         }
@@ -147,7 +159,8 @@ class SettingsManager {
     // MARK: - SSH Keys
 
     func loadSSHKeys() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.sshKeys) else {
+        migrateSSHKeyMetadataToAppGroupIfNeeded()
+        guard let data = sharedDefaults.data(forKey: Self.sharedSSHKeysKey) else {
             sshKeys = []
             return
         }
@@ -162,7 +175,10 @@ class SettingsManager {
     private func saveSSHKeys() {
         do {
             let data = try JSONEncoder().encode(sshKeys)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.sshKeys)
+            sharedDefaults.set(data, forKey: Self.sharedSSHKeysKey)
+            // Keep the previous glassdb build's metadata index synchronized for
+            // the rollback-support window. Key material remains in Keychain.
+            defaults.set(data, forKey: UserDefaultsKeys.sshKeys)
         } catch {
             Logger.settings.error("Failed to save SSH keys: \(error)")
         }
@@ -183,8 +199,8 @@ class SettingsManager {
         saveSSHKeys()
     }
 
-    func deleteSSHKey(_ key: StoredSSHKey) {
-        try? KeychainManager.deleteSSHKey(for: key.id)
+    func deleteSSHKey(_ key: StoredSSHKey) throws {
+        try KeychainManager.deleteSSHKey(for: key.id)
         sshKeys.removeAll { $0.id == key.id }
         saveSSHKeys()
     }
@@ -194,5 +210,26 @@ class SettingsManager {
             sshKeys[index].name = name
             saveSSHKeys()
         }
+    }
+
+    private func migrateSSHKeyMetadataToAppGroupIfNeeded() {
+        var merged: [StoredSSHKey] = []
+        let candidateData = [
+            sharedDefaults.data(forKey: Self.sharedSSHKeysKey),
+            sharedDefaults.data(forKey: UserDefaultsKeys.sshKeys),
+            defaults.data(forKey: UserDefaultsKeys.sshKeys)
+        ]
+
+        for data in candidateData.compactMap({ $0 }) {
+            guard let decoded = try? JSONDecoder().decode([StoredSSHKey].self, from: data) else { continue }
+            for key in decoded where !merged.contains(where: { $0.id == key.id }) {
+                merged.append(key)
+            }
+        }
+        guard !merged.isEmpty, let encoded = try? JSONEncoder().encode(merged) else { return }
+        sharedDefaults.set(encoded, forKey: Self.sharedSSHKeysKey)
+        // Copy rather than move. The former release reads only this legacy
+        // index, so retaining it makes an immediate downgrade recoverable.
+        defaults.set(encoded, forKey: UserDefaultsKeys.sshKeys)
     }
 }

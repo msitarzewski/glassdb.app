@@ -14,7 +14,7 @@
 import NIOCore
 
 /// The user authentication modes available at this point in time.
-public struct NIOSSHAvailableUserAuthenticationMethods: OptionSet {
+public struct NIOSSHAvailableUserAuthenticationMethods: OptionSet, Sendable {
     public var rawValue: UInt8
 
     public init(rawValue: UInt8) {
@@ -208,7 +208,7 @@ extension SSHMessage.UserAuthRequestMessage {
 }
 
 /// The outcome of a user authentication attempt.
-public enum NIOSSHUserAuthenticationOutcome {
+public enum NIOSSHUserAuthenticationOutcome: Sendable {
     case success
     case partialSuccess(remainingMethods: NIOSSHAvailableUserAuthenticationMethods)
     case failure

@@ -179,11 +179,15 @@ public final class SSHClient {
             settings: settings
         ).get()
         
-        let sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
-        let handshakeHandler = try await channel.pipeline.handler(type: ClientHandshakeHandler.self).get()
-        let session = try await handshakeHandler.authenticated.map {
-            SSHClientSession(channel: channel, inboundChannelHandler: inboundChannelHandler, sshHandler: sshHandler)
+        let sshHandler = try await channel.eventLoop.submit {
+            NIOLoopBoundBox(
+                try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self),
+                eventLoop: channel.eventLoop
+            )
         }.get()
+        let handshakeHandler = try await channel.pipeline.handler(type: ClientHandshakeHandler.self).get()
+        try await handshakeHandler.authenticated.get()
+        let session = SSHClientSession(channel: channel, inboundChannelHandler: inboundChannelHandler, sshHandler: sshHandler)
 
         return SSHClient(
             session: session,
@@ -211,11 +215,15 @@ public final class SSHClient {
             )
         }
         
-        let sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
-        let handshakeHandler = try await channel.pipeline.handler(type: ClientHandshakeHandler.self).get()
-        let session = try await handshakeHandler.authenticated.map {
-            SSHClientSession(channel: channel, inboundChannelHandler: inboundChannelHandler, sshHandler: sshHandler)
+        let sshHandler = try await channel.eventLoop.submit {
+            NIOLoopBoundBox(
+                try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self),
+                eventLoop: channel.eventLoop
+            )
         }.get()
+        let handshakeHandler = try await channel.pipeline.handler(type: ClientHandshakeHandler.self).get()
+        try await handshakeHandler.authenticated.get()
+        let session = SSHClientSession(channel: channel, inboundChannelHandler: inboundChannelHandler, sshHandler: sshHandler)
 
         return SSHClient(
             session: session,
@@ -250,7 +258,12 @@ public final class SSHClient {
             protocolOptions: protocolOptions
         ).get()
         
-        let sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
+        let sshHandler = try await channel.eventLoop.submit {
+            NIOLoopBoundBox(
+                try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self),
+                eventLoop: channel.eventLoop
+            )
+        }.get()
         let session = SSHClientSession(channel: channel, inboundChannelHandler: inboundChannelHandler, sshHandler: sshHandler)
         
         return SSHClient(

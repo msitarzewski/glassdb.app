@@ -1,6 +1,6 @@
 import Foundation
 
-public protocol ExecCommandContext {
+public protocol ExecCommandContext: Sendable {
     func terminate() async throws
     func inputClosed() async throws
 }

@@ -41,8 +41,18 @@
   - Configuration is a value type (no singletons). Each app creates its own `SecretStoreConfiguration`.
   - SSH key detection stays in Citadel (not in the shared package). Apps call `SSHKeyDetection.detectPrivateKeyType()` at the call site.
   - `StoredSSHKey` Codable is backward-compatible with glas.sh v1 format.
-- Consequences: SSH keys imported in glas.sh are immediately available in glassdb. Single source of truth for Keychain operations. Both apps stay in lockstep. iCloud Keychain sync is not possible (`ThisDeviceOnly` accessibility) — this is intentional for security.
+- Consequences: Eligible SSH keys imported in glas.sh are immediately available in glassdb on the same device. Single source of truth for Keychain operations. Both apps stay in lockstep. The original `ThisDeviceOnly` cross-device disposition is superseded by the 2026-07-17 decision below.
 - Full plan: `/Users/michael/.claude/plans/buzzing-brewing-haven.md`
+
+## 2026-07-17: Glass-family credential availability and device boundaries
+- Status: Approved
+- Context: GlasSecretStore exists so glassdb and glas.sh can share credentials across their supported Apple devices, while Secure Enclave keys are cryptographically bound to the device that created them. The existing shared access group and App Group provide same-device sharing only, and the current `ThisDeviceOnly` accessibility prevents eligible Keychain items from synchronizing.
+- Decision:
+  - GlasSecretStore owns stable credential identities and the synchronized credential/SSH metadata catalog; app-specific connection UUIDs may reference those identities but must not define the family-wide account identity.
+  - Passwords, passphrases, and exportable imported RSA/Ed25519 keys may opt into iCloud Keychain synchronization and remain available to authorized Glass-family apps through the shared access group.
+  - Secure Enclave keys and user-presence-protected material remain device-bound and require explicit per-device provisioning. UX must distinguish “shared with Glass apps,” “syncs across devices,” and “requires authentication.”
+  - Deleting a synchronized credential must warn about and test cross-device propagation. App-only credentials remain outside the shared/synchronized catalog.
+- Consequences: Same-device sharing already works; cross-device catalog and eligible-secret synchronization are an open C3 release requirement. Secure Enclave non-sync is a stated platform property, not a failure of the Glass-family sharing model. The future native macOS shell must consume the same GlasSecretStore identities and policies.
 
 ## 2026-03-15: DBeaver-style unified workspace over separate windows
 - Status: Approved
@@ -89,5 +99,5 @@
 ## 2026-03-16: Multiplatform expansion planned for v1.1
 - Status: Planned
 - Context: iPad has no good native database client — massive market opportunity. Mac is crowded but iPad is wide open. The codebase is 90% standard SwiftUI. Only ~20 platform-specific modifiers need abstraction.
-- Decision: Target iPad as primary v1.1 platform, Mac secondary. Use View modifier extensions (one #if per extension, zero in views) instead of scattering #if os() throughout code. iCloud Keychain integration (AuthenticationServices / ASCredentialIdentityStore) for Face ID connection auth.
+- Decision: Target iPad as primary v1.1 platform, Mac secondary. Use View modifier extensions (one #if per extension, zero in views) instead of scattering #if os() throughout code. On-device authentication and cross-device credential synchronization are separate policies; their current disposition is governed by the 2026-07-17 Glass-family credential decision.
 - Consequences: Ship visionOS v1.0 first. Multiplatform work is a focused follow-up, not a rewrite. .inspector() available on iPad/Mac for record editor.

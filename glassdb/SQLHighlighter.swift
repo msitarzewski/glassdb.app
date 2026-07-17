@@ -6,11 +6,15 @@
 //  Produces NSAttributedString for use with UITextView on visionOS.
 //
 
+import Foundation
+import GlassDBKit
+#if canImport(UIKit)
 import UIKit
+#endif
 
 // MARK: - Token Types
 
-enum SQLTokenKind {
+enum SQLTokenKind: Equatable {
     case keyword
     case function
     case string
@@ -21,6 +25,49 @@ enum SQLTokenKind {
     case punctuation
     case plain
     case error
+}
+
+// MARK: - Statement Parsing and Safety
+
+enum SQLSafetyClassification: String, Codable, CaseIterable, Hashable, Sendable {
+    case readOnly
+    case mutation
+    case destructive
+    case sessionControl
+    case unknown
+
+    var requiresConfirmation: Bool {
+        switch self {
+        case .readOnly, .sessionControl:
+            return false
+        case .mutation, .destructive, .unknown:
+            return true
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .readOnly: return "Read only"
+        case .mutation: return "Changes data"
+        case .destructive: return "Destructive"
+        case .sessionControl: return "Session control"
+        case .unknown: return "Review required"
+        }
+    }
+}
+
+struct SQLStatement: Identifiable {
+    let id: Int
+    let text: String
+    let range: Range<String.Index>
+    let safety: SQLSafetyClassification
+}
+
+struct SQLBoundedReadPlan: Equatable {
+    let originalSQL: String
+    let executionSQL: String
+    let rowLimit: Int
+    let fetchLimit: Int
 }
 
 struct SQLToken {
@@ -39,6 +86,8 @@ struct SQLDiagnostic: Identifiable {
 // MARK: - Highlighter
 
 struct SQLHighlighter {
+
+    static let validEditorResultRowLimits = 1...100_000
 
     // MARK: Keywords
 
@@ -89,9 +138,21 @@ struct SQLHighlighter {
                 continue
             }
 
-            // Single-line comment: -- ...
+            // Single-line comments: -- ... and MySQL # ...
             if c == "-", let next = sql.index(i, offsetBy: 1, limitedBy: sql.endIndex),
                next < sql.endIndex, sql[next] == "-" {
+                let start = i
+                if let newline = sql[i...].firstIndex(where: { $0 == "\n" }) {
+                    i = sql.index(after: newline)
+                    tokens.append(SQLToken(kind: .comment, range: start..<i))
+                } else {
+                    tokens.append(SQLToken(kind: .comment, range: start..<sql.endIndex))
+                    i = sql.endIndex
+                }
+                continue
+            }
+
+            if c == "#" {
                 let start = i
                 if let newline = sql[i...].firstIndex(where: { $0 == "\n" }) {
                     i = sql.index(after: newline)
@@ -127,6 +188,11 @@ struct SQLHighlighter {
                 i = sql.index(after: i)
                 var closed = false
                 while i < sql.endIndex {
+                    if sql[i] == "\\" {
+                        let escaped = sql.index(after: i)
+                        i = escaped < sql.endIndex ? sql.index(after: escaped) : escaped
+                        continue
+                    }
                     if sql[i] == "'" {
                         let afterQuote = sql.index(after: i)
                         if afterQuote < sql.endIndex, sql[afterQuote] == "'" {
@@ -151,11 +217,17 @@ struct SQLHighlighter {
                 var closed = false
                 while i < sql.endIndex {
                     if sql[i] == "`" {
+                        let afterQuote = sql.index(after: i)
+                        if afterQuote < sql.endIndex, sql[afterQuote] == "`" {
+                            i = sql.index(after: afterQuote)
+                        } else {
+                            i = afterQuote
+                            closed = true
+                            break
+                        }
+                    } else {
                         i = sql.index(after: i)
-                        closed = true
-                        break
                     }
-                    i = sql.index(after: i)
                 }
                 tokens.append(SQLToken(kind: closed ? .identifier : .error, range: start..<i))
                 continue
@@ -167,12 +239,23 @@ struct SQLHighlighter {
                 i = sql.index(after: i)
                 var closed = false
                 while i < sql.endIndex {
-                    if sql[i] == "\"" {
-                        i = sql.index(after: i)
-                        closed = true
-                        break
+                    if sql[i] == "\\" {
+                        let escaped = sql.index(after: i)
+                        i = escaped < sql.endIndex ? sql.index(after: escaped) : escaped
+                        continue
                     }
-                    i = sql.index(after: i)
+                    if sql[i] == "\"" {
+                        let afterQuote = sql.index(after: i)
+                        if afterQuote < sql.endIndex, sql[afterQuote] == "\"" {
+                            i = sql.index(after: afterQuote)
+                        } else {
+                            i = afterQuote
+                            closed = true
+                            break
+                        }
+                    } else {
+                        i = sql.index(after: i)
+                    }
                 }
                 tokens.append(SQLToken(kind: closed ? .identifier : .error, range: start..<i))
                 continue
@@ -234,6 +317,372 @@ struct SQLHighlighter {
         return tokens
     }
 
+    // MARK: Statements
+
+    /// Splits a script only at terminators that the lexer identified outside
+    /// strings, quoted identifiers, and comments. Compound routine bodies keep
+    /// their internal terminators until the matching END keyword.
+    static func statements(in sql: String) -> [SQLStatement] {
+        let tokens = tokenize(sql).filter { $0.kind != .comment }
+        var ranges: [Range<String.Index>] = []
+        var statementStart = sql.startIndex
+        var compoundDepth = 0
+        var isRoutineDefinition = false
+        var significantWords: [String] = []
+
+        var previousWord: String?
+        for (tokenIndex, token) in tokens.enumerated() {
+            let text = String(sql[token.range])
+            let upper = text.uppercased()
+
+            if token.kind == .keyword || token.kind == .plain {
+                significantWords.append(upper)
+                if significantWords.count <= 4,
+                   significantWords.first == "CREATE",
+                   ["PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"].contains(upper) {
+                    isRoutineDefinition = true
+                }
+                if isRoutineDefinition {
+                    let opensCompound: Bool
+                    if upper == "IF" {
+                        opensCompound = tokens[(tokenIndex + 1)...].prefix { future in
+                            !(future.kind == .punctuation && String(sql[future.range]) == ";")
+                        }.contains { future in
+                            String(sql[future.range]).uppercased() == "THEN"
+                        }
+                    } else {
+                        opensCompound = ["BEGIN", "CASE", "LOOP", "WHILE", "REPEAT"].contains(upper)
+                    }
+                    if opensCompound, previousWord != "END" {
+                        compoundDepth += 1
+                    } else if upper == "END", compoundDepth > 0 {
+                        compoundDepth -= 1
+                    }
+                }
+                previousWord = upper
+            }
+
+            guard token.kind == .punctuation, text == ";", compoundDepth == 0 else {
+                continue
+            }
+
+            appendMeaningfulRange(statementStart..<token.range.lowerBound, in: sql, to: &ranges)
+            statementStart = token.range.upperBound
+            significantWords.removeAll(keepingCapacity: true)
+            isRoutineDefinition = false
+            previousWord = nil
+        }
+
+        appendMeaningfulRange(statementStart..<sql.endIndex, in: sql, to: &ranges)
+        return ranges.enumerated().map { index, range in
+            let text = String(sql[range])
+            return SQLStatement(
+                id: index,
+                text: text,
+                range: range,
+                safety: safetyClassification(of: text)
+            )
+        }
+    }
+
+    /// Returns the selected SQL, or the parsed statement containing the caret.
+    /// A non-empty selection may intentionally contain multiple statements.
+    static func statementsToExecute(in sql: String, selectedRange: NSRange) -> [SQLStatement] {
+        guard !sql.isEmpty else { return [] }
+        let boundedLocation = min(selectedRange.location, (sql as NSString).length)
+        let boundedLength = min(selectedRange.length, (sql as NSString).length - boundedLocation)
+
+        if boundedLength > 0,
+           let range = Range(NSRange(location: boundedLocation, length: boundedLength), in: sql) {
+            return statements(in: String(sql[range]))
+        }
+
+        let caret = String.Index(utf16Offset: boundedLocation, in: sql)
+        let parsed = statements(in: sql)
+        if let containing = parsed.first(where: { $0.range.contains(caret) || $0.range.upperBound == caret }) {
+            return [containing]
+        }
+        if let previous = parsed.last(where: { $0.range.upperBound < caret }) {
+            return [previous]
+        }
+        return parsed.first.map { [$0] } ?? []
+    }
+
+    static func safetyClassification(of sql: String) -> SQLSafetyClassification {
+        let words = tokenize(sql).compactMap { token -> String? in
+            guard token.kind == .keyword || token.kind == .plain else { return nil }
+            return String(sql[token.range]).uppercased()
+        }
+        guard !words.isEmpty else { return .unknown }
+
+        if words[0] == "WITH" {
+            // A CTE may read in its first subquery and mutate in its outer
+            // statement (or mutate inside a data-modifying CTE). Classify the
+            // whole token stream so an earlier SELECT cannot hide that write.
+            if words.contains(where: {
+                ["DELETE", "DROP", "TRUNCATE", "ALTER", "RENAME", "GRANT", "REVOKE", "LOAD"].contains($0)
+            }) {
+                return .destructive
+            }
+            if words.contains(where: {
+                ["INSERT", "UPDATE", "REPLACE", "MERGE", "CALL", "CREATE"].contains($0)
+            }) {
+                return .mutation
+            }
+        }
+        let leading = words[0] == "WITH" && words.contains("SELECT") ? "SELECT" : words[0]
+
+        switch leading {
+        case "SELECT":
+            // SELECT ... INTO OUTFILE/DUMPFILE writes to the server filesystem.
+            if words.contains("INTO"), words.contains("OUTFILE") || words.contains("DUMPFILE") {
+                return .destructive
+            }
+            // PostgreSQL SELECT INTO creates a table, while MySQL SELECT INTO
+            // can assign session variables. Neither is a read-only result set.
+            if words.contains("INTO") {
+                return .mutation
+            }
+            if words.contains("FOR"), words.contains("UPDATE") || words.contains("SHARE") {
+                return .mutation
+            }
+            return .readOnly
+        case "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "VALUES":
+            return .readOnly
+        case "INSERT", "UPDATE", "REPLACE", "MERGE", "CALL":
+            return .mutation
+        case "DELETE":
+            return .destructive
+        case "DROP", "TRUNCATE", "ALTER", "RENAME", "GRANT", "REVOKE", "LOAD":
+            return .destructive
+        case "CREATE":
+            return .mutation
+        case "SET":
+            if words.contains("GLOBAL") || words.contains("PERSIST") || words.contains("PERSIST_ONLY") {
+                return .mutation
+            }
+            return .sessionControl
+        case "USE", "BEGIN", "START", "COMMIT", "ROLLBACK", "SAVEPOINT", "LOCK", "UNLOCK":
+            return .sessionControl
+        default:
+            return .unknown
+        }
+    }
+
+    /// Wraps a single, parser-validated SELECT/CTE and asks the server for one
+    /// sentinel row beyond the configured display bound. Mutations, locking
+    /// reads, utility commands, malformed input, and scripts are never rewritten.
+    static func boundedReadPlan(
+        for sql: String,
+        rowLimit: Int,
+        dialect: DatabaseDialect
+    ) -> SQLBoundedReadPlan? {
+        guard validEditorResultRowLimits.contains(rowLimit) else { return nil }
+        let parsed = statements(in: sql)
+        guard parsed.count == 1,
+              parsed[0].safety == .readOnly,
+              topLevelOperation(in: parsed[0].text) == "SELECT" else { return nil }
+
+        let fetchLimit = rowLimit + 1
+        let statement = parsed[0].text
+        let executionSQL: String
+        switch dialect {
+        case .mysql, .postgresql, .sqlite:
+            executionSQL = """
+            SELECT * FROM (
+            \(statement)
+            ) AS glassdb_bounded_result
+            LIMIT \(fetchLimit)
+            """
+        }
+        return SQLBoundedReadPlan(
+            originalSQL: sql,
+            executionSQL: executionSQL,
+            rowLimit: rowLimit,
+            fetchLimit: fetchLimit
+        )
+    }
+
+    private static func topLevelOperation(in sql: String) -> String? {
+        let tokens = tokenize(sql).filter { $0.kind != .comment }
+        guard !tokens.contains(where: { $0.kind == .error }) else { return nil }
+
+        var depth = 0
+        for token in tokens where token.kind == .punctuation {
+            switch String(sql[token.range]) {
+            case "(": depth += 1
+            case ")":
+                depth -= 1
+                if depth < 0 { return nil }
+            default: break
+            }
+        }
+        guard depth == 0 else { return nil }
+
+        let operationWords: Set<String> = [
+            "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE",
+            "CREATE", "DROP", "ALTER", "CALL", "VALUES", "TABLE"
+        ]
+        var parenthesisDepth = 0
+        var sawWith = false
+        for token in tokens {
+            if token.kind == .punctuation {
+                switch String(sql[token.range]) {
+                case "(": parenthesisDepth += 1
+                case ")": parenthesisDepth -= 1
+                default: break
+                }
+                continue
+            }
+            guard token.kind == .keyword || token.kind == .plain else { continue }
+            let word = String(sql[token.range]).uppercased()
+            if !sawWith {
+                if word == "SELECT" { return word }
+                guard word == "WITH" else { return word }
+                sawWith = true
+                continue
+            }
+            if parenthesisDepth == 0, operationWords.contains(word) {
+                return word
+            }
+        }
+        return nil
+    }
+
+    static func redactingLiterals(in sql: String) -> String {
+        let tokens = tokenize(sql)
+        var output = ""
+        var cursor = sql.startIndex
+        for token in tokens where token.kind == .string || token.kind == .number {
+            output += sql[cursor..<token.range.lowerBound]
+            output += token.kind == .string ? "'?'" : "?"
+            cursor = token.range.upperBound
+        }
+        output += sql[cursor..<sql.endIndex]
+        return output
+    }
+
+    // MARK: Completion and Formatting
+
+    /// Returns bounded, deterministic suggestions for the identifier fragment at
+    /// the caret. Callers supply live schema names so completion never invents
+    /// database objects or requires a second parser implementation in the UI.
+    static func completions(
+        in sql: String,
+        selectedRange: NSRange,
+        schemaIdentifiers: [String],
+        limit: Int = 12
+    ) -> [String] {
+        guard limit > 0,
+              let context = completionContext(in: sql, selectedRange: selectedRange),
+              !context.prefix.isEmpty else { return [] }
+
+        let candidates = keywords.union(functions).union(schemaIdentifiers)
+        return candidates
+            .filter { $0.lowercased().hasPrefix(context.prefix.lowercased()) }
+            .sorted { lhs, rhs in
+                let lhsExact = lhs.caseInsensitiveCompare(context.prefix) == .orderedSame
+                let rhsExact = rhs.caseInsensitiveCompare(context.prefix) == .orderedSame
+                if lhsExact != rhsExact { return lhsExact }
+                if lhs.count != rhs.count { return lhs.count < rhs.count }
+                return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    /// Replaces only the completion fragment immediately before the caret and
+    /// returns the new selection. A non-empty selection is replaced directly.
+    static func applyingCompletion(
+        _ completion: String,
+        to sql: String,
+        selectedRange: NSRange
+    ) -> (sql: String, selection: NSRange) {
+        let source = sql as NSString
+        let location = min(selectedRange.location, source.length)
+        let length = min(selectedRange.length, source.length - location)
+        let replacementRange: NSRange
+        if length > 0 {
+            replacementRange = NSRange(location: location, length: length)
+        } else if let context = completionContext(
+            in: sql,
+            selectedRange: NSRange(location: location, length: 0)
+        ) {
+            replacementRange = context.range
+        } else {
+            replacementRange = NSRange(location: location, length: 0)
+        }
+        let completed = source.replacingCharacters(in: replacementRange, with: completion)
+        let caret = replacementRange.location + (completion as NSString).length
+        return (completed, NSRange(location: caret, length: 0))
+    }
+
+    /// Normalizes keyword case and statement spacing while preserving string,
+    /// identifier, comment, and compound-routine contents byte-for-byte.
+    static func formatted(_ sql: String) -> String {
+        guard !sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        let mutable = NSMutableString(string: sql)
+        for token in tokenize(sql).reversed() where token.kind == .keyword {
+            let range = NSRange(token.range, in: sql)
+            mutable.replaceCharacters(in: range, with: String(sql[token.range]).uppercased())
+        }
+        let normalized = mutable as String
+        return statements(in: normalized)
+            .map(\.text)
+            .joined(separator: ";\n\n")
+    }
+
+    private static func completionContext(
+        in sql: String,
+        selectedRange: NSRange
+    ) -> (range: NSRange, prefix: String)? {
+        let source = sql as NSString
+        let location = min(selectedRange.location, source.length)
+        let length = min(selectedRange.length, source.length - location)
+        if length > 0 {
+            let range = NSRange(location: location, length: length)
+            return (range, source.substring(with: range))
+        }
+
+        let caret = String.Index(utf16Offset: location, in: sql)
+        if tokenize(sql).contains(where: { token in
+            let containsCaret = token.range.contains(caret)
+                || (token.range.upperBound == caret && token.range.lowerBound < caret)
+            return containsCaret && [.string, .comment, .error].contains(token.kind)
+        }) {
+            return nil
+        }
+
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_.$@"))
+        var start = location
+        while start > 0 {
+            let scalar = source.character(at: start - 1)
+            guard let unicode = UnicodeScalar(scalar), allowed.contains(unicode) else { break }
+            start -= 1
+        }
+        let range = NSRange(location: start, length: location - start)
+        return (range, source.substring(with: range))
+    }
+
+    private static func appendMeaningfulRange(
+        _ candidate: Range<String.Index>,
+        in sql: String,
+        to ranges: inout [Range<String.Index>]
+    ) {
+        guard let lower = sql[candidate].firstIndex(where: { !$0.isWhitespace }) else { return }
+        var upper = candidate.upperBound
+        while upper > lower {
+            let previous = sql.index(before: upper)
+            guard sql[previous].isWhitespace else { break }
+            upper = previous
+        }
+        let range = lower..<upper
+        let meaningful = tokenize(String(sql[range])).contains { $0.kind != .comment }
+        if meaningful {
+            ranges.append(range)
+        }
+    }
+
     // MARK: Lint
 
     static func lint(_ sql: String, tokens: [SQLToken]? = nil) -> [SQLDiagnostic] {
@@ -254,6 +703,7 @@ struct SQLHighlighter {
 
     // MARK: Attributed String
 
+    #if canImport(UIKit)
     static func highlight(_ sql: String, fontSize: CGFloat = 14) -> NSAttributedString {
         let tokens = tokenize(sql)
         let attr = NSMutableAttributedString(
@@ -305,4 +755,5 @@ struct SQLHighlighter {
 
         return attr
     }
+    #endif
 }

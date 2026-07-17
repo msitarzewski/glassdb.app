@@ -17,3 +17,9 @@
 #else
 protocol NIOSSHSendable: Any {}
 #endif // swift(>=5.6)
+
+#if compiler(>=6.2)
+public typealias NIOSSHSendableMetatype = SendableMetatype
+#else
+public typealias NIOSSHSendableMetatype = Any
+#endif

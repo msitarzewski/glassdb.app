@@ -15,17 +15,15 @@ enum UserDefaultsKeys {
     static let sshKeys = "glassdb.sshKeys"
 
     // Settings
-    static let autoReconnect = "glassdb.autoReconnect"
-    static let confirmBeforeClosing = "glassdb.confirmBeforeClosing"
     static let maxQueryHistoryItems = "glassdb.maxQueryHistoryItems"
     static let resultRowLimit = "glassdb.resultRowLimit"
     static let windowOpacity = "glassdb.windowOpacity"
     static let blurBackground = "glassdb.blurBackground"
-    static let glassTint = "glassdb.glassTint"
     static let showSidebarByDefault = "glassdb.showSidebarByDefault"
     static let editorFontSize = "glassdb.editorFontSize"
     static let dataGridFontSize = "glassdb.dataGridFontSize"
     static let showLineNumbers = "glassdb.showLineNumbers"
+    static let redactQueryHistoryLiterals = "glassdb.redactQueryHistoryLiterals"
 }
 
 enum KeychainServiceNames {

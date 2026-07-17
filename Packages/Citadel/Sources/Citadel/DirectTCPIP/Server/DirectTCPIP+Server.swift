@@ -41,7 +41,7 @@ public struct DirectTCPIPForwardingDelegate: DirectTCPIPDelegate {
 
         return ClientBootstrap(group: channel.eventLoop)
             .connect(host: request.targetHost, port: request.targetPort)
-            .flatMap { remote in
+            .flatMap { [channel] remote in
                 channel.pipeline.addHandlers([
                     DataToBufferCodec()
                 ]).flatMap {

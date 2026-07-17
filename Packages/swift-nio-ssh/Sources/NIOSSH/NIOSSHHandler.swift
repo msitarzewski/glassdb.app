@@ -201,8 +201,9 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         case .noMessage:
             break
         case .possibleFutureMessage(let future):
-            // TODO(cory): This is not right, but for now it's good enough.
-            future.whenComplete { result in
+            // State-machine futures are fulfilled on the channel event loop. Keep the
+            // non-Sendable handler and context confined to that loop.
+            future.assumeIsolated().whenComplete { result in
                 switch result {
                 case .success(.some(let message)):
                     do {
@@ -357,7 +358,8 @@ extension NIOSSHHandler {
             }
         }
 
-        responsePromise.futureResult.whenComplete { result in
+        // The promise was created on the channel event loop immediately above.
+        responsePromise.futureResult.assumeIsolatedUnsafeUnchecked().whenComplete { result in
             guard message.wantReply else {
                 // Nothing to do.
                 return
@@ -405,7 +407,8 @@ extension NIOSSHHandler {
         // Sending a single global request is tricky, because we don't want to succeed the promise until we have the result of the
         // request. That means we need a buffer of promises for request success/failure messages, as well as to create new promises.
         let writePromise = context.eventLoop.makePromise(of: Void.self)
-        writePromise.futureResult.whenComplete { result in
+        // The write promise and handler state are confined to the channel event loop.
+        writePromise.futureResult.assumeIsolatedUnsafeUnchecked().whenComplete { result in
             switch result {
             case .success:
                 guard self.context != nil else {

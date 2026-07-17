@@ -13,8 +13,48 @@ import Foundation
 import Crypto
 import NIOCore
 import NIOPosix
-import NIOSSH
+@preconcurrency import NIOSSH
 import Logging
+import Synchronization
+
+public enum SSHHostKeyChallengeReason: String, Sendable, Hashable {
+    case unknown
+    case changed
+}
+
+public struct SSHHostKeyChallenge: Sendable, Hashable {
+    public let host: String
+    public let port: Int
+    public let algorithm: String
+    public let fingerprintSHA256: String
+    /// Complete SSH wire-format host key data, suitable for PinnedSSHHostKey.
+    public let publicKeyData: Data
+    public let reason: SSHHostKeyChallengeReason
+}
+
+public struct SSHHostKeyTrustRequiredError: Error, LocalizedError, Sendable {
+    public let challenge: SSHHostKeyChallenge
+
+    public var errorDescription: String? {
+        switch challenge.reason {
+        case .unknown:
+            return "Verify the first-use SSH host key for \(challenge.host):\(challenge.port) (\(challenge.algorithm), \(challenge.fingerprintSHA256))."
+        case .changed:
+            return "The SSH host key for \(challenge.host):\(challenge.port) changed. Connection was blocked (\(challenge.algorithm), \(challenge.fingerprintSHA256))."
+        }
+    }
+}
+
+public enum SSHAlgorithmPolicy: Sendable, Hashable {
+    /// Current swift-nio-ssh defaults only.
+    case modernOnly
+}
+
+public enum SSHPrivateKeyAlgorithm: String, Sendable, Hashable {
+    case rsa
+    case ed25519
+    case secureEnclaveP256
+}
 
 public struct SSHTunnelConfig: Sendable {
     public let sshHost: String
@@ -25,6 +65,9 @@ public struct SSHTunnelConfig: Sendable {
     public let sshKeyPassphrase: String?
     public let remoteHost: String
     public let remotePort: Int
+    /// Previously confirmed complete SSH wire-format host keys for sshHost:sshPort.
+    public let trustedHostKeys: Set<Data>
+    public let algorithmPolicy: SSHAlgorithmPolicy
 
     public init(
         sshHost: String,
@@ -34,7 +77,9 @@ public struct SSHTunnelConfig: Sendable {
         sshPrivateKey: String? = nil,
         sshKeyPassphrase: String? = nil,
         remoteHost: String = "127.0.0.1",
-        remotePort: Int = 3306
+        remotePort: Int = 3306,
+        trustedHostKeys: Set<Data> = [],
+        algorithmPolicy: SSHAlgorithmPolicy = .modernOnly
     ) {
         self.sshHost = sshHost
         self.sshPort = sshPort
@@ -44,6 +89,8 @@ public struct SSHTunnelConfig: Sendable {
         self.sshKeyPassphrase = sshKeyPassphrase
         self.remoteHost = remoteHost
         self.remotePort = remotePort
+        self.trustedHostKeys = trustedHostKeys
+        self.algorithmPolicy = algorithmPolicy
     }
 }
 
@@ -58,64 +105,49 @@ public final class SSHTunnelManager: Sendable {
     /// The MySQL client connects to 127.0.0.1:<localPort> which forwards
     /// through the SSH tunnel to remoteHost:remotePort.
     public func establish(config: SSHTunnelConfig) async throws -> SSHTunnel {
+        guard !config.sshHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !config.sshUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !config.remoteHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (1...65_535).contains(config.sshPort),
+              (1...65_535).contains(config.remotePort) else {
+            throw SSHTunnelError.invalidConfiguration
+        }
+
         let authMethod: SSHAuthenticationMethod
         if let privateKey = config.sshPrivateKey {
-            let passphrase = config.sshKeyPassphrase?.data(using: .utf8)
-
-            if privateKey.hasPrefix("SECURE_ENCLAVE_P256:") {
-                // Secure Enclave P256 — raw key bytes encoded as base64 after the prefix
-                let base64 = String(privateKey.dropFirst("SECURE_ENCLAVE_P256:".count))
-                guard let keyData = Data(base64Encoded: base64) else {
-                    throw SSHTunnelError.noAuthMethod
-                }
-                let p256Key = try P256.Signing.PrivateKey(rawRepresentation: keyData)
-                authMethod = .p256(username: config.sshUsername, privateKey: p256Key)
-            } else if privateKey.contains("BEGIN RSA PRIVATE KEY") || privateKey.contains("BEGIN RSA PRIVATE") {
-                // RSA PEM key
-                let rsaKey = try Insecure.RSA.PrivateKey(
-                    sshRsa: privateKey,
-                    decryptionKey: passphrase
-                )
-                authMethod = .rsa(username: config.sshUsername, privateKey: rsaKey)
-            } else {
-                // Default: try Ed25519 (OpenSSH format or PEM)
-                let ed25519Key = try Curve25519.Signing.PrivateKey(
-                    sshEd25519: privateKey,
-                    decryptionKey: passphrase
-                )
-                authMethod = .ed25519(username: config.sshUsername, privateKey: ed25519Key)
-            }
-        } else if let password = config.sshPassword {
+            authMethod = try Self.authenticationMethod(
+                username: config.sshUsername,
+                privateKey: privateKey,
+                passphrase: config.sshKeyPassphrase
+            )
+        } else if let password = config.sshPassword, !password.isEmpty {
             authMethod = .passwordBased(username: config.sshUsername, password: password)
         } else {
             throw SSHTunnelError.noAuthMethod
         }
 
-        // Try modern algorithms first, fall back to .all for legacy servers
-        // (matches glas.sh pattern — older OpenSSH needs DH Group 14 / AES128-CTR / RSA)
+        let challengeBox = SSHHostKeyChallengeBox()
+        let hostKeyValidator = PinnedSSHHostKeyValidator(
+            host: config.sshHost,
+            port: config.sshPort,
+            trustedKeys: config.trustedHostKeys,
+            challengeBox: challengeBox
+        )
         let client: SSHClient
         do {
             client = try await SSHClient.connect(
                 host: config.sshHost,
                 port: config.sshPort,
                 authenticationMethod: authMethod,
-                hostKeyValidator: .acceptAnything(),
+                hostKeyValidator: .custom(hostKeyValidator),
                 reconnect: .never,
-                algorithms: SSHAlgorithms()
+                algorithms: Self.algorithms(for: config.algorithmPolicy)
             )
         } catch {
-            if Self.isKeyExchangeNegotiationFailure(error) {
-                client = try await SSHClient.connect(
-                    host: config.sshHost,
-                    port: config.sshPort,
-                    authenticationMethod: authMethod,
-                    hostKeyValidator: .acceptAnything(),
-                    reconnect: .never,
-                    algorithms: .all
-                )
-            } else {
-                throw error
+            if let challenge = challengeBox.value.withLock({ $0 }) {
+                throw SSHHostKeyTrustRequiredError(challenge: challenge)
             }
+            throw error
         }
 
         // Bind a local TCP server on a random port
@@ -148,16 +180,159 @@ public final class SSHTunnelManager: Sendable {
         )
     }
 
-    /// Detect key exchange negotiation failures to trigger legacy algorithm fallback.
-    /// Adapted from glas.sh SSHConnection.isKeyExchangeNegotiationFailure.
-    private static func isKeyExchangeNegotiationFailure(_ error: Error) -> Bool {
-        let raw = String(describing: error)
-        return raw.localizedCaseInsensitiveContains("keyexchangenegotiationfailure")
-            || raw.localizedCaseInsensitiveContains("key exchange negotiation failure")
+    private static func algorithms(for policy: SSHAlgorithmPolicy) -> SSHAlgorithms {
+        switch policy {
+        case .modernOnly:
+            return SSHAlgorithms()
+        }
+    }
+
+    public static func detectPrivateKeyAlgorithm(from privateKey: String) throws -> SSHPrivateKeyAlgorithm {
+        let normalizedKey = normalizedPrivateKey(privateKey)
+        if normalizedKey.hasPrefix("SECURE_ENCLAVE_P256:") {
+            return .secureEnclaveP256
+        }
+        if normalizedKey.contains("-----BEGIN RSA PRIVATE KEY-----")
+            || normalizedKey.contains("-----BEGIN PRIVATE KEY-----") {
+            throw SSHTunnelError.unsupportedPrivateKeyFormat
+        }
+
+        do {
+            let keyType = try SSHKeyDetection.detectPrivateKeyType(from: normalizedKey)
+            if keyType == .rsa {
+                return .rsa
+            }
+            if keyType == .ed25519 {
+                return .ed25519
+            }
+            throw SSHTunnelError.unsupportedPrivateKeyAlgorithm(keyType.description)
+        } catch let error as SSHTunnelError {
+            throw error
+        } catch {
+            throw SSHTunnelError.invalidPrivateKey
+        }
+    }
+
+    static func authenticationMethod(
+        username: String,
+        privateKey: String,
+        passphrase: String?
+    ) throws -> SSHAuthenticationMethod {
+        let normalizedKey = normalizedPrivateKey(privateKey)
+        do {
+            switch try detectPrivateKeyAlgorithm(from: normalizedKey) {
+            case .secureEnclaveP256:
+                let base64 = String(normalizedKey.dropFirst("SECURE_ENCLAVE_P256:".count))
+                guard let keyData = Data(base64Encoded: base64) else {
+                    throw SSHTunnelError.invalidPrivateKey
+                }
+                let key = try P256.Signing.PrivateKey(rawRepresentation: keyData)
+                return .p256(username: username, privateKey: key)
+            case .rsa:
+                let key = try Insecure.RSA.PrivateKey(
+                    sshRsa: normalizedKey,
+                    decryptionKey: passphrase?.data(using: .utf8)
+                )
+                return .rsa(username: username, privateKey: key)
+            case .ed25519:
+                let key = try Curve25519.Signing.PrivateKey(
+                    sshEd25519: normalizedKey,
+                    decryptionKey: passphrase?.data(using: .utf8)
+                )
+                return .ed25519(username: username, privateKey: key)
+            }
+        } catch let error as SSHTunnelError {
+            throw error
+        } catch {
+            throw SSHTunnelError.invalidPrivateKey
+        }
+    }
+
+    private static func normalizedPrivateKey(_ privateKey: String) -> String {
+        privateKey
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     deinit {
         try? eventLoopGroup.syncShutdownGracefully()
+    }
+}
+
+private final class SSHHostKeyChallengeBox: Sendable {
+    let value = Mutex<SSHHostKeyChallenge?>(nil)
+}
+
+private final class PinnedSSHHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, Sendable {
+    private let host: String
+    private let port: Int
+    private let trustedKeys: Set<Data>
+    private let challengeBox: SSHHostKeyChallengeBox
+
+    init(
+        host: String,
+        port: Int,
+        trustedKeys: Set<Data>,
+        challengeBox: SSHHostKeyChallengeBox
+    ) {
+        self.host = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.port = port
+        self.trustedKeys = trustedKeys
+        self.challengeBox = challengeBox
+    }
+
+    func validateHostKey(
+        hostKey: NIOSSHPublicKey,
+        validationCompletePromise: EventLoopPromise<Void>
+    ) {
+        var buffer = ByteBufferAllocator().buffer(capacity: 512)
+        _ = hostKey.write(to: &buffer)
+        let keyData = Data(buffer.readableBytesView)
+        guard let challenge = SSHHostKeyTrustPolicy.challenge(
+            for: keyData,
+            host: host,
+            port: port,
+            trustedKeys: trustedKeys
+        ) else {
+            validationCompletePromise.succeed(())
+            return
+        }
+        challengeBox.value.withLock { $0 = challenge }
+        validationCompletePromise.fail(SSHHostKeyTrustRequiredError(challenge: challenge))
+    }
+}
+
+enum SSHHostKeyTrustPolicy {
+    static func challenge(
+        for keyData: Data,
+        host: String,
+        port: Int,
+        trustedKeys: Set<Data>
+    ) -> SSHHostKeyChallenge? {
+        guard !trustedKeys.contains(keyData) else { return nil }
+        return SSHHostKeyChallenge(
+            host: host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            port: port,
+            algorithm: algorithm(from: keyData),
+            fingerprintSHA256: fingerprint(for: keyData),
+            publicKeyData: keyData,
+            reason: trustedKeys.isEmpty ? .unknown : .changed
+        )
+    }
+
+    private static func algorithm(from data: Data) -> String {
+        guard data.count >= 4 else { return "unknown" }
+        let length = data.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+        guard length > 0, data.count >= 4 + length else { return "unknown" }
+        return String(data: data[4..<(4 + length)], encoding: .utf8) ?? "unknown"
+    }
+
+    private static func fingerprint(for data: Data) -> String {
+        let base64 = Data(SHA256.hash(data: data))
+            .base64EncodedString()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "="))
+        return "SHA256:\(base64)"
     }
 }
 
@@ -225,7 +400,7 @@ private final class LocalToSSHForwarder: ChannelInboundHandler, @unchecked Senda
                     }
                 }
                 // Hop back to the local channel's event loop to avoid racing with channelRead
-                localChannel.eventLoop.execute {
+                localChannel.eventLoop.execute { [weak self] in
                     guard let self else { return }
                     self.sshChannel = channel
                     // Flush anything that arrived while we were connecting
@@ -288,6 +463,10 @@ private final class SSHToLocalForwarder: ChannelInboundHandler, @unchecked Senda
 
 public enum SSHTunnelError: Error, LocalizedError {
     case noAuthMethod
+    case invalidConfiguration
+    case invalidPrivateKey
+    case unsupportedPrivateKeyAlgorithm(String)
+    case unsupportedPrivateKeyFormat
     case bindFailed
     case tunnelClosed
 
@@ -295,6 +474,14 @@ public enum SSHTunnelError: Error, LocalizedError {
         switch self {
         case .noAuthMethod:
             return "No SSH authentication method provided (password or key required)."
+        case .invalidConfiguration:
+            return "SSH host, username, destination, and ports must be valid before connecting."
+        case .invalidPrivateKey:
+            return "The SSH private key could not be read. Use an OpenSSH-format RSA or Ed25519 key and verify its passphrase."
+        case .unsupportedPrivateKeyAlgorithm(let algorithm):
+            return "The SSH private key uses unsupported algorithm \(algorithm). Use RSA or Ed25519."
+        case .unsupportedPrivateKeyFormat:
+            return "Legacy PEM private keys are not supported. Convert or export the key in OpenSSH format."
         case .bindFailed:
             return "Failed to bind local tunnel port."
         case .tunnelClosed:

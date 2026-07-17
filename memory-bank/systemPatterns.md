@@ -52,13 +52,13 @@
 - Row numbers continue across pages (offset-based, not reset per page).
 
 ## Multi-Query Execution
-- SQL text split on semicolons into individual statements.
-- Statements executed sequentially, results from last SELECT displayed.
+- SQL-aware tokenization preserves semicolons in strings, comments, identifiers, and compound routine bodies.
+- Statements execute sequentially and stop on failure; the latest result is displayed and every execution is recorded in history.
 - Empty statements (trailing semicolons) filtered out.
 
 ## Auto-Repeat Pattern
-- Context menu on Execute button offers interval picker (5s/10s/30s/60s).
-- Timer fires `executeQuery()` at selected interval.
+- Context menu on the table-data Execute button offers a fixed “Run every 10s” action.
+- A cancellable task repeats the current table query at that interval.
 - Stopped on manual execute, disconnect, or view disappear.
 
 ## Toolbar-to-Tab Communication (NotificationCenter)
@@ -69,10 +69,11 @@
 - Settings gear and AI sparkle button also live in workspace ornament.
 
 ## AI Assistant Pattern
-- `AIAssistant.swift` wraps Foundation Models framework (`#if canImport(FoundationModels)`).
+- `AIAssistant.swift` weak-links Foundation Models and runtime-gates generation to visionOS 27+ so visionOS 26 can launch safely.
 - Same architectural pattern as glas.sh AIAssistant.
-- Schema-aware: receives table/column metadata for context-grounded SQL generation.
-- Features: SQL generation from natural language, error explanation, query summary.
+- The current UI supplies privacy-bounded metadata for the selected table; row samples are opt-in at the model layer.
+- Generated SQL enters the editor and is classified by deterministic app policy before execution.
+- Error-explanation and query-summary methods exist but are not yet surfaced in the product UI.
 - Entry point: AI sparkle button in workspace ornament.
 
 ## Query Execution Flow
@@ -80,18 +81,18 @@
 - `DatabaseSessionManager.executeQuery()` delegates to `connection.execute()`.
 - `MySQLAdapter.execute()` routes utility commands (USE, SET, SHOW, DDL) through `simpleQuery` (COM_QUERY) and data queries through `query` (COM_STMT_PREPARE).
 - USE statements update `session.currentDatabase`.
-- Results stored in `session.queryHistory`, displayed inline or detachable.
+- Results are displayed inline or detachable; durable history persists independently of session lifetime.
 
 ## Database Connection Flow
 - SSH tunnel (optional) established first via Citadel.
-- MySQL connection via mysql-nio through tunnel or direct.
+- MySQL/PostgreSQL connect through their NIO adapters; SQLite opens a managed private copy.
 - Connection state tracked in `DatabaseSession` (@Observable).
-- Passwords stored in Keychain via GlasSecretStore, connection configs in UserDefaults.
-- SSH key auth: Ed25519 + RSA + Secure Enclave P256.
+- Passwords stored in Keychain via GlasSecretStore, connection configs in UserDefaults. The shared access group/App Group is a same-device bridge; eligible-secret cross-device sync and its stable family catalog remain C3 work.
+- SSH key auth: Ed25519, RSA, and Secure Enclave-wrapped P256 material.
 
 ## Glass Material Pattern (visionOS 26)
-- All windows use `.windowStyle(.plain)` — system handles glass chrome and corners.
-- NO manual `.ultraThinMaterial` backgrounds on content windows (causes double-corner artifact).
+- Only the `query-editor` database workspace uses `.windowStyle(.plain)` and user-controlled 0...1 opacity/blur.
+- Connections, Settings, detached results, alerts, and sheets keep system-provided materials.
 - Ornaments via `.toolbar { ToolbarItemGroup(placement: .bottomOrnament) }` — auto Liquid Glass.
 - NavigationSplitView sidebar auto-gets Liquid Glass floating treatment.
 - Sheets get automatic glass backgrounds.
@@ -103,7 +104,7 @@
 - `.buttonStyle(.glassProminent)` — unavailable. Use `.borderedProminent`.
 
 ## Repo Layout
-- Runtime app code in `glassdb/` (24 Swift files).
+- Runtime app code in `glassdb/` (22 top-level Swift files at this release snapshot).
 - Shared package code in `Packages/GlassDBKit/` (DB protocol, adapters, models).
 - Vendored SSH packages in `Packages/Citadel/` and `Packages/swift-nio-ssh/`.
 - Shared Keychain package at `../GlasSecretStore/` (local path dependency).

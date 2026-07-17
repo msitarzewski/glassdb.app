@@ -237,8 +237,8 @@ final class CitadelServerDelegate: Sendable, GlobalRequestDelegate {
 /// An SSH Server implementation.
 /// This class is used to start an SSH server on a specified host and port.
 /// The server can be closed using the `close()` method.
-/// - Note: This class is not thread safe.
-public final class SSHServer {
+/// Mutable subsystem delegates are protected by the server delegate's locks.
+public final class SSHServer: Sendable {
     let channel: Channel
     let delegate: CitadelServerDelegate
     let logger: Logger
@@ -320,18 +320,25 @@ public final class SSHServer {
                     option.apply(to: &server)
                 }
                 
-                return channel.pipeline.addHandlers([
-                    NIOSSHHandler(
+                do {
+                    let sshHandler = NIOSSHHandler(
                         role: .server(server),
                         allocator: channel.allocator,
                         inboundChildChannelInitializer: { childChannel, channelType in
-                            channel.pipeline.handler(type: NIOSSHHandler.self).flatMap { handler in
-                                delegate.initializeSshChildChannel(childChannel, channelType, username: handler.username)
+                            do {
+                                let handler = try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
+                                return delegate.initializeSshChildChannel(childChannel, channelType, username: handler.username)
+                            } catch {
+                                return childChannel.eventLoop.makeFailedFuture(error)
                             }
                         }
-                    ),
-                    CloseErrorHandler(logger: logger)
-                ])
+                    )
+                    try channel.pipeline.syncOperations.addHandler(sshHandler)
+                    try channel.pipeline.syncOperations.addHandler(CloseErrorHandler(logger: logger))
+                    return channel.eventLoop.makeSucceededVoidFuture()
+                } catch {
+                    return channel.eventLoop.makeFailedFuture(error)
+                }
             }
             .serverChannelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
             .serverChannelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
