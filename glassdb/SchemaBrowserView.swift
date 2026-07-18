@@ -84,6 +84,7 @@ struct SchemaBrowserView: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .help("Reload databases and tables")
             }
         }
         .task {
@@ -187,8 +188,12 @@ struct SchemaBrowserView: View {
                     Button {
                         onSelectionChanged?(.database(database))
                     } label: {
-                        Label(database, systemImage: "cylinder")
-                            .font(.headline)
+                        HStack {
+                            Label(database, systemImage: "cylinder")
+                                .font(.headline)
+                            Spacer(minLength: 8)
+                        }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
@@ -225,7 +230,7 @@ struct SchemaBrowserView: View {
                 }
             }
         }
-        .scrollInputBehavior(.enabled, for: .look)
+        .databaseLookScrollEnabled()
     }
 
     private func columnAccessibilityLabel(_ col: ColumnInfo) -> String {
@@ -288,6 +293,7 @@ struct SchemaBrowserView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .contextMenu {
@@ -298,14 +304,14 @@ struct SchemaBrowserView: View {
                 }
                 Button {
                     guard let connection = session?.connection else { return }
-                    UIPasteboard.general.string = "\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))"
+                    PlatformClipboard.copy("\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))")
                 } label: {
                     Label("Copy Table Name", systemImage: "doc.on.doc")
                 }
                 Button {
                     guard let connection = session?.connection else { return }
                     let object = "\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))"
-                    UIPasteboard.general.string = "SELECT * FROM \(object) LIMIT 100;"
+                    PlatformClipboard.copy("SELECT * FROM \(object) LIMIT 100;")
                 } label: {
                     Label("Copy SELECT Statement", systemImage: "text.page")
                 }

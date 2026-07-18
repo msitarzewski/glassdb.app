@@ -8,7 +8,7 @@
 import Foundation
 import XCTest
 import Crypto
-import Citadel
+@testable import Citadel
 import _CryptoExtras
 import NIOSSH
 import NIO
@@ -24,6 +24,20 @@ enum SSHServerError: Error {
 }
 
 final class KeyTests: XCTestCase {
+    func testSFTPHandleDebugDescriptionUsesTwoDigitHex() {
+        var buffer = ByteBufferAllocator().buffer(capacity: 4)
+        buffer.writeBytes([0x00, 0x0f, 0xa5, 0xff])
+        XCTAssertEqual(buffer.sftpHandleDebugDescription, "000fa5ff")
+    }
+
+    func testCryptoInitializationFailureIsThrownInsteadOfTrapping() {
+        XCTAssertThrowsError(try OpenSSH.KDF.validateCryptoInitialization(false)) { error in
+            guard case OpenSSH.KeyError.cryptoError = error else {
+                return XCTFail("Expected OpenSSH.KeyError.cryptoError, got \(error)")
+            }
+        }
+    }
+
     func testRSAPrivateKey() throws {
         let key = """
             -----BEGIN OPENSSH PRIVATE KEY-----

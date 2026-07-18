@@ -26,6 +26,103 @@ public final class SQLiteEngine: DatabaseEngine, Sendable {
         try SQLiteDatabaseConnection(path: path, readOnly: readOnly)
     }
 
+    /// Creates a transactionally consistent, app-owned SQLite snapshot.
+    ///
+    /// Using SQLite's online backup API is required here: copying only the main
+    /// file can omit committed pages that are still present in a live database's
+    /// write-ahead log. The destination must not already exist and is removed if
+    /// opening, backup, or integrity validation fails.
+    @discardableResult
+    public static func createManagedSnapshot(
+        from sourceURL: URL,
+        at destinationURL: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        guard sourceURL.isFileURL, destinationURL.isFileURL,
+              sourceURL.standardizedFileURL != destinationURL.standardizedFileURL else {
+            throw DatabaseError.unexpectedResult("SQLite snapshot paths must be distinct file URLs.")
+        }
+        guard !fileManager.fileExists(atPath: destinationURL.path) else {
+            throw DatabaseError.unexpectedResult("The managed SQLite snapshot destination already exists.")
+        }
+
+        var source: OpaquePointer?
+        var destination: OpaquePointer?
+        var backup: OpaquePointer?
+        var retainDestination = false
+        defer {
+            if let backup {
+                sqlite3_backup_finish(backup)
+            }
+            if let destination {
+                sqlite3_close_v2(destination)
+            }
+            if let source {
+                sqlite3_close_v2(source)
+            }
+            if !retainDestination {
+                try? fileManager.removeItem(at: destinationURL)
+            }
+        }
+
+        let sourceStatus = sqlite3_open_v2(
+            sourceURL.path,
+            &source,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard sourceStatus == SQLITE_OK, let source else {
+            throw snapshotError(handle: source, fallback: "SQLite could not open the selected database.")
+        }
+        sqlite3_busy_timeout(source, 1_000)
+
+        let destinationStatus = sqlite3_open_v2(
+            destinationURL.path,
+            &destination,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard destinationStatus == SQLITE_OK, let destination else {
+            throw snapshotError(handle: destination, fallback: "SQLite could not create the managed snapshot.")
+        }
+        sqlite3_busy_timeout(destination, 1_000)
+
+        guard let initializedBackup = sqlite3_backup_init(destination, "main", source, "main") else {
+            throw snapshotError(handle: destination, fallback: "SQLite could not initialize the managed snapshot.")
+        }
+        backup = initializedBackup
+
+        var retryCount = 0
+        backupLoop: while true {
+            switch sqlite3_backup_step(initializedBackup, 256) {
+            case SQLITE_DONE:
+                break backupLoop
+            case SQLITE_OK:
+                continue
+            case SQLITE_BUSY, SQLITE_LOCKED:
+                guard retryCount < 100 else {
+                    throw DatabaseError.unexpectedResult(
+                        "The selected SQLite database remained busy while creating its managed snapshot."
+                    )
+                }
+                retryCount += 1
+                sqlite3_sleep(10)
+            default:
+                throw snapshotError(handle: destination, fallback: "SQLite could not copy the selected database.")
+            }
+        }
+
+        let finishStatus = sqlite3_backup_finish(initializedBackup)
+        backup = nil
+        guard finishStatus == SQLITE_OK else {
+            throw snapshotError(handle: destination, fallback: "SQLite could not finalize the managed snapshot.")
+        }
+
+        try validateManagedSnapshot(destination)
+        retainDestination = true
+        return destinationURL
+    }
+
     /// Compatibility with `DatabaseEngine`. `database` is the SQLite file path;
     /// when it is omitted, `host` is used as the path. Credentials and ports have
     /// no meaning for SQLite and must remain empty/zero.
@@ -50,6 +147,30 @@ public final class SQLiteEngine: DatabaseEngine, Sendable {
             throw DatabaseError.unexpectedResult("An SQLite database path is required.")
         }
         return try await connect(path: path)
+    }
+
+    private static func validateManagedSnapshot(_ database: OpaquePointer) throws {
+        var statement: OpaquePointer?
+        let prepareStatus = sqlite3_prepare_v2(database, "PRAGMA quick_check", -1, &statement, nil)
+        guard prepareStatus == SQLITE_OK, let statement else {
+            throw snapshotError(handle: database, fallback: "SQLite could not validate the managed snapshot.")
+        }
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let resultBytes = sqlite3_column_text(statement, 0),
+              String(cString: resultBytes) == "ok" else {
+            throw DatabaseError.unexpectedResult("The managed SQLite snapshot failed its integrity check.")
+        }
+    }
+
+    private static func snapshotError(
+        handle: OpaquePointer?,
+        fallback: String
+    ) -> DatabaseError {
+        guard let handle else { return .unexpectedResult(fallback) }
+        let message = String(cString: sqlite3_errmsg(handle))
+        return .unexpectedResult(message.isEmpty ? fallback : message)
     }
 }
 

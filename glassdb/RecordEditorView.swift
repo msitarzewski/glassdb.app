@@ -40,6 +40,37 @@ struct StagedEdit: Identifiable {
     var isBool: Bool { typeLower.contains("bool") || typeLower == "tinyint" || typeLower.hasPrefix("tinyint(1)") }
     var isBinary: Bool { typeLower.contains("binary") || typeLower.contains("blob") || typeLower.hasPrefix("bit") }
 
+    var validationError: String? {
+        guard !isGenerated, !useDefault else { return nil }
+        if isNull {
+            return isNullable ? nil : "‘\(columnName)’ cannot be NULL."
+        }
+        do {
+            _ = try boundValue()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    static func initialValue(for column: ColumnInfo, columnIndex: Int) -> StagedEdit {
+        let usesDefault = column.isGenerated || column.defaultValue != nil
+        return StagedEdit(
+            columnIndex: columnIndex,
+            columnName: column.name,
+            columnType: column.type,
+            isPrimaryKey: column.isPrimaryKey,
+            isNullable: column.isNullable,
+            isUnsigned: column.isUnsigned,
+            isGenerated: column.isGenerated,
+            defaultValue: column.defaultValue,
+            originalValue: .null,
+            editText: "",
+            isNull: column.isNullable || usesDefault,
+            useDefault: usesDefault
+        )
+    }
+
     func boundValue() throws -> DatabaseValue {
         if isGenerated {
             throw RecordValueError.invalidValue(column: columnName, expected: "a server-generated value that cannot be edited")
@@ -158,6 +189,7 @@ struct RecordEditorView: View {
 
     @State private var edits: [StagedEdit] = []
     @State private var jsonErrors: [Int: String] = [:]
+    @State private var confirmingDiscard = false
 
     private var hasChanges: Bool {
         edits.contains(where: \.isModified)
@@ -167,31 +199,103 @@ struct RecordEditorView: View {
         edits.filter(\.isModified).count
     }
 
-    var body: some View {
-        NavigationStack {
-            List {
-                ForEach(Array(edits.enumerated()), id: \.element.id) { idx, edit in
-                    fieldSection(edit: edit, index: idx)
-                }
-            }
-            .navigationTitle(title)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onDiscard() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isAddMode ? "Insert" : "Apply \(changeCount > 0 ? "(\(changeCount))" : "")") {
-                        if isAddMode {
-                            onSave(edits.filter { !$0.useDefault }, mode)
-                        } else {
-                            onSave(edits.filter(\.isModified), mode)
-                        }
-                    }
-                    .disabled(isAddMode ? jsonErrors.isEmpty == false : (!hasChanges || !jsonErrors.isEmpty))
-                }
+    private var validationErrors: [Int: String] {
+        Dictionary(uniqueKeysWithValues: edits.enumerated().compactMap { index, edit in
+            guard let message = jsonErrors[index] ?? edit.validationError else { return nil }
+            return (index, message)
+        })
+    }
+
+    private var canSubmit: Bool {
+        validationErrors.isEmpty && (isAddMode || hasChanges)
+    }
+
+    private var hasUnsavedChanges: Bool {
+        switch mode {
+        case .edit:
+            return hasChanges
+        case .add:
+            return edits.enumerated().contains { index, edit in
+                guard columns.indices.contains(index) else { return true }
+                let initial = StagedEdit.initialValue(for: columns[index], columnIndex: index)
+                return edit.editText != initial.editText
+                    || edit.isNull != initial.isNull
+                    || edit.useDefault != initial.useDefault
             }
         }
+    }
+
+    var body: some View {
+        NavigationStack {
+            editorFields
+                .navigationTitle(title)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { requestDiscard() }
+                            .keyboardShortcut(.cancelAction)
+                            .help("Discard changes and close the record editor")
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(isAddMode ? "Insert" : "Apply \(changeCount > 0 ? "(\(changeCount))" : "")") {
+                            submit()
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!canSubmit)
+                        .help(isAddMode ? "Stage this row for insertion" : "Stage the modified fields for update")
+                    }
+                }
+        }
+        #if os(macOS)
+        .frame(width: 680)
+        .frame(minHeight: 520, idealHeight: 640, maxHeight: 760)
+        #endif
         .onAppear { initializeEdits() }
+        .alert("Discard Changes?", isPresented: $confirmingDiscard) {
+            Button("Keep Editing", role: .cancel) {}
+                .keyboardShortcut(.cancelAction)
+            Button("Discard", role: .destructive) { onDiscard() }
+        } message: {
+            Text("Your staged record changes have not been applied.")
+        }
+    }
+
+    @ViewBuilder
+    private var editorFields: some View {
+        #if os(macOS)
+        Form {
+            fields
+        }
+        .formStyle(.grouped)
+        .controlSize(.regular)
+        #else
+        List {
+            fields
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private var fields: some View {
+        ForEach(Array(edits.enumerated()), id: \.element.id) { idx, edit in
+            fieldSection(edit: edit, index: idx)
+        }
+    }
+
+    private func submit() {
+        guard canSubmit else { return }
+        if isAddMode {
+            onSave(edits.filter { !$0.useDefault }, mode)
+        } else {
+            onSave(edits.filter(\.isModified), mode)
+        }
+    }
+
+    private func requestDiscard() {
+        if hasUnsavedChanges {
+            confirmingDiscard = true
+        } else {
+            onDiscard()
+        }
     }
 
     // MARK: - Field Section
@@ -225,7 +329,7 @@ struct RecordEditorView: View {
 
             // "Set to NULL" only — typing clears NULL automatically
             if edit.isNullable && !edit.isPrimaryKey && !edit.isNull {
-                Button("Set to NULL", role: .destructive) {
+                Button("Set to NULL") {
                     edits[index].isNull = true
                     edits[index].useDefault = false
                     edits[index].editText = ""
@@ -234,7 +338,7 @@ struct RecordEditorView: View {
                 .font(.caption)
             }
 
-            if isAddMode && !edit.useDefault {
+            if isAddMode && !edit.useDefault && edit.defaultValue != nil {
                 Button("Use Column Default") {
                     edits[index].useDefault = true
                     edits[index].isNull = true
@@ -244,10 +348,11 @@ struct RecordEditorView: View {
                 .font(.caption)
             }
 
-            if let jsonErr = jsonErrors[index] {
-                Label(jsonErr, systemImage: "exclamationmark.triangle")
+            if let validationError = validationErrors[index] {
+                Label(validationError, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.red)
+                    .accessibilityLabel("Invalid value for \(edit.columnName): \(validationError)")
             }
         } header: {
             HStack(spacing: 6) {
@@ -284,8 +389,10 @@ struct RecordEditorView: View {
         )
         .font(.system(.body, design: .monospaced))
         .autocorrectionDisabled()
-        .textInputAutocapitalization(.never)
-        .keyboardType(.asciiCapable)
+        .databaseNoAutocapitalization()
+        .databaseASCIICapableKeyboard()
+        .accessibilityLabel("\(edit.columnName), \(edit.columnType)")
+        .help("Enter a \(edit.columnType) value for \(edit.columnName)")
     }
 
     // MARK: - Large Text Field
@@ -300,27 +407,41 @@ struct RecordEditorView: View {
         .font(.system(.body, design: .monospaced))
         .lineLimit(3...10)
         .autocorrectionDisabled()
-        .textInputAutocapitalization(.never)
-        .keyboardType(.asciiCapable)
+        .databaseNoAutocapitalization()
+        .databaseASCIICapableKeyboard()
+        .accessibilityLabel("\(edit.columnName), \(edit.columnType)")
+        .help("Enter a \(edit.columnType) value for \(edit.columnName)")
     }
 
     // MARK: - Boolean Field
 
     private func boolField(edit: StagedEdit, index: Int) -> some View {
-        Toggle(
-            edit.isNull ? "NULL" : (edit.editText == "1" || edit.editText.lowercased() == "true" ? "true" : "false"),
-            isOn: Binding(
-                get: {
-                    if edit.isNull { return false }
-                    return edit.editText == "1" || edit.editText.lowercased() == "true"
-                },
-                set: { val in
-                    edits[index].editText = val ? "1" : "0"
-                    edits[index].isNull = false
-                    edits[index].useDefault = false
-                }
-            )
-        )
+        let isTrue = edit.editText == "1" || edit.editText.lowercased() == "true"
+        let displayValue = edit.isNull ? "NULL" : (isTrue ? "True" : "False")
+
+        return LabeledContent("Value") {
+            HStack(spacing: 8) {
+                Text(displayValue)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { !edit.isNull && isTrue },
+                        set: { value in
+                            edits[index].editText = value ? "1" : "0"
+                            edits[index].isNull = false
+                            edits[index].useDefault = false
+                        }
+                    )
+                )
+                .labelsHidden()
+                .accessibilityLabel("\(edit.columnName), Boolean value")
+                .accessibilityValue(displayValue)
+                .help("Toggle the Boolean value for \(edit.columnName)")
+            }
+        }
     }
 
     // MARK: - JSON Field
@@ -335,15 +456,19 @@ struct RecordEditorView: View {
             )
             .font(.system(.body, design: .monospaced))
             .autocorrectionDisabled()
-            .textInputAutocapitalization(.never)
-            .keyboardType(.asciiCapable)
+            .databaseNoAutocapitalization()
+            .databaseASCIICapableKeyboard()
+            .accessibilityLabel("\(edit.columnName), JSON")
+            .help("Enter valid JSON for \(edit.columnName)")
         } else {
             TextEditor(text: fieldBinding(index: index))
                 .font(.system(.body, design: .monospaced))
                 .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+                .databaseNoAutocapitalization()
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: 120, maxHeight: 300)
+                .accessibilityLabel("\(edit.columnName), JSON")
+                .help("Enter valid JSON for \(edit.columnName)")
 
             HStack {
                 Button("Format") { formatJSON(index: index) }
@@ -362,6 +487,7 @@ struct RecordEditorView: View {
                 edits[index].editText = newText
                 edits[index].isNull = false
                 edits[index].useDefault = false
+                jsonErrors.removeValue(forKey: index)
             }
         )
     }
@@ -417,20 +543,7 @@ struct RecordEditorView: View {
             }
         case .add:
             edits = columns.enumerated().map { colIndex, col in
-                StagedEdit(
-                    columnIndex: colIndex,
-                    columnName: col.name,
-                    columnType: col.type,
-                    isPrimaryKey: col.isPrimaryKey,
-                    isNullable: col.isNullable,
-                    isUnsigned: col.isUnsigned,
-                    isGenerated: col.isGenerated,
-                    defaultValue: col.defaultValue,
-                    originalValue: .null,
-                    editText: "",
-                    isNull: true,
-                    useDefault: true
-                )
+                StagedEdit.initialValue(for: col, columnIndex: colIndex)
             }
         }
     }

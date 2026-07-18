@@ -10,6 +10,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import os
 import GlasSecretStore
+import GlassDBKit
 
 enum SQLiteFileImporter {
     enum ImportError: LocalizedError {
@@ -50,7 +51,8 @@ enum SQLiteFileImporter {
 
     static func importFile(
         at sourceURL: URL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        destinationID: UUID = UUID()
     ) throws -> URL {
         let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey])
         guard values.isRegularFile == true else { throw ImportError.sourceIsNotAFile }
@@ -58,10 +60,19 @@ enum SQLiteFileImporter {
         let directory = try managedDirectory(fileManager: fileManager, create: true)
         let fileExtension = sourceURL.pathExtension.isEmpty ? "sqlite" : sourceURL.pathExtension
         let importedURL = directory
-            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent(destinationID.uuidString)
             .appendingPathExtension(fileExtension)
-        try fileManager.copyItem(at: sourceURL, to: importedURL)
-        return try validatedURL(forPath: importedURL.path, fileManager: fileManager)
+        do {
+            try SQLiteEngine.createManagedSnapshot(
+                from: sourceURL,
+                at: importedURL,
+                fileManager: fileManager
+            )
+            return try validatedURL(forPath: importedURL.path, fileManager: fileManager)
+        } catch {
+            try? fileManager.removeItem(at: importedURL)
+            throw error
+        }
     }
 
     static func validatedURL(
@@ -98,6 +109,35 @@ struct ConnectionFormView: View {
     let mode: Mode
     let onSave: (DatabaseConnectionConfig, String, String?) throws -> Void
 
+    enum FormField: Hashable {
+        case name
+        case host
+        case port
+        case username
+        case password
+        case defaultDatabase
+        case sshHost
+        case sshPort
+        case sshUsername
+        case sshPassword
+        case sshKey
+    }
+
+    struct ValidationInput {
+        let name: String
+        let engine: DatabaseEngineType
+        let host: String
+        let port: String
+        let username: String
+        let sqliteFileExists: Bool
+        let useSSHTunnel: Bool
+        let sshHost: String
+        let sshPort: String
+        let sshUsername: String
+        let sshAuthMethod: AuthenticationMethod
+        let sshKeyIsUsable: Bool
+    }
+
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(\.dismiss) private var dismiss
@@ -127,6 +167,12 @@ struct ConnectionFormView: View {
     @State private var showSSHPassword = false
     @State private var showingAddSSHKey = false
     @State private var showingSQLiteImporter = false
+    @State private var stagedSQLiteURL: URL?
+    @State private var attemptedSave = false
+    @State private var touchedFields: Set<FormField> = []
+    @State private var isSavingAndConnecting = false
+    @State private var saveAndConnectTask: Task<Void, Never>?
+    @FocusState private var focusedField: FormField?
 
     // MARK: - Test State
 
@@ -177,28 +223,81 @@ struct ConnectionFormView: View {
         return nil
     }
 
+    static func validationIssues(for input: ValidationInput) -> [FormField: String] {
+        var issues: [FormField: String] = [:]
+        if input.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues[.name] = "Enter a name for this connection."
+        }
+        if input.engine == .sqlite {
+            if input.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                issues[.host] = "Choose a SQLite database file."
+            } else if !input.sqliteFileExists {
+                issues[.host] = "The imported SQLite file is no longer available."
+            }
+            return issues
+        }
+        if input.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues[.host] = "Enter a database hostname or IP address."
+        }
+        if input.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues[.username] = "Enter the database username."
+        }
+        if let parsedPort = Int(input.port), (1...65_535).contains(parsedPort) {
+            // Valid TCP port.
+        } else {
+            issues[.port] = "Enter a port from 1 through 65535."
+        }
+        guard input.useSSHTunnel else { return issues }
+        if input.sshHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues[.sshHost] = "Enter the SSH server hostname or IP address."
+        }
+        if input.sshUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues[.sshUsername] = "Enter the SSH username."
+        }
+        if let parsedPort = Int(input.sshPort), (1...65_535).contains(parsedPort) {
+            // Valid TCP port.
+        } else {
+            issues[.sshPort] = "Enter an SSH port from 1 through 65535."
+        }
+        if input.sshAuthMethod == .sshKey, !input.sshKeyIsUsable {
+            issues[.sshKey] = "Choose an SSH key that is available to glassdb."
+        }
+        return issues
+    }
+
+    private var validationInput: ValidationInput {
+        let selectedKey = sshKeyID.flatMap { keyID in
+            settingsManager.sshKeys.first(where: { $0.id == keyID })
+        }
+        return ValidationInput(
+            name: name,
+            engine: engine,
+            host: host,
+            port: port,
+            username: username,
+            sqliteFileExists: FileManager.default.fileExists(atPath: host),
+            useSSHTunnel: engine.supportsSSHTunnel && useSSHTunnel,
+            sshHost: sshHost,
+            sshPort: sshPort,
+            sshUsername: sshUsername,
+            sshAuthMethod: sshAuthMethod,
+            sshKeyIsUsable: selectedKey.map {
+                $0.storageKind != .secureEnclave || $0.keyTag != nil
+            } ?? false
+        )
+    }
+
+    private var validationIssues: [FormField: String] {
+        Self.validationIssues(for: validationInput)
+    }
+
     private var isFormValid: Bool {
-        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        if engine == .sqlite {
-            let path = host.trimmingCharacters(in: .whitespacesAndNewlines)
-            return !path.isEmpty && FileManager.default.fileExists(atPath: path)
-        }
-        guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let databasePort = Int(port), (1...65_535).contains(databasePort)
-        else { return false }
-        guard useSSHTunnel else { return true }
-        guard !sshHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !sshUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let tunnelPort = Int(sshPort), (1...65_535).contains(tunnelPort)
-        else { return false }
-        if sshAuthMethod == .sshKey {
-            guard let keyID = sshKeyID,
-                  let key = settingsManager.sshKeys.first(where: { $0.id == keyID })
-            else { return false }
-            return key.storageKind != .secureEnclave || key.keyTag != nil
-        }
-        return true
+        validationIssues.isEmpty
+    }
+
+    private var isSSHTunnelValid: Bool {
+        let sshFields: Set<FormField> = [.sshHost, .sshPort, .sshUsername, .sshKey]
+        return validationIssues.keys.allSatisfy { !sshFields.contains($0) }
     }
 
     init(mode: Mode, onSave: @escaping (DatabaseConnectionConfig, String, String?) throws -> Void) {
@@ -230,38 +329,74 @@ struct ConnectionFormView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                connectionSection
-                databaseAuthSection
-                sshTunnelSection
-                appearanceSection
-                testSection
-            }
-            .navigationTitle(isEditing ? "Edit Connection" : "Add Connection")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+            platformForm
+                .navigationTitle(isEditing ? "Edit Connection" : "Add Connection")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { cancelForm() }
+                            .connectionFormCancelShortcut()
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") { save() }
+                            .disabled(!isFormValid || isSavingAndConnecting)
+                            .connectionFormDefaultShortcut()
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button {
+                            saveAndConnect()
+                        } label: {
+                            if isSavingAndConnecting {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .accessibilityLabel("Saving and connecting")
+                            } else {
+                                Text("Save & Connect")
+                            }
+                        }
+                        .disabled(!isFormValid || isSavingAndConnecting)
+                        .connectionFormConnectShortcut()
+                    }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
-                        .disabled(!isFormValid)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save & Connect") { saveAndConnect() }
-                        .disabled(!isFormValid)
-                }
-            }
         }
+        .connectionFormSheetSize()
         .onAppear {
             loadKeychainCredentials()
+            #if os(macOS)
+            focusedField = .name
+            #endif
         }
         .onChange(of: engine) { _, newEngine in
+            if newEngine != .sqlite {
+                discardStagedSQLiteFile()
+            }
             host = newEngine.defaultHost
             port = String(newEngine.defaultPort)
             username = newEngine.defaultUsername
             defaultDatabase = ""
             useTLS = false
             useSSHTunnel = false
+            dbTestResult = nil
+        }
+        .onChange(of: name) { _, _ in markTouched(.name) }
+        .onChange(of: host) { _, _ in markTouched(.host) }
+        .onChange(of: port) { _, _ in markTouched(.port) }
+        .onChange(of: username) { _, _ in markTouched(.username) }
+        .onChange(of: password) { _, _ in markTouched(.password) }
+        .onChange(of: defaultDatabase) { _, _ in markTouched(.defaultDatabase) }
+        .onChange(of: sshHost) { _, _ in markTouched(.sshHost, resetsSSHTest: true) }
+        .onChange(of: sshPort) { _, _ in markTouched(.sshPort, resetsSSHTest: true) }
+        .onChange(of: sshUsername) { _, _ in markTouched(.sshUsername, resetsSSHTest: true) }
+        .onChange(of: sshPassword) { _, _ in markTouched(.sshPassword, resetsSSHTest: true) }
+        .onChange(of: sshKeyID) { _, _ in markTouched(.sshKey, resetsSSHTest: true) }
+        .onChange(of: useSSHTunnel) { _, _ in
+            sshTestResult = nil
+            dbTestResult = nil
+        }
+        .onChange(of: useTLS) { _, _ in
+            dbTestResult = nil
+        }
+        .onChange(of: sshAuthMethod) { _, _ in
+            sshTestResult = nil
             dbTestResult = nil
         }
         .fileImporter(
@@ -281,6 +416,10 @@ struct ConnectionFormView: View {
                 )
             }
         }
+        .onDisappear {
+            saveAndConnectTask?.cancel()
+            discardStagedSQLiteFile()
+        }
         .onChange(of: settingsManager.sshKeys.map(\.id)) { _, newIDs in
             // Auto-select newly added key if none selected
             if sshAuthMethod == .sshKey, sshKeyID == nil || !newIDs.contains(sshKeyID!) {
@@ -297,6 +436,277 @@ struct ConnectionFormView: View {
         }
     }
 
+    @ViewBuilder
+    private var platformForm: some View {
+        #if os(macOS)
+        Form {
+            macConnectionSection
+            macDatabaseAuthenticationSection
+            macAdvancedSection
+            macAppearanceSection
+            macTestSection
+        }
+        .formStyle(.grouped)
+        #else
+        Form {
+            connectionSection
+            databaseAuthSection
+            sshTunnelSection
+            appearanceSection
+            testSection
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    // MARK: - macOS Form
+
+    private var macConnectionSection: some View {
+        Section {
+            macTextField(
+                "Name",
+                prompt: "Production database",
+                text: $name,
+                field: .name,
+                help: "A recognizable name used in the connection list."
+            )
+            LabeledContent("Database engine") {
+                Picker("Database engine", selection: $engine) {
+                    ForEach(DatabaseEngineType.allCases) { candidate in
+                        Text(candidate.displayName).tag(candidate)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 340, alignment: .leading)
+                .help("Select the database protocol glassdb should use.")
+            }
+            if engine == .sqlite {
+                LabeledContent("Database file") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Image(systemName: host.isEmpty ? "doc.badge.plus" : "cylinder")
+                                .foregroundStyle(.secondary)
+                            Text(host.isEmpty ? "No file selected" : URL(fileURLWithPath: host).lastPathComponent)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 8)
+                            Button(host.isEmpty ? "Choose…" : "Replace…") {
+                                showingSQLiteImporter = true
+                            }
+                        }
+                        .frame(width: 340)
+                        macValidationMessage(for: .host)
+                    }
+                }
+                .help("glassdb imports a private working copy; the original file is not modified.")
+            } else {
+                macTextField(
+                    "Host",
+                    prompt: "127.0.0.1",
+                    text: $host,
+                    field: .host,
+                    help: "Database server hostname, IPv4 address, or IPv6 address."
+                )
+                macTextField(
+                    "Port",
+                    prompt: String(engine.defaultPort),
+                    text: $port,
+                    field: .port,
+                    help: "TCP port used by the database server."
+                )
+            }
+        } header: {
+            Text("Connection")
+        } footer: {
+            if engine == .sqlite {
+                Text("SQLite databases are copied into glassdb’s managed application storage before use.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var macDatabaseAuthenticationSection: some View {
+        if engine.supportsCredentials {
+            Section("Database Authentication") {
+                macTextField(
+                    "Username",
+                    prompt: engine.defaultUsername,
+                    text: $username,
+                    field: .username,
+                    help: "Account name sent to the database server."
+                )
+                passwordField(
+                    label: "Password",
+                    text: $password,
+                    showPlaintext: $showPassword
+                )
+                credentialPolicyPicker(
+                    label: "Password storage",
+                    selection: $databaseCredentialPolicy
+                )
+                macTextField(
+                    "Default database",
+                    prompt: "Optional",
+                    text: $defaultDatabase,
+                    field: .defaultDatabase,
+                    help: "Database or schema opened immediately after connecting."
+                )
+            }
+        }
+    }
+
+    private var macAdvancedSection: some View {
+        Section("Advanced") {
+            if engine.supportsTLS {
+                Toggle("Encrypt the database connection", isOn: $useTLS)
+                    .help("Use TLS for traffic between glassdb and the database server.")
+            }
+
+            if engine.supportsSSHTunnel {
+                Toggle("Connect through an SSH tunnel", isOn: $useSSHTunnel)
+                    .help("Route the database connection through an SSH server.")
+
+                if useSSHTunnel {
+                    macTextField(
+                        "SSH host",
+                        prompt: "bastion.example.com",
+                        text: $sshHost,
+                        field: .sshHost,
+                        help: "Hostname or IP address of the SSH server."
+                    )
+                    macTextField(
+                        "SSH port",
+                        prompt: "22",
+                        text: $sshPort,
+                        field: .sshPort,
+                        help: "TCP port used by the SSH server."
+                    )
+                    macTextField(
+                        "SSH username",
+                        prompt: "username",
+                        text: $sshUsername,
+                        field: .sshUsername,
+                        help: "Account name used to authenticate to the SSH server."
+                    )
+                    LabeledContent("Authentication") {
+                        Picker("Authentication", selection: $sshAuthMethod) {
+                            Text("Password").tag(AuthenticationMethod.password)
+                            Text("SSH Key").tag(AuthenticationMethod.sshKey)
+                        }
+                        .labelsHidden()
+                        .frame(width: 340, alignment: .leading)
+                    }
+                    if sshAuthMethod == .password {
+                        passwordField(
+                            label: "SSH password",
+                            text: $sshPassword,
+                            showPlaintext: $showSSHPassword
+                        )
+                        credentialPolicyPicker(
+                            label: "SSH password storage",
+                            selection: $sshCredentialPolicy
+                        )
+                    } else {
+                        macSSHKeyPicker
+                    }
+                    testSSHButton
+                }
+            }
+        }
+    }
+
+    private var macAppearanceSection: some View {
+        Section("Appearance") {
+            LabeledContent("Color tag") {
+                Picker("Color tag", selection: $colorTag) {
+                    ForEach(ConnectionColorTag.allCases, id: \.self) { tag in
+                        Label(tag.displayName, systemImage: "circle.fill")
+                            .foregroundStyle(tag.color)
+                            .tag(tag)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 340, alignment: .leading)
+                .help("Color used to identify this connection in the sidebar.")
+            }
+        }
+    }
+
+    private var macTestSection: some View {
+        Section {
+            testDBButton
+            Text("Tests the current values without saving the connection.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func macTextField(
+        _ label: String,
+        prompt: String,
+        text: Binding<String>,
+        field: FormField,
+        help: String
+    ) -> some View {
+        LabeledContent(label) {
+            VStack(alignment: .leading, spacing: 6) {
+                TextField(label, text: text, prompt: Text(prompt))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.leading)
+                    .autocorrectionDisabled()
+                    .databaseNoAutocapitalization()
+                    .focused($focusedField, equals: field)
+                    .onSubmit { advanceFocus(after: field) }
+                    .frame(width: 340)
+                macValidationMessage(for: field)
+            }
+        }
+        .help(help)
+    }
+
+    @ViewBuilder
+    private func macValidationMessage(for field: FormField) -> some View {
+        if (attemptedSave || touchedFields.contains(field)),
+           let message = validationIssues[field] {
+            Label(message, systemImage: "exclamationmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Error: \(message)")
+        }
+    }
+
+    private var macSSHKeyPicker: some View {
+        LabeledContent("SSH key") {
+            VStack(alignment: .leading, spacing: 8) {
+                if settingsManager.sshKeys.isEmpty {
+                    Text("No SSH keys are available.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("SSH key", selection: $sshKeyID) {
+                        Text("Choose a key…").tag(nil as UUID?)
+                        ForEach(settingsManager.sshKeys) { key in
+                            Text("\(key.name) (\(sshKeyBadge(key)))")
+                                .tag(key.id as UUID?)
+                                .disabled(key.storageKind == .secureEnclave && key.keyTag == nil)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                HStack {
+                    Button("Add SSH Key…", systemImage: "plus") {
+                        showingAddSSHKey = true
+                    }
+                    macValidationMessage(for: .sshKey)
+                }
+            }
+            .frame(width: 340, alignment: .leading)
+        }
+        .help("Choose a software or Secure Enclave–wrapped key available to glassdb.")
+    }
+    #endif
+
     // MARK: - Connection Section
 
     @ViewBuilder
@@ -304,9 +714,9 @@ struct ConnectionFormView: View {
         Section("Connection") {
             LabeledContent("Name") {
                 TextField("Display Name", text: $name)
-                    .multilineTextAlignment(.trailing)
+                    .multilineTextAlignment(.leading)
                     .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
+                    .databaseNoAutocapitalization()
             }
             Picker("Engine", selection: $engine) {
                 ForEach(DatabaseEngineType.allCases) { eng in
@@ -327,15 +737,15 @@ struct ConnectionFormView: View {
             } else {
                 LabeledContent("Host") {
                     TextField("127.0.0.1", text: $host)
-                        .multilineTextAlignment(.trailing)
+                        .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .databaseNoAutocapitalization()
                 }
                 LabeledContent("Port") {
                     TextField("\(engine.defaultPort)", text: $port)
-                        .multilineTextAlignment(.trailing)
+                        .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .databaseNoAutocapitalization()
                 }
             }
         }
@@ -357,6 +767,8 @@ struct ConnectionFormView: View {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             let importedURL = try SQLiteFileImporter.importFile(at: url)
+            discardStagedSQLiteFile()
+            stagedSQLiteURL = importedURL
             host = importedURL.path
             if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 name = url.deletingPathExtension().lastPathComponent
@@ -375,9 +787,9 @@ struct ConnectionFormView: View {
             Section("Database Authentication") {
             LabeledContent("Username") {
                 TextField("root", text: $username)
-                    .multilineTextAlignment(.trailing)
+                    .multilineTextAlignment(.leading)
                     .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
+                    .databaseNoAutocapitalization()
             }
             passwordField(
                 label: "Password",
@@ -390,9 +802,9 @@ struct ConnectionFormView: View {
             )
             LabeledContent("Default Database") {
                 TextField("Optional", text: $defaultDatabase)
-                    .multilineTextAlignment(.trailing)
+                    .multilineTextAlignment(.leading)
                     .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
+                    .databaseNoAutocapitalization()
             }
             Toggle("Use TLS", isOn: $useTLS)
             }
@@ -419,21 +831,21 @@ struct ConnectionFormView: View {
             Section("SSH Server") {
                 LabeledContent("Host") {
                     TextField("hostname or IP", text: $sshHost)
-                        .multilineTextAlignment(.trailing)
+                        .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .databaseNoAutocapitalization()
                 }
                 LabeledContent("Port") {
                     TextField("22", text: $sshPort)
-                        .multilineTextAlignment(.trailing)
+                        .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .databaseNoAutocapitalization()
                 }
                 LabeledContent("Username") {
                     TextField("username", text: $sshUsername)
-                        .multilineTextAlignment(.trailing)
+                        .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .databaseNoAutocapitalization()
                 }
             }
 
@@ -493,13 +905,38 @@ struct ConnectionFormView: View {
         text: Binding<String>,
         showPlaintext: Binding<Bool>
     ) -> some View {
-        HStack {
+        #if os(macOS)
+        LabeledContent(label) {
+            passwordControl(label: label, text: text, showPlaintext: showPlaintext)
+                .frame(width: 340)
+        }
+        .help("The password is stored according to the selected Keychain policy.")
+        #else
+        passwordControl(label: label, text: text, showPlaintext: showPlaintext)
+        #endif
+    }
+
+    private func passwordControl(
+        label: String,
+        text: Binding<String>,
+        showPlaintext: Binding<Bool>
+    ) -> some View {
+        let field: FormField = label.localizedCaseInsensitiveContains("SSH")
+            ? .sshPassword
+            : .password
+        return HStack(spacing: 8) {
             if showPlaintext.wrappedValue {
-                TextField(label, text: text)
+                TextField(label, text: text, prompt: Text(label))
+                    .connectionPasswordFieldPresentation()
                     .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
+                    .databaseNoAutocapitalization()
+                    .focused($focusedField, equals: field)
+                    .onSubmit { advanceFocus(after: field) }
             } else {
-                SecureField(label, text: text)
+                SecureField(label, text: text, prompt: Text(label))
+                    .connectionPasswordFieldPresentation()
+                    .focused($focusedField, equals: field)
+                    .onSubmit { advanceFocus(after: field) }
             }
             Button {
                 showPlaintext.wrappedValue.toggle()
@@ -524,16 +961,74 @@ struct ConnectionFormView: View {
         label: String,
         selection: Binding<CredentialStoragePolicy>
     ) -> some View {
+        #if os(macOS)
+        LabeledContent(label) {
+            VStack(alignment: .leading, spacing: 6) {
+                Menu {
+                    ForEach(CredentialStoragePolicy.allCases) { policy in
+                        Button {
+                            selection.wrappedValue = policy
+                        } label: {
+                            if selection.wrappedValue == policy {
+                                Label(policy.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(policy.displayName)
+                            }
+                        }
+                        .disabled(
+                            policy == .sharedWithGlas
+                                && !KeychainManager.sharedCredentialAccessAvailable
+                        )
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(selection.wrappedValue.displayName)
+                            .foregroundStyle(.primary)
+                        Spacer(minLength: 12)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 316, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .menuStyle(.button)
+                .accessibilityLabel(label)
+                .accessibilityValue(selection.wrappedValue.displayName)
+                Text(credentialPolicyDescription(selection.wrappedValue))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(width: 340, alignment: .leading)
+        }
+        .help("Choose which Keychain access policy protects this password.")
+        #else
         VStack(alignment: .leading, spacing: 6) {
             Picker(label, selection: selection) {
-                ForEach(CredentialStoragePolicy.allCases) { policy in
-                    Text(policy.displayName).tag(policy)
-                }
+                credentialPolicyOptions
             }
-            Text(selection.wrappedValue.policyDescription)
+            Text(credentialPolicyDescription(selection.wrappedValue))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        #endif
+    }
+
+    @ViewBuilder
+    private var credentialPolicyOptions: some View {
+        ForEach(CredentialStoragePolicy.allCases) { policy in
+            Text(policy.displayName).tag(policy)
+                .disabled(policy == .sharedWithGlas && !KeychainManager.sharedCredentialAccessAvailable)
+        }
+    }
+
+    private func credentialPolicyDescription(_ policy: CredentialStoragePolicy) -> String {
+        if policy == .sharedWithGlas, !KeychainManager.sharedCredentialAccessAvailable {
+            return "Shared Keychain access is unavailable in this unsigned or unprovisioned build. This credential remains in the current app’s default Keychain."
+        }
+        return policy.policyDescription
     }
 
     // MARK: - SSH Key Picker
@@ -571,7 +1066,8 @@ struct ConnectionFormView: View {
             } label: {
                 Label("Test SSH Connection", systemImage: "antenna.radiowaves.left.and.right")
             }
-            .disabled(sshHost.isEmpty || sshUsername.isEmpty || isTestingConnection)
+            .disabled(!isSSHTunnelValid || isTestingConnection)
+            .help("Verify the SSH server and authentication settings without saving.")
 
             Spacer()
 
@@ -587,6 +1083,7 @@ struct ConnectionFormView: View {
                 Label("Test Connection", systemImage: "bolt")
             }
             .disabled(!isFormValid || isTestingConnection)
+            .help("Verify the complete database connection without saving.")
 
             Spacer()
 
@@ -686,42 +1183,119 @@ struct ConnectionFormView: View {
     // MARK: - Save
 
     private func save() {
+        guard validateForAction() else { return }
         guard credentialMaterialIsReadyForSave else { return }
         let config = buildConnection()
         let sshPw: String? = useSSHTunnel && sshAuthMethod == .password ? sshPassword : nil
         do {
             try onSave(config, engine.supportsCredentials ? password : "", sshPw)
+            stagedSQLiteURL = nil
             dismiss()
         } catch {
-            connectionError = "The connection was not saved because its credentials could not be stored securely. \(error.localizedDescription)"
+            connectionError = "The connection was not saved safely. \(error.localizedDescription)"
         }
     }
 
     private func saveAndConnect() {
+        guard validateForAction() else { return }
         guard credentialMaterialIsReadyForSave else { return }
         let config = buildConnection()
         let sshPw: String? = useSSHTunnel && sshAuthMethod == .password ? sshPassword : nil
         do {
             try onSave(config, engine.supportsCredentials ? password : "", sshPw)
-            dismiss()
+            stagedSQLiteURL = nil
         } catch {
-            connectionError = "The connection was not saved because its credentials could not be stored securely. \(error.localizedDescription)"
+            connectionError = "The connection was not saved safely. \(error.localizedDescription)"
             return
         }
 
-        Task {
+        isSavingAndConnecting = true
+        saveAndConnectTask = Task {
             do {
                 let sessionID = try await sessionManager.connect(
                     config: config,
                     password: engine.supportsCredentials ? password : "",
                     sshPassword: sshPw
                 )
+                if Task.isCancelled {
+                    await sessionManager.disconnect(sessionID: sessionID)
+                    return
+                }
                 // updateLastConnected handled by ConnectionManagerView's onSave
+                isSavingAndConnecting = false
+                saveAndConnectTask = nil
+                dismiss()
                 openWindow(id: "query-editor", value: sessionID)
             } catch {
-                connectionError = error.localizedDescription
+                guard !Task.isCancelled else { return }
+                isSavingAndConnecting = false
+                saveAndConnectTask = nil
+                connectionError = "The connection was saved, but glassdb could not connect. \(error.localizedDescription)"
             }
         }
+    }
+
+    private func cancelForm() {
+        saveAndConnectTask?.cancel()
+        saveAndConnectTask = nil
+        isSavingAndConnecting = false
+        dismiss()
+    }
+
+    private func validateForAction() -> Bool {
+        attemptedSave = true
+        guard !validationIssues.isEmpty else { return true }
+        touchedFields.formUnion(validationIssues.keys)
+        let order = orderedFormFields
+        focusedField = order.first(where: { validationIssues[$0] != nil })
+        return false
+    }
+
+    private var orderedFormFields: [FormField] {
+        var fields: [FormField] = [.name]
+        if engine != .sqlite {
+            fields.append(contentsOf: [.host, .port, .username, .password, .defaultDatabase])
+        }
+        if engine.supportsSSHTunnel, useSSHTunnel {
+            fields.append(contentsOf: [.sshHost, .sshPort, .sshUsername])
+            fields.append(sshAuthMethod == .sshKey ? .sshKey : .sshPassword)
+        }
+        return fields
+    }
+
+    private func advanceFocus(after field: FormField) {
+        guard let index = orderedFormFields.firstIndex(of: field),
+              orderedFormFields.indices.contains(index + 1) else {
+            if isFormValid {
+                save()
+            } else {
+                _ = validateForAction()
+            }
+            return
+        }
+        focusedField = orderedFormFields[index + 1]
+    }
+
+    private func markTouched(_ field: FormField, resetsSSHTest: Bool = false) {
+        touchedFields.insert(field)
+        dbTestResult = nil
+        if resetsSSHTest {
+            sshTestResult = nil
+        }
+    }
+
+    private func discardStagedSQLiteFile() {
+        guard let stagedSQLiteURL else { return }
+        do {
+            try FileManager.default.removeItem(at: stagedSQLiteURL)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            // Already removed by a concurrent cleanup path.
+        } catch {
+            Logger.connections.error(
+                "Failed to remove abandoned SQLite import: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+        self.stagedSQLiteURL = nil
     }
 
     private var credentialMaterialIsReadyForSave: Bool {
@@ -740,6 +1314,10 @@ struct ConnectionFormView: View {
     // MARK: - Test Actions
 
     private func testSSH() {
+        guard isSSHTunnelValid else {
+            _ = validateForAction()
+            return
+        }
         connectionError = nil
         sshTestResult = .testing
         let config = buildConnection()
@@ -751,12 +1329,12 @@ struct ConnectionFormView: View {
             } catch {
                 let message = "SSH connection test failed.\n\n\(error.localizedDescription)"
                 sshTestResult = .failure(message)
-                connectionError = message
             }
         }
     }
 
     private func testDB() {
+        guard validateForAction() else { return }
         connectionError = nil
         dbTestResult = .testing
         let config = buildConnection()
@@ -772,7 +1350,6 @@ struct ConnectionFormView: View {
             } catch {
                 let message = "Database connection test failed.\n\n\(error.localizedDescription)"
                 dbTestResult = .failure(message)
-                connectionError = message
             }
         }
     }
@@ -785,5 +1362,62 @@ struct ConnectionFormView: View {
             return "Secure Enclave–wrapped \(key.algorithmKind.badgeName)"
         }
         return key.keyTypeBadge
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func connectionPasswordFieldPresentation() -> some View {
+        #if os(macOS)
+        self
+            .labelsHidden()
+            .textFieldStyle(.roundedBorder)
+            .multilineTextAlignment(.leading)
+        #else
+        self.multilineTextAlignment(.leading)
+        #endif
+    }
+
+    @ViewBuilder
+    func connectionFormSheetSize() -> some View {
+        #if os(macOS)
+        self.frame(
+            minWidth: 600,
+            idealWidth: 640,
+            maxWidth: 680,
+            minHeight: 620,
+            idealHeight: 720,
+            maxHeight: 820
+        )
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func connectionFormCancelShortcut() -> some View {
+        #if os(macOS)
+        self.keyboardShortcut(.cancelAction)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func connectionFormDefaultShortcut() -> some View {
+        #if os(macOS)
+        self.keyboardShortcut(.defaultAction)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func connectionFormConnectShortcut() -> some View {
+        #if os(macOS)
+        self.keyboardShortcut(.return, modifiers: [.command])
+        #else
+        self
+        #endif
     }
 }

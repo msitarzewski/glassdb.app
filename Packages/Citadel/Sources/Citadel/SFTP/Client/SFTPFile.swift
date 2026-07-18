@@ -286,7 +286,13 @@ extension ByteBuffer {
     /// any arbitrary identifying value the server cares to use, such as the integer representation of
     /// a Windows `HANDLE`) and prints it in as readable as form as is reasonable.
     internal var sftpHandleDebugDescription: String {
-        // TODO: This is an appallingly ineffecient way to do a byte-to-hex conversion.
-        return self.readableBytesView.flatMap { [Int($0 >> 8), Int($0 & 0x0f)] }.map { ["0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f"][$0] }.joined()
+        let digits = Array("0123456789abcdef")
+        var output = String()
+        output.reserveCapacity(self.readableBytes * 2)
+        for byte in self.readableBytesView {
+            output.append(digits[Int(byte >> 4)])
+            output.append(digits[Int(byte & 0x0f)])
+        }
+        return output
     }
 }

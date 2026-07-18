@@ -1,12 +1,25 @@
 # Active Context
 
 ## Current Phase
-`codex-completions` release validation. The shipping app is a native Vision Pro target requiring visionOS 26.0+ and arm64. GlassDBKit provides MySQL, PostgreSQL, and managed-copy SQLite adapters; GlasSecretStore remains the shared credential package.
+`codex-completions` final release validation. The application now has native arm64 shells for Vision Pro (visionOS 26.0+) and Apple silicon Mac (macOS 27.0+); Intel and Mac Catalyst remain excluded. GlassDBKit provides MySQL, PostgreSQL, and managed-copy SQLite adapters, and GlasSecretStore remains the shared credential package.
 
 ## Current Focus
-Finish the remaining Debug/Release, live-engine, scale, manual/device, and adversarial security matrix, then complete C3 cross-device credential synchronization for eligible secrets. The coordinated GlasSecretStore hardening dependency is published in PR #2 (`b21c137`). Secure Enclave and user-presence-protected secrets remain device-bound. A native macOS application shell is deferred. TestFlight submission is not automatic.
+The native macOS implementation and automated platform/package QA are complete. MySQL passwordless `caching_sha2_password` authentication is corrected by an immutable temporary pin to `msitarzewski/mysql-nio` commit `3ad138f`; the upstream draft is Vapor mysql-nio PR #126 and its first-time-contributor workflow still requires maintainer approval. Remaining release work is explicitly separated into: (1) external provisioning/distribution signing and physical-device acceptance, including Vision Pro/Mac Keychain, user-presence, Secure Enclave, and supported Foundation Models checks; (2) C3 cross-device credential synchronization for eligible secrets; and (3) human review of residual risks and release approval. The coordinated GlasSecretStore hardening dependency is published in PR #2 (`b21c137`). Secure Enclave and user-presence-protected secrets remain intentionally device-bound and require per-device provisioning. TestFlight submission is not automatic.
 
 ## Recent Changes
+
+### Codex Completions (2026-07-18) — Native macOS Completion and Final Automated QA
+- Added the native SwiftUI macOS application path with platform-native scenes, commands, window behavior, settings, editor/grid controls, Keychain integration, Mac app metadata/entitlements, and a dedicated Mac icon while preserving the Vision Pro database-workspace opacity/blur experience
+- Set the Mac application and test deployment target to macOS 27.0 and restricted shipping application architectures to arm64; Intel and Catalyst remain unsupported
+- Produced a native macOS Release archive whose application executable is arm64, declares macOS 27.0 minimum, and identifies `macosx`/`MacOSX` as its platform
+- Completed a Mac-wide SwiftUI UX audit: Settings now uses native tabbed/grouped forms, bounded steppers and sliders, validation gates, keyboard default/cancel actions, adaptive editor/grid controls, and a connection sidebar that defaults to 340 points with a 300-point minimum
+- Final frozen-tree application tests passed 60/60 on native macOS 27 arm64 and 59/59 on the visionOS 26.4 arm64 simulator, with zero result-bundle build, analyzer, or runtime warnings, skips, or expected failures; the earlier minimum-runtime checkpoint remains 44/44 on visionOS 26.5
+- Fixed the native macOS Settings-scene constraint feedback loop with a finite 620×540 content boundary; ten fresh Debug launches and the exact Release archive opened Settings without a crash report or AppKit constraint-loop diagnostic
+- Preserved the product-defining Vision Pro workspace controls: opacity still spans fully transparent through opaque and blur remains continuously adjustable, while general application windows retain system materials
+- Final shared-package evidence: GlassDBKit 24/24 plus 2/2 live MySQL/PostgreSQL integration tests, Citadel 31 executed with 5 environment-gated skips and 0 failures, swift-nio-ssh 320/320, and GlasSecretStore 68/68
+- Corrected mysql-nio's empty-password `caching_sha2_password` response, pinned the reviewed fork SHA in both SwiftPM resolution surfaces, reproduced the official 1.9.1 failure, passed the gated live GlassDBKit regression against MySQL 9.7.1, and received user confirmation that the fresh development-signed Mac app connects with the same localhost configuration; refreshed GlassDBKit coverage is 24/24
+- Citadel payload, SFTP EOF, and invalid-state paths now fail through typed errors/pipeline closure instead of process traps; the SSH tunnel pending-buffer path is strictly bounded
+- Automated completion does not satisfy external distribution provisioning, physical-device-only security/AI checks, or C3 eligible-secret cross-device Keychain synchronization; those gates remain open
 
 ### Codex Completions (2026-07-17) — Production-Core Implementation Under Release Validation
 - Real fail-closed MySQL TLS and SSH host-key TOFU/change rejection
@@ -20,7 +33,7 @@ Finish the remaining Debug/Release, live-engine, scale, manual/device, and adver
 - Native visionOS optical-glass application icon; a matching terminal icon was separately installed and asset-compiled in the sibling glas.sh repository
 - SSH host rotation now consumes only the newest authorized generation and uses verified replacement while retaining revoked history
 - Connection-test failures use a compact Apple-style status row with a native details alert; invalid OpenSSH formats produce actionable errors
-- Current expanded evidence: 44/44 app tests on both visionOS 26.5 and 27.0, plus 21/21 GlassDBKit tests
+- Evidence at this checkpoint: 44/44 app tests on both visionOS 26.5 and 27.0, plus 21/21 GlassDBKit tests; see the 2026-07-18 entry for the expanded final suites
 
 The rounds below are a historical development log; current capability truth is recorded above and in `memory-bank/releases/codex-completions/`.
 
@@ -132,6 +145,6 @@ The rounds below are a historical development log; current capability truth is r
 - AI sparkle button entry point refined
 
 ## Next Steps (Release Decision)
-1. Complete the active C9 verification matrix and record objective evidence in `memory-bank/releases/codex-completions/`.
-2. Review residual capability limits, especially incremental streaming, abortive/disconnecting network cancellation, and unsupported PostgreSQL metadata operations.
-3. Obtain explicit human release approval before TestFlight or production use.
+1. Complete the external provisioning/signing and physical-device acceptance matrix; record those results separately from the already-complete implementation and automated QA.
+2. Implement and test the open C3 cross-device Glass-family credential catalog and synchronization for eligible secrets without weakening device-bound Secure Enclave/user-presence policies.
+3. Review residual capability limits, including incremental streaming, abortive/disconnecting network cancellation, and unsupported PostgreSQL metadata operations, then obtain explicit human approval before TestFlight or production use.

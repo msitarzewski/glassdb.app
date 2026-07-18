@@ -3,8 +3,333 @@ import Testing
 import GlassDBKit
 import GlasSecretStore
 @testable import glassdb
+#if os(macOS)
+import AppKit
+import SwiftUI
+#endif
+
+private enum SSHMetadataTestError: Error, Equatable {
+    case deletionFailed
+}
+
+private enum IntegrityTestError: Error, Equatable {
+    case persistenceFailed
+    case credentialSaveFailed
+    case credentialDeleteFailed
+}
+
+private final class ConnectionPersistenceTestState {
+    var data: Data?
+    var failWrites = false
+    var mutateBeforeFailure = false
+
+    var store: ConnectionPersistenceStore {
+        ConnectionPersistenceStore(
+            load: { [self] in data },
+            save: { [self] candidate in
+                if mutateBeforeFailure {
+                    data = candidate
+                }
+                guard !failWrites else { throw IntegrityTestError.persistenceFailed }
+                data = candidate
+            },
+            restore: { [self] previous in
+                data = previous
+            }
+        )
+    }
+}
+
+private struct CredentialMutationTestKey: Hashable {
+    let account: String
+    let service: String
+    let accessGroup: String?
+}
+
+private final class CredentialMutationTestState {
+    var values: [CredentialMutationTestKey: String] = [:]
+    var failNextSaveAccount: String?
+    var failNextDeleteAccount: String?
+
+    func key(
+        account: String,
+        descriptor: KeychainManager.CredentialStorageDescriptor
+    ) -> CredentialMutationTestKey {
+        CredentialMutationTestKey(
+            account: account,
+            service: descriptor.service,
+            accessGroup: descriptor.config.accessGroup
+        )
+    }
+
+    var store: KeychainManager.CredentialMutationStore {
+        KeychainManager.CredentialMutationStore(
+            retrieve: { [self] account, descriptor in
+                values[key(account: account, descriptor: descriptor)]
+            },
+            save: { [self] value, account, descriptor in
+                values[key(account: account, descriptor: descriptor)] = value
+                if failNextSaveAccount == account {
+                    failNextSaveAccount = nil
+                    throw IntegrityTestError.credentialSaveFailed
+                }
+            },
+            delete: { [self] account, descriptor in
+                values.removeValue(forKey: key(account: account, descriptor: descriptor))
+                if failNextDeleteAccount == account {
+                    failNextDeleteAccount = nil
+                    throw IntegrityTestError.credentialDeleteFailed
+                }
+            }
+        )
+    }
+}
+
+private final class SSHKeyLifecycleTestState {
+    var materials: [UUID: SSHKeyMaterial] = [:]
+    var failNextDeleteAfterRemoval = false
+
+    var store: SSHKeyLifecycleStore {
+        SSHKeyLifecycleStore(
+            retrieve: { [self] keyID in materials[keyID] },
+            save: { [self] keyID, material in materials[keyID] = material },
+            delete: { [self] keyID in
+                materials.removeValue(forKey: keyID)
+                if failNextDeleteAfterRemoval {
+                    failNextDeleteAfterRemoval = false
+                    throw SSHMetadataTestError.deletionFailed
+                }
+            }
+        )
+    }
+}
 
 struct glassdbTests {
+    @Test func databaseSidebarsShareOrderedMacLayoutPolicy() {
+        #expect(DatabaseSidebarLayout.minimumWidth == 300)
+        #expect(DatabaseSidebarLayout.idealWidth == 340)
+        #expect(DatabaseSidebarLayout.maximumWidth == 440)
+        #expect(DatabaseSidebarLayout.minimumWidth <= DatabaseSidebarLayout.idealWidth)
+        #expect(DatabaseSidebarLayout.idealWidth <= DatabaseSidebarLayout.maximumWidth)
+    }
+
+    @Test func workspaceTabsStartWithPermanentQueryAndDeduplicateTables() {
+        var state = WorkspaceTabState()
+        let table = WorkspaceSelection.table(database: "analytics", table: "events")
+
+        #expect(state.tabs == [WorkspaceSelection.query])
+        #expect(state.selected == .query)
+
+        state.open(table)
+        state.open(.query)
+        state.open(table)
+
+        #expect(state.tabs == [WorkspaceSelection.query, table])
+        #expect(state.selected == table)
+    }
+
+    @Test func workspaceTabsUseFullDatabaseAndTableIdentity() {
+        var state = WorkspaceTabState()
+        let first = WorkspaceSelection.table(database: "ab", table: "c")
+        let second = WorkspaceSelection.table(database: "a", table: "bc")
+        let sameNameOtherDatabase = WorkspaceSelection.table(database: "archive", table: "c")
+
+        state.open(first)
+        state.open(second)
+        state.open(sameNameOtherDatabase)
+
+        #expect(first != second)
+        #expect(state.tabs == [WorkspaceSelection.query, first, second, sameNameOtherDatabase])
+        #expect(state.selected == sameNameOtherDatabase)
+    }
+
+    @Test func workspaceTabsKeepOneReplaceableDatabasePreview() {
+        var state = WorkspaceTabState()
+        let table = WorkspaceSelection.table(database: "analytics", table: "events")
+        state.open(table)
+        state.open(.database("analytics"))
+        state.open(.database("archive"))
+
+        #expect(state.tabs == [WorkspaceSelection.query, table, .database("archive")])
+        #expect(state.selected == .database("archive"))
+    }
+
+    @Test func workspaceTabsCloseSelectedUsingRightThenLeftThenQueryFallback() {
+        var state = WorkspaceTabState()
+        let first = WorkspaceSelection.table(database: "db", table: "first")
+        let middle = WorkspaceSelection.table(database: "db", table: "middle")
+        let last = WorkspaceSelection.table(database: "db", table: "last")
+        state.open(first)
+        state.open(middle)
+        state.open(last)
+        state.open(middle)
+
+        let closedMiddle = state.close(middle)
+        #expect(closedMiddle)
+        #expect(state.tabs == [WorkspaceSelection.query, first, last])
+        #expect(state.selected == last)
+
+        let closedLast = state.close(last)
+        #expect(closedLast)
+        #expect(state.tabs == [WorkspaceSelection.query, first])
+        #expect(state.selected == first)
+
+        let closedFirst = state.close(first)
+        #expect(closedFirst)
+        #expect(state.tabs == [WorkspaceSelection.query])
+        #expect(state.selected == .query)
+    }
+
+    @Test func workspaceTabsCloseInactiveWithoutChangingSelectionAndRejectInvalidCloses() {
+        var state = WorkspaceTabState()
+        let first = WorkspaceSelection.table(database: "db", table: "first")
+        let selected = WorkspaceSelection.table(database: "db", table: "selected")
+        let missing = WorkspaceSelection.table(database: "db", table: "missing")
+        state.open(first)
+        state.open(selected)
+
+        let closedInactive = state.close(first)
+        #expect(closedInactive)
+        #expect(state.tabs == [WorkspaceSelection.query, selected])
+        #expect(state.selected == selected)
+
+        let beforeRejectedCloses = state
+        let closedQuery = state.close(.query)
+        let closedMissing = state.close(missing)
+        #expect(!closedQuery)
+        #expect(!closedMissing)
+        #expect(state == beforeRejectedCloses)
+    }
+
+    #if os(macOS)
+    @Test @MainActor func macDatabaseWorkspacePolicyPreservesInteractiveNativeChrome() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+
+        MacDatabaseWorkspaceWindowPolicy.apply(window)
+        MacDatabaseWorkspaceWindowPolicy.apply(window)
+
+        #expect(!window.isOpaque)
+        #expect(window.backgroundColor.alphaComponent == 0)
+        #expect(!window.titlebarAppearsTransparent)
+        #expect(!window.styleMask.contains(.fullSizeContentView))
+        #expect(!window.ignoresMouseEvents)
+        #expect(!window.isMovableByWindowBackground)
+
+        let themeFrame = try #require(window.contentView?.superview)
+        let titlebarMaterials = themeFrame.subviews.compactMap {
+            $0 as? MacDatabaseWorkspaceTitlebarMaterialView
+        }
+        #expect(titlebarMaterials.count == 1)
+        let titlebarMaterial = try #require(titlebarMaterials.first)
+        #expect(titlebarMaterial.hitTest(.zero) == nil)
+    }
+
+    @Test @MainActor func macSettingsLayoutHasFiniteStableContentSize() throws {
+        let settingsManager = SettingsManager(loadImmediately: false)
+        let size = glassdbApp.settingsWindowSize
+        let content = SettingsView()
+            .environment(settingsManager)
+            .frame(width: size.width, height: size.height)
+        let hostingView = NSHostingView(rootView: content)
+        hostingView.frame = NSRect(origin: .zero, size: size)
+
+        for _ in 0..<10 {
+            hostingView.needsLayout = true
+            hostingView.layoutSubtreeIfNeeded()
+        }
+
+        let fittingSize = hostingView.fittingSize
+        #expect(fittingSize.width.isFinite)
+        #expect(fittingSize.height.isFinite)
+        #expect(abs(fittingSize.width - size.width) < 1)
+        #expect(abs(fittingSize.height - size.height) < 1)
+
+        if let capturePath = ProcessInfo.processInfo.environment["GLASSDB_SETTINGS_CAPTURE_PATH"] {
+            hostingView.displayIfNeeded()
+            let bitmap = try #require(
+                hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
+            )
+            hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+            let png = try #require(bitmap.representation(using: .png, properties: [:]))
+            try png.write(to: URL(fileURLWithPath: capturePath), options: .atomic)
+        }
+    }
+    #endif
+
+    @Test func recordEditorAddDraftsRequireExplicitValuesOnlyWhenNoDefaultExists() {
+        let required = StagedEdit.initialValue(
+            for: ColumnInfo(name: "count", type: "int", isNullable: false),
+            columnIndex: 0
+        )
+        #expect(!required.useDefault)
+        #expect(!required.isNull)
+        #expect(required.validationError != nil)
+
+        let nullable = StagedEdit.initialValue(
+            for: ColumnInfo(name: "note", type: "text", isNullable: true),
+            columnIndex: 1
+        )
+        #expect(!nullable.useDefault)
+        #expect(nullable.isNull)
+        #expect(nullable.validationError == nil)
+
+        let defaulted = StagedEdit.initialValue(
+            for: ColumnInfo(name: "created_at", type: "timestamp", isNullable: false, defaultValue: "CURRENT_TIMESTAMP"),
+            columnIndex: 2
+        )
+        #expect(defaulted.useDefault)
+        #expect(defaulted.validationError == nil)
+
+        let generated = StagedEdit.initialValue(
+            for: ColumnInfo(name: "id", type: "bigint", isNullable: false, isGenerated: true),
+            columnIndex: 3
+        )
+        #expect(generated.useDefault)
+        #expect(generated.validationError == nil)
+    }
+
+    @Test func recordAndFilterDraftValidationReuseTypedValueParsing() {
+        var requiredValue = StagedEdit.initialValue(
+            for: ColumnInfo(name: "quantity", type: "int", isNullable: false),
+            columnIndex: 0
+        )
+        requiredValue.editText = "12"
+        #expect(requiredValue.validationError == nil)
+        requiredValue.editText = "twelve"
+        #expect(requiredValue.validationError?.contains("integer") == true)
+        requiredValue.isNull = true
+        #expect(requiredValue.validationError?.contains("cannot be NULL") == true)
+
+        let invalidNumericFilter = GridColumnFilter(
+            columnName: "quantity",
+            columnType: "int",
+            operation: .greaterThan,
+            value: "many"
+        )
+        #expect(invalidNumericFilter.validationError?.contains("integer") == true)
+
+        let emptyTextFilter = GridColumnFilter(
+            columnName: "note",
+            columnType: "text",
+            operation: .equals,
+            value: ""
+        )
+        #expect(emptyTextFilter.validationError == nil)
+
+        let nullFilter = GridColumnFilter(
+            columnName: "quantity",
+            columnType: "int",
+            operation: .isNull,
+            value: "ignored"
+        )
+        #expect(nullFilter.validationError == nil)
+    }
+
     @Test func connectionTestStatusKeepsServerErrorsOutOfTheCompactRow() {
         let serverMessage = "MySQL error: Access denied for user 'root'@'localhost'"
         let failure = ConnectionFormView.TestResult.failure(serverMessage)
@@ -15,6 +340,59 @@ struct glassdbTests {
         #expect(ConnectionFormView.TestResult.testing.statusTitle == "Testing…")
         #expect(ConnectionFormView.TestResult.success.statusTitle == "Passed")
         #expect(ConnectionFormView.TestResult.success.errorMessage == nil)
+    }
+
+    @Test @MainActor func connectionFormValidationGatesDatabaseSQLiteAndSSHTunnelInputs() {
+        let valid = ConnectionFormView.ValidationInput(
+            name: "Production",
+            engine: .mysql,
+            host: "db.example.com",
+            port: "3306",
+            username: "database-user",
+            sqliteFileExists: false,
+            useSSHTunnel: false,
+            sshHost: "",
+            sshPort: "22",
+            sshUsername: "",
+            sshAuthMethod: .password,
+            sshKeyIsUsable: false
+        )
+        #expect(ConnectionFormView.validationIssues(for: valid).isEmpty)
+
+        let invalidNetwork = ConnectionFormView.ValidationInput(
+            name: " ",
+            engine: .postgresql,
+            host: "",
+            port: "70000",
+            username: "",
+            sqliteFileExists: false,
+            useSSHTunnel: true,
+            sshHost: "",
+            sshPort: "zero",
+            sshUsername: "",
+            sshAuthMethod: .sshKey,
+            sshKeyIsUsable: false
+        )
+        let networkIssues = ConnectionFormView.validationIssues(for: invalidNetwork)
+        #expect(Set(networkIssues.keys) == Set([
+            .name, .host, .port, .username, .sshHost, .sshPort, .sshUsername, .sshKey
+        ]))
+
+        let missingSQLite = ConnectionFormView.ValidationInput(
+            name: "Local",
+            engine: .sqlite,
+            host: "/missing/database.sqlite",
+            port: "0",
+            username: "",
+            sqliteFileExists: false,
+            useSSHTunnel: true,
+            sshHost: "",
+            sshPort: "invalid",
+            sshUsername: "",
+            sshAuthMethod: .sshKey,
+            sshKeyIsUsable: false
+        )
+        #expect(Set(ConnectionFormView.validationIssues(for: missingSQLite).keys) == Set([.host]))
     }
 
     @Test func sqlParserPreservesQuotedAndCommentSemicolons() {
@@ -135,6 +513,142 @@ struct glassdbTests {
         #expect(throws: (any Error).self) {
             _ = try SQLiteFileImporter.validatedURL(forPath: symlink.path)
         }
+    }
+
+    @Test func failedSQLiteSnapshotImportRemovesPartialManagedFile() throws {
+        let fileManager = FileManager.default
+        let source = fileManager.temporaryDirectory
+            .appendingPathComponent("glassdb-invalid-\(UUID().uuidString).sqlite")
+        try Data("not a sqlite database".utf8).write(to: source)
+        defer { try? fileManager.removeItem(at: source) }
+
+        let destinationID = UUID()
+        let managedDirectory = try SQLiteFileImporter.managedDirectory(create: true)
+        let destination = managedDirectory
+            .appendingPathComponent(destinationID.uuidString)
+            .appendingPathExtension("sqlite")
+        defer { try? fileManager.removeItem(at: destination) }
+
+        #expect(throws: (any Error).self) {
+            _ = try SQLiteFileImporter.importFile(
+                at: source,
+                destinationID: destinationID
+            )
+        }
+        #expect(!fileManager.fileExists(atPath: destination.path))
+    }
+
+    @Test @MainActor func connectionPersistenceFailureKeepsSQLiteMetadataAndFilesUnchanged() throws {
+        let fileManager = FileManager.default
+        let managedDirectory = try SQLiteFileImporter.managedDirectory(create: true)
+        let originalURL = managedDirectory
+            .appendingPathComponent("persistence-original-\(UUID().uuidString)")
+            .appendingPathExtension("sqlite")
+        let replacementURL = managedDirectory
+            .appendingPathComponent("persistence-replacement-\(UUID().uuidString)")
+            .appendingPathExtension("sqlite")
+        try Data("original".utf8).write(to: originalURL)
+        try Data("replacement".utf8).write(to: replacementURL)
+        defer {
+            try? fileManager.removeItem(at: originalURL)
+            try? fileManager.removeItem(at: replacementURL)
+        }
+
+        let connectionID = UUID()
+        let original = DatabaseConnectionConfig(
+            id: connectionID,
+            name: "Original SQLite",
+            engine: .sqlite,
+            host: originalURL.path,
+            port: 0,
+            username: ""
+        )
+        let replacement = DatabaseConnectionConfig(
+            id: connectionID,
+            name: "Replacement SQLite",
+            engine: .sqlite,
+            host: replacementURL.path,
+            port: 0,
+            username: ""
+        )
+        let persistence = ConnectionPersistenceTestState()
+        let originalData = try JSONEncoder().encode([original])
+        persistence.data = originalData
+        let manager = ConnectionManager(
+            loadImmediately: true,
+            persistenceStore: persistence.store
+        )
+        persistence.failWrites = true
+        persistence.mutateBeforeFailure = true
+
+        #expect(throws: IntegrityTestError.persistenceFailed) {
+            try manager.update(replacement)
+        }
+        #expect(manager.connections == [original])
+        #expect(persistence.data == originalData)
+        #expect(fileManager.fileExists(atPath: originalURL.path))
+        #expect(fileManager.fileExists(atPath: replacementURL.path))
+
+        #expect(throws: IntegrityTestError.persistenceFailed) {
+            try manager.delete(original)
+        }
+        #expect(manager.connections == [original])
+        #expect(persistence.data == originalData)
+        #expect(fileManager.fileExists(atPath: originalURL.path))
+    }
+
+    @Test @MainActor func connectionLifecycleRemovesSQLiteFileOnlyAfterLastPersistedReference() throws {
+        let fileManager = FileManager.default
+        let managedDirectory = try SQLiteFileImporter.managedDirectory(create: true)
+        let sharedURL = managedDirectory
+            .appendingPathComponent("lifecycle-shared-\(UUID().uuidString)")
+            .appendingPathExtension("sqlite")
+        let replacementURL = managedDirectory
+            .appendingPathComponent("lifecycle-replacement-\(UUID().uuidString)")
+            .appendingPathExtension("sqlite")
+        try Data("shared".utf8).write(to: sharedURL)
+        try Data("replacement".utf8).write(to: replacementURL)
+        defer {
+            try? fileManager.removeItem(at: sharedURL)
+            try? fileManager.removeItem(at: replacementURL)
+        }
+
+        let first = DatabaseConnectionConfig(
+            name: "First",
+            engine: .sqlite,
+            host: sharedURL.path,
+            port: 0,
+            username: ""
+        )
+        let second = DatabaseConnectionConfig(
+            name: "Second",
+            engine: .sqlite,
+            host: sharedURL.path,
+            port: 0,
+            username: ""
+        )
+        let replacement = DatabaseConnectionConfig(
+            id: first.id,
+            name: "First Replacement",
+            engine: .sqlite,
+            host: replacementURL.path,
+            port: 0,
+            username: ""
+        )
+        let persistence = ConnectionPersistenceTestState()
+        persistence.data = try JSONEncoder().encode([first, second])
+        let manager = ConnectionManager(loadImmediately: true, persistenceStore: persistence.store)
+
+        try manager.update(replacement)
+        #expect(fileManager.fileExists(atPath: sharedURL.path))
+        #expect(manager.connections == [replacement, second])
+
+        try manager.delete(second)
+        #expect(!fileManager.fileExists(atPath: sharedURL.path))
+        #expect(fileManager.fileExists(atPath: replacementURL.path))
+        #expect(manager.connections == [replacement])
+        #expect(try JSONDecoder().decode([DatabaseConnectionConfig].self, from: #require(persistence.data))
+            == [replacement])
     }
 
     @Test func sqlHistoryRedactionReplacesStringAndNumberLiterals() {
@@ -286,19 +800,32 @@ struct glassdbTests {
 
     @Test @MainActor func workspaceAppearanceMigratesBooleanBlurAndPreservesEndpoints() throws {
         let suiteName = "app.glassdb.tests.appearance.\(UUID().uuidString)"
+        let sharedSuiteName = "app.glassdb.tests.appearance-shared.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let sharedDefaults = try #require(UserDefaults(suiteName: sharedSuiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            sharedDefaults.removePersistentDomain(forName: sharedSuiteName)
+        }
         defaults.set(false, forKey: UserDefaultsKeys.blurBackground)
         defaults.set(0.0, forKey: UserDefaultsKeys.windowOpacity)
 
-        let migrated = SettingsManager(loadImmediately: true, defaults: defaults)
+        let migrated = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: sharedDefaults
+        )
         #expect(migrated.blurBackground == 0.0)
         #expect(migrated.windowOpacity == 0.0)
 
         migrated.blurBackground = 1.0
         migrated.windowOpacity = 1.0
         migrated.saveSettings()
-        let reloaded = SettingsManager(loadImmediately: true, defaults: defaults)
+        let reloaded = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: sharedDefaults
+        )
         #expect(reloaded.blurBackground == 1.0)
         #expect(reloaded.windowOpacity == 1.0)
 
@@ -307,6 +834,16 @@ struct glassdbTests {
         reloaded.saveSettings()
         #expect(reloaded.blurBackground == 1.0)
         #expect(reloaded.windowOpacity == 0.0)
+
+        defaults.set(7.0, forKey: UserDefaultsKeys.windowOpacity)
+        defaults.set(-4.0, forKey: UserDefaultsKeys.blurBackground)
+        let clampedOnLoad = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: sharedDefaults
+        )
+        #expect(clampedOnLoad.windowOpacity == 1.0)
+        #expect(clampedOnLoad.blurBackground == 0.0)
     }
 
     @Test @MainActor func sshMetadataMigrationRetainsAndUpdatesRollbackIndex() throws {
@@ -332,7 +869,7 @@ struct glassdbTests {
             defaults: defaults,
             sharedDefaults: sharedDefaults
         )
-        settings.renameSSHKey(key, name: "Renamed for rollback")
+        try settings.renameSSHKey(key, name: "Renamed for rollback")
 
         let retained = try #require(defaults.data(forKey: UserDefaultsKeys.sshKeys))
         let shared = try #require(sharedDefaults.data(forKey: "sshKeys"))
@@ -340,6 +877,258 @@ struct glassdbTests {
             == "Renamed for rollback")
         #expect(try JSONDecoder().decode([StoredSSHKey].self, from: shared).first?.name
             == "Renamed for rollback")
+    }
+
+    @Test @MainActor func sshMetadataFailsClosedWhenAppGroupIsUnavailable() throws {
+        let localSuite = "app.glassdb.tests.ssh-metadata-no-group.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: localSuite))
+        defer { defaults.removePersistentDomain(forName: localSuite) }
+        let legacyKey = StoredSSHKey(
+            name: "Legacy",
+            algorithm: "Ed25519",
+            algorithmKind: .ed25519
+        )
+        defaults.set(try JSONEncoder().encode([legacyKey]), forKey: UserDefaultsKeys.sshKeys)
+
+        let settings = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: nil
+        )
+
+        #expect(settings.sshKeys.isEmpty)
+        #expect(settings.sshKeyCatalogError == .appGroupUnavailable)
+        #expect(throws: SSHMetadataPersistenceError.appGroupUnavailable) {
+            try settings.renameSSHKey(legacyKey, name: "Must not use standard defaults")
+        }
+    }
+
+    @Test @MainActor func sshMetadataRejectsOversizedSharedCatalog() throws {
+        let localSuite = "app.glassdb.tests.ssh-metadata-oversize-local.\(UUID().uuidString)"
+        let sharedSuite = "app.glassdb.tests.ssh-metadata-oversize-shared.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: localSuite))
+        let sharedDefaults = try #require(UserDefaults(suiteName: sharedSuite))
+        defer {
+            defaults.removePersistentDomain(forName: localSuite)
+            sharedDefaults.removePersistentDomain(forName: sharedSuite)
+        }
+        sharedDefaults.set(
+            Data(repeating: 0, count: SettingsManager.maximumSSHKeyCatalogBytes + 1),
+            forKey: "sshKeys"
+        )
+
+        let settings = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: sharedDefaults
+        )
+
+        #expect(settings.sshKeys.isEmpty)
+        #expect(settings.sshKeyCatalogError == .catalogTooLarge)
+    }
+
+    @Test @MainActor func sshMetadataReloadsAndMergesBeforeRename() throws {
+        let localSuite = "app.glassdb.tests.ssh-metadata-merge-local.\(UUID().uuidString)"
+        let sharedSuite = "app.glassdb.tests.ssh-metadata-merge-shared.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: localSuite))
+        let sharedDefaults = try #require(UserDefaults(suiteName: sharedSuite))
+        defer {
+            defaults.removePersistentDomain(forName: localSuite)
+            sharedDefaults.removePersistentDomain(forName: sharedSuite)
+        }
+        let original = StoredSSHKey(
+            name: "Original",
+            algorithm: "Ed25519",
+            algorithmKind: .ed25519
+        )
+        let externallyAdded = StoredSSHKey(
+            name: "Added by glas.sh",
+            algorithm: "RSA",
+            algorithmKind: .rsa
+        )
+        let originalData = try JSONEncoder().encode([original])
+        defaults.set(originalData, forKey: UserDefaultsKeys.sshKeys)
+        sharedDefaults.set(originalData, forKey: "sshKeys")
+        let settings = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: sharedDefaults
+        )
+
+        var externallyRenamed = original
+        externallyRenamed.name = "Renamed by glas.sh"
+        sharedDefaults.set(
+            try JSONEncoder().encode([externallyRenamed, externallyAdded]),
+            forKey: "sshKeys"
+        )
+        try settings.renameSSHKey(original, name: "Final name")
+
+        let sharedData = try #require(sharedDefaults.data(forKey: "sshKeys"))
+        let legacyData = try #require(defaults.data(forKey: UserDefaultsKeys.sshKeys))
+        let sharedKeys = try JSONDecoder().decode([StoredSSHKey].self, from: sharedData)
+        let legacyKeys = try JSONDecoder().decode([StoredSSHKey].self, from: legacyData)
+        #expect(sharedKeys == legacyKeys)
+        #expect(sharedKeys.count == 2)
+        #expect(sharedKeys.first(where: { $0.id == original.id })?.name == "Final name")
+        #expect(sharedKeys.contains(where: { $0.id == externallyAdded.id }))
+    }
+
+    @Test @MainActor func sshMetadataRenameRestoresBothCatalogsAfterReadbackFailure() throws {
+        let localSuite = "app.glassdb.tests.ssh-metadata-rename-local.\(UUID().uuidString)"
+        let sharedSuite = "app.glassdb.tests.ssh-metadata-rename-shared.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: localSuite))
+        let sharedDefaults = try #require(UserDefaults(suiteName: sharedSuite))
+        defer {
+            defaults.removePersistentDomain(forName: localSuite)
+            sharedDefaults.removePersistentDomain(forName: sharedSuite)
+        }
+        let key = StoredSSHKey(
+            name: "Original",
+            algorithm: "Ed25519",
+            algorithmKind: .ed25519
+        )
+        let originalData = try JSONEncoder().encode([key])
+        defaults.set(originalData, forKey: UserDefaultsKeys.sshKeys)
+        sharedDefaults.set(originalData, forKey: "sshKeys")
+        let settings = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: sharedDefaults,
+            legacyCatalogWriter: { _ in }
+        )
+
+        #expect(throws: SSHMetadataPersistenceError.readbackMismatch) {
+            try settings.renameSSHKey(key, name: "Uncommitted")
+        }
+        #expect(settings.sshKeys == [key])
+        #expect(settings.sshKeyCatalogError == .readbackMismatch)
+        #expect(sharedDefaults.data(forKey: "sshKeys") == originalData)
+        #expect(defaults.data(forKey: UserDefaultsKeys.sshKeys) == originalData)
+    }
+
+    @Test @MainActor func sshMetadataAddRemovesSecretWhenCatalogWriteFails() throws {
+        let localSuite = "app.glassdb.tests.ssh-metadata-add-local.\(UUID().uuidString)"
+        let sharedSuite = "app.glassdb.tests.ssh-metadata-add-shared.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: localSuite))
+        let sharedDefaults = try #require(UserDefaults(suiteName: sharedSuite))
+        defer {
+            defaults.removePersistentDomain(forName: localSuite)
+            sharedDefaults.removePersistentDomain(forName: sharedSuite)
+        }
+        let emptyData = try JSONEncoder().encode([StoredSSHKey]())
+        defaults.set(emptyData, forKey: UserDefaultsKeys.sshKeys)
+        sharedDefaults.set(emptyData, forKey: "sshKeys")
+        let lifecycle = SSHKeyLifecycleTestState()
+        let settings = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: sharedDefaults,
+            sshKeyLifecycleStore: lifecycle.store,
+            legacyCatalogWriter: { _ in }
+        )
+
+        #expect(throws: SSHMetadataPersistenceError.readbackMismatch) {
+            try settings.addSSHKey(
+                name: "Must roll back",
+                privateKey: "private-key",
+                passphrase: "passphrase",
+                algorithmKind: .ed25519
+            )
+        }
+        #expect(lifecycle.materials.isEmpty)
+        #expect(settings.sshKeys.isEmpty)
+        #expect(sharedDefaults.data(forKey: "sshKeys") == emptyData)
+        #expect(defaults.data(forKey: UserDefaultsKeys.sshKeys) == emptyData)
+    }
+
+    @Test @MainActor func sshKeyMutationsRejectInvalidUserInputBeforeStorage() {
+        let settings = SettingsManager(loadImmediately: false, sharedDefaults: nil)
+        let key = StoredSSHKey(
+            name: "Existing",
+            algorithm: "Ed25519",
+            algorithmKind: .ed25519
+        )
+
+        #expect(throws: SSHKeyInputError.emptyName) {
+            try settings.addSSHKey(
+                name: "   ",
+                privateKey: "private-key",
+                passphrase: nil,
+                algorithmKind: .ed25519
+            )
+        }
+        #expect(throws: SSHKeyInputError.emptyPrivateKey) {
+            try settings.addSSHKey(
+                name: "Valid name",
+                privateKey: "\n\t",
+                passphrase: nil,
+                algorithmKind: .ed25519
+            )
+        }
+        #expect(throws: SSHKeyInputError.nameTooLong) {
+            try settings.addSSHKey(
+                name: String(repeating: "n", count: SettingsManager.maximumSSHKeyNameBytes + 1),
+                privateKey: "private-key",
+                passphrase: nil,
+                algorithmKind: .ed25519
+            )
+        }
+        #expect(throws: SSHKeyInputError.passphraseTooLong) {
+            try settings.addSSHKey(
+                name: "Valid name",
+                privateKey: "private-key",
+                passphrase: String(
+                    repeating: "p",
+                    count: SettingsManager.maximumSSHPassphraseBytes + 1
+                ),
+                algorithmKind: .ed25519
+            )
+        }
+        #expect(throws: SSHKeyInputError.emptyName) {
+            try settings.renameSSHKey(key, name: "   ")
+        }
+    }
+
+    @Test @MainActor func sshMetadataDeleteRestoresSecretAndCatalogAfterPartialFailure() throws {
+        let localSuite = "app.glassdb.tests.ssh-metadata-delete-local.\(UUID().uuidString)"
+        let sharedSuite = "app.glassdb.tests.ssh-metadata-delete-shared.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: localSuite))
+        let sharedDefaults = try #require(UserDefaults(suiteName: sharedSuite))
+        defer {
+            defaults.removePersistentDomain(forName: localSuite)
+            sharedDefaults.removePersistentDomain(forName: sharedSuite)
+        }
+        let key = StoredSSHKey(
+            name: "Keep me",
+            algorithm: "Ed25519",
+            algorithmKind: .ed25519
+        )
+        let originalData = try JSONEncoder().encode([key])
+        defaults.set(originalData, forKey: UserDefaultsKeys.sshKeys)
+        sharedDefaults.set(originalData, forKey: "sshKeys")
+        let lifecycle = SSHKeyLifecycleTestState()
+        let material = SSHKeyMaterial(
+            privateKey: SecureBytes(Data("private-key".utf8)),
+            passphrase: SecureBytes(Data("passphrase".utf8))
+        )
+        lifecycle.materials[key.id] = material
+        lifecycle.failNextDeleteAfterRemoval = true
+        let settings = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: sharedDefaults,
+            sshKeyLifecycleStore: lifecycle.store
+        )
+
+        #expect(throws: SSHMetadataTestError.deletionFailed) {
+            try settings.deleteSSHKey(key)
+        }
+        let restored = try #require(lifecycle.materials[key.id])
+        #expect(restored.privateKey.toData() == material.privateKey.toData())
+        #expect(restored.passphrase?.toData() == material.passphrase?.toData())
+        #expect(settings.sshKeys == [key])
+        #expect(sharedDefaults.data(forKey: "sshKeys") == originalData)
+        #expect(defaults.data(forKey: UserDefaultsKeys.sshKeys) == originalData)
     }
 
     @Test func credentialAccountsAreStableAndUUIDScoped() {
@@ -387,6 +1176,88 @@ struct glassdbTests {
             == "database-user@db.example.com:3307")
         #expect(KeychainManager.legacySSHAccount(for: connection)
             == "ssh:ssh-user@bastion.example.com:2222")
+    }
+
+    @Test func sharedAccessGroupRejectsBareOrUnexpandedValues() {
+        #expect(KeychainManager.validatedSharedAccessGroup(nil) == nil)
+        #expect(KeychainManager.validatedSharedAccessGroup("") == nil)
+        #expect(KeychainManager.validatedSharedAccessGroup("$(AppIdentifierPrefix)sh.glas.shared") == nil)
+        #expect(KeychainManager.validatedSharedAccessGroup("sh.glas.shared") == nil)
+        #expect(KeychainManager.validatedSharedAccessGroup("SHORT.sh.glas.shared") == nil)
+        #expect(KeychainManager.validatedSharedAccessGroup("7JQGQ7CRH8.sh.glas.shared")
+            == "7JQGQ7CRH8.sh.glas.shared")
+    }
+
+    @Test func credentialSaveAndDeleteRestoreBothRecordsAfterPartialFailure() throws {
+        let connectionID = UUID()
+        let previous = DatabaseConnectionConfig(
+            id: connectionID,
+            name: "Atomic credentials",
+            host: "db.example.com",
+            username: "database-user",
+            useSSHTunnel: true,
+            sshHost: "bastion.example.com",
+            sshUsername: "ssh-user",
+            sshAuthMethod: .password,
+            databaseCredentialPolicy: .glassdbOnly,
+            sshCredentialPolicy: .glassdbOnly
+        )
+        let updated = previous
+        let databaseAccount = KeychainManager.databaseAccount(for: connectionID)
+        let sshAccount = KeychainManager.sshAccount(for: connectionID)
+        let databaseDescriptor = KeychainManager.descriptor(
+            for: .glassdbOnly,
+            kind: .databasePassword
+        )
+        let sshDescriptor = KeychainManager.descriptor(
+            for: .glassdbOnly,
+            kind: .sshPassword
+        )
+        let mutation = CredentialMutationTestState()
+        let databaseKey = mutation.key(account: databaseAccount, descriptor: databaseDescriptor)
+        let sshKey = mutation.key(account: sshAccount, descriptor: sshDescriptor)
+        mutation.values[databaseKey] = "old database password"
+        mutation.values[sshKey] = "old SSH password"
+
+        mutation.failNextSaveAccount = sshAccount
+        #expect(throws: IntegrityTestError.credentialSaveFailed) {
+            _ = try KeychainManager.saveCredentials(
+                databasePassword: "new database password",
+                sshPassword: "new SSH password",
+                for: updated,
+                replacing: previous,
+                store: mutation.store
+            )
+        }
+        #expect(mutation.values[databaseKey] == "old database password")
+        #expect(mutation.values[sshKey] == "old SSH password")
+
+        let successfulSave = try KeychainManager.saveCredentials(
+            databasePassword: "new database password",
+            sshPassword: "new SSH password",
+            for: updated,
+            replacing: previous,
+            store: mutation.store
+        )
+        #expect(mutation.values[databaseKey] == "new database password")
+        #expect(mutation.values[sshKey] == "new SSH password")
+        try KeychainManager.restoreCredentials(successfulSave.rollbackReceipt, store: mutation.store)
+        #expect(mutation.values[databaseKey] == "old database password")
+        #expect(mutation.values[sshKey] == "old SSH password")
+
+        mutation.failNextDeleteAccount = sshAccount
+        #expect(throws: IntegrityTestError.credentialDeleteFailed) {
+            _ = try KeychainManager.deleteCredentials(for: previous, store: mutation.store)
+        }
+        #expect(mutation.values[databaseKey] == "old database password")
+        #expect(mutation.values[sshKey] == "old SSH password")
+
+        let receipt = try KeychainManager.deleteCredentials(for: previous, store: mutation.store)
+        #expect(mutation.values[databaseKey] == nil)
+        #expect(mutation.values[sshKey] == nil)
+        try KeychainManager.restoreCredentials(receipt, store: mutation.store)
+        #expect(mutation.values[databaseKey] == "old database password")
+        #expect(mutation.values[sshKey] == "old SSH password")
     }
 
     @Test func credentialMigrationDestinationQueryFailureFailsClosed() {
@@ -519,8 +1390,8 @@ struct glassdbTests {
 
         #expect(sharedDB.service == "sh.glas.passwords")
         #expect(sharedSSH.service == "sh.glas.sshpasswords")
-        #expect(sharedDB.isSharedWithGlas)
-        #expect(sharedDB.config.accessGroup != nil)
+        #expect(sharedDB.isSharedWithGlas == KeychainManager.sharedCredentialAccessAvailable)
+        #expect((sharedDB.config.accessGroup != nil) == KeychainManager.sharedCredentialAccessAvailable)
 
         #expect(privateDB.service == "app.glassdb.private.passwords")
         #expect(privateSSH.service == "app.glassdb.private.sshpasswords")
@@ -977,6 +1848,37 @@ struct glassdbTests {
         #expect(postgres.capabilities.contains(.cancellation))
         #expect(sqlite.capabilities.contains(.cancellation))
         #expect(!sqlite.capabilities.contains(.transportTLS))
+    }
+
+    @MainActor
+    @Test func closingWorkspaceTabLeavesTheConnectedDatabaseSessionUsable() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        defer { Task { try? await connection.close() } }
+
+        let manager = DatabaseSessionManager(loadImmediately: false)
+        let sessionID = UUID()
+        let session = DatabaseSession(connectionConfig: DatabaseConnectionConfig(
+            name: "Workspace retention",
+            engine: .sqlite,
+            host: ":memory:",
+            port: 0,
+            username: ""
+        ))
+        session.connection = connection
+        session.engine = SQLiteEngine()
+        session.state = .connected
+        manager.sessions[sessionID] = session
+
+        var tabs = WorkspaceTabState()
+        let table = WorkspaceSelection.table(database: "main", table: "items")
+        tabs.open(table)
+        let didCloseTable = tabs.close(table)
+        #expect(didCloseTable)
+
+        #expect(manager.session(for: sessionID) === session)
+        #expect(manager.session(for: sessionID)?.connection != nil)
+        let result = try await manager.executeQuery("SELECT 1", sessionID: sessionID)
+        #expect(result.rows == [[.int(1)]])
     }
 
     @Test func postgresGridQueriesUseNumberedParametersAndDoubleQuotedIdentifiers() throws {

@@ -12,6 +12,7 @@ import GlassDBKit
 struct DatabaseDetailView: View {
     let sessionID: UUID
     let database: String
+    var isWorkspaceActive = true
     var onOpenSQLEditor: (() -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
@@ -51,18 +52,26 @@ struct DatabaseDetailView: View {
             }
             .padding(32)
         }
-        .scrollInputBehavior(.enabled, for: .look)
-        .navigationTitle(database)
+        .databaseLookScrollEnabled()
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Task { await loadStatus() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+            if isWorkspaceActive {
+                #if os(macOS)
+                ToolbarSpacer(.flexible, placement: databaseToolbarPlacement)
+                DatabasePersistentToolbar {
+                    onOpenSQLEditor?()
+                }
+                #endif
+                ToolbarItem(placement: databaseToolbarPlacement) {
+                    Button {
+                        Task { await loadStatus() }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
                 }
             }
         }
-        .task(id: database) {
+        .task(id: isWorkspaceActive) {
+            guard isWorkspaceActive else { return }
             await setActiveAndLoad()
         }
     }
