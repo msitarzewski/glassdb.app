@@ -113,6 +113,41 @@ struct glassdbTests {
         #expect(DatabaseSidebarLayout.idealWidth <= DatabaseSidebarLayout.maximumWidth)
     }
 
+    @Test func databaseGlassAppearancePreservesIndependentEndpoints() {
+        let transparent = DatabaseGlassAppearance(opacity: 0, blur: 0)
+        #expect(transparent.isFullyTransparent)
+        #expect(!transparent.paintsCanvas)
+        #expect(!transparent.compositesBlur)
+        #expect(transparent.surfaceAlpha() == 0)
+        #expect(transparent.pinnedSurfaceAlpha == 0)
+
+        let frosted = DatabaseGlassAppearance(opacity: 0, blur: 1)
+        #expect(!frosted.paintsCanvas)
+        #expect(frosted.compositesBlur)
+        #expect(!frosted.isFullyTransparent)
+
+        let painted = DatabaseGlassAppearance(opacity: 1, blur: 0)
+        #expect(painted.paintsCanvas)
+        #expect(!painted.compositesBlur)
+        #expect(painted.surfaceAlpha() == 0.06)
+        #expect(painted.pinnedSurfaceAlpha == 1)
+
+        let combined = DatabaseGlassAppearance(opacity: 1, blur: 1)
+        #expect(combined.paintsCanvas)
+        #expect(combined.compositesBlur)
+
+        let intermediate = DatabaseGlassAppearance(opacity: 0.25, blur: 0)
+        #expect(intermediate.pinnedSurfaceAlpha == 0.5)
+        #expect(intermediate.pinnedSurfaceAlpha > intermediate.opacity)
+    }
+
+    @Test func databaseGlassAppearanceClampsInvalidInputs() {
+        let appearance = DatabaseGlassAppearance(opacity: 2, blur: -Double.infinity)
+        #expect(appearance.opacity == 1)
+        #expect(appearance.blur == 0)
+        #expect(appearance.surfaceAlpha(strength: 2) == 1)
+    }
+
     @Test func workspaceTabsStartWithPermanentQueryAndDeduplicateTables() {
         var state = WorkspaceTabState()
         let table = WorkspaceSelection.table(database: "analytics", table: "events")
@@ -209,6 +244,7 @@ struct glassdbTests {
             backing: .buffered,
             defer: false
         )
+        window.toolbar = NSToolbar(identifier: "app.glassdb.tests.workspace-toolbar")
 
         MacDatabaseWorkspaceWindowPolicy.apply(window)
         MacDatabaseWorkspaceWindowPolicy.apply(window)
@@ -219,6 +255,9 @@ struct glassdbTests {
         #expect(!window.styleMask.contains(.fullSizeContentView))
         #expect(!window.ignoresMouseEvents)
         #expect(!window.isMovableByWindowBackground)
+        // AppKit may normalize NSToolbar.sizeMode asynchronously when tests run
+        // concurrently; the window-level style is the durable contract.
+        #expect(window.toolbarStyle == .unifiedCompact)
 
         let themeFrame = try #require(window.contentView?.superview)
         let titlebarMaterials = themeFrame.subviews.compactMap {
@@ -328,6 +367,45 @@ struct glassdbTests {
             value: "ignored"
         )
         #expect(nullFilter.validationError == nil)
+    }
+
+    @Test func recordJSONFormattingIsHumanReadableButDatabaseValueIsCompact() throws {
+        let source = #"{"message":"spaces and \\t stay","nested":{"enabled":true},"items":[1,2]}"#
+        let formatted = try RecordJSONText.pretty(source)
+        #expect(formatted.contains("\n"))
+        #expect(formatted.contains(#""spaces and \\t stay""#))
+        #expect(RecordJSONText.isEquivalent(source, formatted))
+
+        let staged = StagedEdit(
+            columnIndex: 0,
+            columnName: "payload",
+            columnType: "jsonb",
+            isPrimaryKey: false,
+            isNullable: false,
+            isUnsigned: false,
+            isGenerated: false,
+            defaultValue: nil,
+            originalValue: .json(source),
+            editText: formatted,
+            isNull: false,
+            useDefault: false
+        )
+        #expect(!staged.isModified)
+        #expect(try staged.boundValue() == .json(source))
+    }
+
+    @Test func recordJSONCompactionPreservesStringWhitespaceAndNumberLexemes() throws {
+        let source = """
+        {
+          "message": "human spaces  stay",
+          "escaped": "tab:\\t",
+          "precise": 18446744073709551615
+        }
+        """
+        #expect(
+            try RecordJSONText.compact(source)
+                == #"{"message":"human spaces  stay","escaped":"tab:\t","precise":18446744073709551615}"#
+        )
     }
 
     @Test func connectionTestStatusKeepsServerErrorsOutOfTheCompactRow() {
@@ -792,10 +870,282 @@ struct glassdbTests {
         #expect(settings.editorFontSize == 14)
         #expect(settings.dataGridFontSize == 13)
         #expect(settings.showLineNumbers)
+        #expect(settings.autoFormatJSONInRecordEditor)
         #expect(settings.redactQueryHistoryLiterals == false)
+        #expect(settings.queryFailureNotificationPreference == .undecided)
+        #expect(!settings.queryFailureNotificationsEnabled)
+        #expect(settings.shouldOfferQueryFailureNotifications)
         #expect(settings.windowOpacity == 0.95)
         #expect(settings.blurBackground == 1.0)
         #expect(settings.showSidebarByDefault)
+    }
+
+    @Test @MainActor func JSONEditorFormattingPreferencePersists() throws {
+        let suiteName = "app.glassdb.tests.json-editor-formatting.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = SettingsManager(
+            loadImmediately: false,
+            defaults: defaults,
+            sharedDefaults: nil
+        )
+        settings.autoFormatJSONInRecordEditor = false
+        settings.saveSettings()
+
+        let reloaded = SettingsManager(
+            loadImmediately: true,
+            defaults: defaults,
+            sharedDefaults: nil
+        )
+        #expect(!reloaded.autoFormatJSONInRecordEditor)
+    }
+
+    @Test @MainActor func queryFailureNotificationOfferPersistsWithoutRequestingSystemPermission() throws {
+        let suiteName = "app.glassdb.tests.query-notifications.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = SettingsManager(
+            loadImmediately: false,
+            defaults: defaults,
+            sharedDefaults: nil
+        )
+        settings.declineQueryFailureNotifications()
+
+        #expect(settings.queryFailureNotificationPreference == .disabled)
+        #expect(!settings.shouldOfferQueryFailureNotifications)
+        #expect(defaults.string(forKey: UserDefaultsKeys.queryFailureNotificationPreference)
+            == QueryFailureNotificationPreference.disabled.rawValue)
+    }
+
+    @Test func queryFailurePresentationRecognizesCommonDatabaseErrors() {
+        let syntax = QueryFailurePresentation(
+            message: "MySQL error: Invalid syntax near 'NO LIKE'"
+        )
+        #expect(syntax.title == "Invalid SQL Syntax")
+        #expect(syntax.detail.contains("NO LIKE"))
+
+        let authentication = QueryFailurePresentation(
+            message: "Access denied for user 'root'@'localhost'"
+        )
+        #expect(authentication.title == "Authentication Failed")
+
+        let unknown = QueryFailurePresentation(message: "Server closed the connection")
+        #expect(unknown.title == "Query Failed")
+    }
+
+    @Test func tableSchemaSQLQuotesIdentifiersAndRejectsExecutableTypeFragments() throws {
+        let add = try TableSchemaSQL.addColumn(
+            database: "app`data",
+            table: "users",
+            name: "display`name",
+            type: "VARCHAR(255)",
+            nullable: false,
+            quoteCharacter: "`"
+        )
+        #expect(add == "ALTER TABLE `app``data`.`users` ADD COLUMN `display``name` VARCHAR(255) NOT NULL")
+
+        let enumColumn = try TableSchemaSQL.addColumn(
+            database: "app",
+            table: "jobs",
+            name: "state",
+            type: "ENUM('draft', 'ready')",
+            nullable: false,
+            quoteCharacter: "`"
+        )
+        #expect(enumColumn == "ALTER TABLE `app`.`jobs` ADD COLUMN `state` ENUM('draft', 'ready') NOT NULL")
+
+        #expect(throws: TableSchemaEditError.self) {
+            _ = try TableSchemaSQL.addColumn(
+                database: "app",
+                table: "users",
+                name: "nickname",
+                type: "TEXT; DROP TABLE users",
+                nullable: true,
+                quoteCharacter: "`"
+            )
+        }
+        #expect(throws: TableSchemaEditError.self) {
+            _ = try TableSchemaSQL.addColumn(
+                database: "app",
+                table: "users",
+                name: "nickname",
+                type: "VARCHAR(80) NOT NULL",
+                nullable: true,
+                quoteCharacter: "`"
+            )
+        }
+        #expect(throws: TableSchemaEditError.self) {
+            _ = try TableSchemaSQL.addColumn(
+                database: "app",
+                table: "users",
+                name: "nickname",
+                type: "INT, ADD COLUMN injected INT",
+                nullable: true,
+                quoteCharacter: "`"
+            )
+        }
+    }
+
+    @Test func tableSchemaSQLUsesDialectCorrectIndexAndForeignKeyStatements() throws {
+        let mysqlDrop = try TableSchemaSQL.dropIndex(
+            database: "app",
+            table: "users",
+            name: "users_email_idx",
+            dialect: .mysql,
+            quoteCharacter: "`"
+        )
+        #expect(mysqlDrop == "DROP INDEX `users_email_idx` ON `app`.`users`")
+
+        let postgresDrop = try TableSchemaSQL.dropIndex(
+            database: "public",
+            table: "users",
+            name: "users_email_idx",
+            dialect: .postgresql,
+            quoteCharacter: "\""
+        )
+        #expect(postgresDrop == "DROP INDEX \"public\".\"users_email_idx\"")
+
+        #expect(throws: TableSchemaEditError.self) {
+            _ = try TableSchemaSQL.addForeignKey(
+                database: "main",
+                table: "users",
+                name: "fk_users_team",
+                column: "team_id",
+                referencedTable: "teams",
+                referencedColumn: "id",
+                dialect: .sqlite,
+                quoteCharacter: "\""
+            )
+        }
+    }
+
+    @Test func tableSchemaSQLBuildsReviewedMySQLColumnChangeAndPreservesDefault() throws {
+        let original = ColumnInfo(
+            name: "amount",
+            type: "int",
+            isNullable: true,
+            defaultValue: "5"
+        )
+        let statements = try TableSchemaSQL.alterColumn(
+            database: "app",
+            table: "orders",
+            original: original,
+            name: "total",
+            type: "BIGINT",
+            nullable: false,
+            unsigned: true,
+            defaultMode: .keep,
+            defaultLiteral: "",
+            dialect: .mysql,
+            quoteCharacter: "`"
+        )
+
+        #expect(statements == [
+            "ALTER TABLE `app`.`orders` CHANGE COLUMN `amount` `total` BIGINT UNSIGNED NOT NULL DEFAULT 5"
+        ])
+    }
+
+    @Test func tableSchemaSQLBuildsTransactionalPostgreSQLColumnStepsAndEscapesLiteral() throws {
+        let original = ColumnInfo(name: "name", type: "text", isNullable: true)
+        let statements = try TableSchemaSQL.alterColumn(
+            database: "public",
+            table: "people",
+            original: original,
+            name: "full_name",
+            type: "VARCHAR(120)",
+            nullable: false,
+            unsigned: false,
+            defaultMode: .literal,
+            defaultLiteral: "O'Brien",
+            dialect: .postgresql,
+            quoteCharacter: "\""
+        )
+
+        #expect(statements == [
+            "ALTER TABLE \"public\".\"people\" RENAME COLUMN \"name\" TO \"full_name\"",
+            "ALTER TABLE \"public\".\"people\" ALTER COLUMN \"full_name\" TYPE VARCHAR(120)",
+            "ALTER TABLE \"public\".\"people\" ALTER COLUMN \"full_name\" SET NOT NULL",
+            "ALTER TABLE \"public\".\"people\" ALTER COLUMN \"full_name\" SET DEFAULT 'O''Brien'"
+        ])
+    }
+
+    @Test func tableSchemaSQLLimitsSQLiteColumnEditingToSafeRename() throws {
+        let original = ColumnInfo(name: "label", type: "text", isNullable: true)
+        let rename = try TableSchemaSQL.alterColumn(
+            database: "main",
+            table: "items",
+            original: original,
+            name: "display_label",
+            type: "text",
+            nullable: true,
+            unsigned: false,
+            defaultMode: .keep,
+            defaultLiteral: "",
+            dialect: .sqlite,
+            quoteCharacter: "\""
+        )
+        #expect(rename == [
+            "ALTER TABLE \"main\".\"items\" RENAME COLUMN \"label\" TO \"display_label\""
+        ])
+
+        #expect(throws: TableSchemaEditError.self) {
+            _ = try TableSchemaSQL.alterColumn(
+                database: "main",
+                table: "items",
+                original: original,
+                name: "label",
+                type: "VARCHAR(80)",
+                nullable: true,
+                unsigned: false,
+                defaultMode: .keep,
+                defaultLiteral: "",
+                dialect: .sqlite,
+                quoteCharacter: "\""
+            )
+        }
+    }
+
+    @Test func tableSchemaSQLProtectsGeneratedAndPrimaryKeyAttributes() {
+        let generated = ColumnInfo(name: "search_key", type: "text", isNullable: true, isGenerated: true)
+        #expect(throws: TableSchemaEditError.self) {
+            _ = try TableSchemaSQL.alterColumn(
+                database: "app",
+                table: "items",
+                original: generated,
+                name: "search_key",
+                type: "VARCHAR(80)",
+                nullable: true,
+                unsigned: false,
+                defaultMode: .keep,
+                defaultLiteral: "",
+                dialect: .mysql,
+                quoteCharacter: "`"
+            )
+        }
+
+        let primary = ColumnInfo(name: "id", type: "bigint", isNullable: false, isPrimaryKey: true)
+        #expect(throws: TableSchemaEditError.self) {
+            _ = try TableSchemaSQL.alterColumn(
+                database: "app",
+                table: "items",
+                original: primary,
+                name: "id",
+                type: "bigint",
+                nullable: true,
+                unsigned: false,
+                defaultMode: .keep,
+                defaultLiteral: "",
+                dialect: .mysql,
+                quoteCharacter: "`"
+            )
+        }
+    }
+
+    @Test func tableToolsKeepDataAsTheirPrimaryDestination() {
+        #expect(TableTab.allCases.first == .data)
+        #expect(TableTab.data.helpText == "Browse and edit table data")
     }
 
     @Test @MainActor func workspaceAppearanceMigratesBooleanBlurAndPreservesEndpoints() throws {
@@ -1434,6 +1784,81 @@ struct glassdbTests {
         #expect(query.sql == "SELECT * FROM `db``prod`.`user``table` WHERE `na``me` = ? AND `age` > ? ORDER BY `age` DESC, `na``me` ASC LIMIT 100 OFFSET 100")
         #expect(query.sql.contains(attack) == false)
         #expect(query.parameters == [.string(attack), .int(21)])
+    }
+
+    @Test func displayOnlyRowFiltersKeepOriginalRowIndicesAndUseTypedComparison() {
+        let columns = [
+            ColumnInfo(name: "id", type: "bigint", isNullable: false),
+            ColumnInfo(name: "status", type: "varchar(32)"),
+            ColumnInfo(name: "note", type: "text")
+        ]
+        let rows: [[DatabaseValue]] = [
+            [.int(1), .string("draft"), .null],
+            [.int(12), .string("ready"), .string("ship")],
+            [.int(20), .string("ready"), .null]
+        ]
+        let matching = GridDisplayFilterEvaluator.matchingRowIndices(
+            rows: rows,
+            columns: columns,
+            filters: [
+                GridColumnFilter(
+                    columnName: "id",
+                    columnType: "bigint",
+                    operation: .greaterThan,
+                    value: "10"
+                ),
+                GridColumnFilter(
+                    columnName: "status",
+                    columnType: "varchar(32)",
+                    operation: .equals,
+                    value: "ready"
+                ),
+                GridColumnFilter(
+                    columnName: "note",
+                    columnType: "text",
+                    operation: .isNotNull,
+                    value: ""
+                )
+            ]
+        )
+
+        #expect(matching == [1])
+        #expect(GridFilterApplicationMode.allCases.first == .updateQuery)
+    }
+
+    @Test func rowSelectionMatchesMacPlainShiftAndCommandSemantics() {
+        let displayedRows = [2, 5, 9, 12]
+        let plain = GridRowSelectionState().selecting(
+            5,
+            from: displayedRows,
+            extendsSelection: false,
+            togglesSelection: false
+        )
+        #expect(plain == GridRowSelectionState(rows: [5], anchor: 5))
+
+        let shifted = plain.selecting(
+            12,
+            from: displayedRows,
+            extendsSelection: true,
+            togglesSelection: false
+        )
+        #expect(shifted == GridRowSelectionState(rows: [5, 9, 12], anchor: 5))
+
+        let commandToggled = shifted.selecting(
+            9,
+            from: displayedRows,
+            extendsSelection: false,
+            togglesSelection: true
+        )
+        #expect(commandToggled == GridRowSelectionState(rows: [5, 12], anchor: 9))
+
+        let commandShifted = GridRowSelectionState(rows: [2], anchor: 2).selecting(
+            9,
+            from: displayedRows,
+            extendsSelection: true,
+            togglesSelection: true
+        )
+        #expect(commandShifted == GridRowSelectionState(rows: [2, 5, 9], anchor: 2))
     }
 
     @Test func gridServerQueryRejectsUnknownFilterAndSortColumns() {

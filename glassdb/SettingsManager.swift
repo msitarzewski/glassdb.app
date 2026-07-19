@@ -11,6 +11,13 @@ import Foundation
 import Observation
 import GlasSecretStore
 import os
+import UserNotifications
+
+enum QueryFailureNotificationPreference: String, Sendable {
+    case undecided
+    case enabled
+    case disabled
+}
 
 struct SSHKeyLifecycleStore: @unchecked Sendable {
     let retrieve: (UUID) throws -> SSHKeyMaterial?
@@ -108,7 +115,9 @@ class SettingsManager {
     var editorFontSize: Double = 14.0
     var dataGridFontSize: Double = 13.0
     var showLineNumbers: Bool = true
+    var autoFormatJSONInRecordEditor: Bool = true
     var redactQueryHistoryLiterals: Bool = false
+    private(set) var queryFailureNotificationPreference: QueryFailureNotificationPreference = .undecided
     var savedQueries: [SavedQuery] = []
     var sshKeys: [StoredSSHKey] = []
     private(set) var sshKeyCatalogError: SSHMetadataPersistenceError?
@@ -119,6 +128,14 @@ class SettingsManager {
     private let sshKeyLifecycleStore: SSHKeyLifecycleStore
     private let sharedCatalogWriter: (Data?) throws -> Void
     private let legacyCatalogWriter: (Data?) throws -> Void
+
+    var queryFailureNotificationsEnabled: Bool {
+        queryFailureNotificationPreference == .enabled
+    }
+
+    var shouldOfferQueryFailureNotifications: Bool {
+        queryFailureNotificationPreference == .undecided
+    }
 
     init(
         loadImmediately: Bool = true,
@@ -190,8 +207,18 @@ class SettingsManager {
         if defaults.object(forKey: UserDefaultsKeys.showLineNumbers) != nil {
             showLineNumbers = defaults.bool(forKey: UserDefaultsKeys.showLineNumbers)
         }
+        if defaults.object(forKey: UserDefaultsKeys.autoFormatJSONInRecordEditor) != nil {
+            autoFormatJSONInRecordEditor = defaults.bool(
+                forKey: UserDefaultsKeys.autoFormatJSONInRecordEditor
+            )
+        }
         if defaults.object(forKey: UserDefaultsKeys.redactQueryHistoryLiterals) != nil {
             redactQueryHistoryLiterals = defaults.bool(forKey: UserDefaultsKeys.redactQueryHistoryLiterals)
+        }
+        if let rawPreference = defaults.string(
+            forKey: UserDefaultsKeys.queryFailureNotificationPreference
+        ), let preference = QueryFailureNotificationPreference(rawValue: rawPreference) {
+            queryFailureNotificationPreference = preference
         }
 
         loadSavedQueries()
@@ -213,7 +240,72 @@ class SettingsManager {
         defaults.set(editorFontSize, forKey: UserDefaultsKeys.editorFontSize)
         defaults.set(dataGridFontSize, forKey: UserDefaultsKeys.dataGridFontSize)
         defaults.set(showLineNumbers, forKey: UserDefaultsKeys.showLineNumbers)
+        defaults.set(
+            autoFormatJSONInRecordEditor,
+            forKey: UserDefaultsKeys.autoFormatJSONInRecordEditor
+        )
         defaults.set(redactQueryHistoryLiterals, forKey: UserDefaultsKeys.redactQueryHistoryLiterals)
+        defaults.set(
+            queryFailureNotificationPreference.rawValue,
+            forKey: UserDefaultsKeys.queryFailureNotificationPreference
+        )
+    }
+
+    func declineQueryFailureNotifications() {
+        queryFailureNotificationPreference = .disabled
+        saveSettings()
+    }
+
+    func disableQueryFailureNotifications() {
+        queryFailureNotificationPreference = .disabled
+        saveSettings()
+    }
+
+    @discardableResult
+    func enableQueryFailureNotifications() async -> Bool {
+        do {
+            let granted = try await UNUserNotificationCenter.current().requestAuthorization(
+                options: [.alert, .sound]
+            )
+            queryFailureNotificationPreference = granted ? .enabled : .disabled
+            saveSettings()
+            return granted
+        } catch {
+            Logger.settings.error("Notification authorization failed: \(error.localizedDescription)")
+            queryFailureNotificationPreference = .disabled
+            saveSettings()
+            return false
+        }
+    }
+
+    func postQueryFailureNotification() async {
+        guard queryFailureNotificationsEnabled else { return }
+
+        let center = UNUserNotificationCenter.current()
+        let authorization = await center.notificationSettings().authorizationStatus
+        guard authorization == .authorized || authorization == .provisional else {
+            queryFailureNotificationPreference = .disabled
+            saveSettings()
+            return
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Query Failed"
+        // Do not expose SQL, schema names, literals, or server diagnostics in a
+        // notification that may appear on a locked device.
+        content.body = "A database query failed. Open glassdb to review the error."
+        content.sound = .default
+        content.threadIdentifier = "app.glassdb.query-failures"
+
+        do {
+            try await center.add(UNNotificationRequest(
+                identifier: UUID().uuidString,
+                content: content,
+                trigger: nil
+            ))
+        } catch {
+            Logger.settings.error("Query failure notification could not be delivered: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Saved Queries

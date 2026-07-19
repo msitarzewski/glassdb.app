@@ -34,6 +34,7 @@ struct SettingsView: View {
         .onChange(of: settings.editorFontSize) { _, _ in settingsManager.saveSettings() }
         .onChange(of: settings.dataGridFontSize) { _, _ in settingsManager.saveSettings() }
         .onChange(of: settings.showLineNumbers) { _, _ in settingsManager.saveSettings() }
+        .onChange(of: settings.autoFormatJSONInRecordEditor) { _, _ in settingsManager.saveSettings() }
         .onChange(of: settings.windowOpacity) { _, _ in settingsManager.saveSettings() }
         .onChange(of: settings.blurBackground) { _, _ in settingsManager.saveSettings() }
         .onChange(of: settings.showSidebarByDefault) { _, _ in settingsManager.saveSettings() }
@@ -196,10 +197,24 @@ struct SettingsView: View {
             )
             Toggle("Redact literals in query history", isOn: $settings.redactQueryHistoryLiterals)
                 .help("Replaces quoted strings and numeric values before queries are stored in history.")
+            Toggle(
+                "Notify when a query fails",
+                isOn: Binding(
+                    get: { settingsManager.queryFailureNotificationsEnabled },
+                    set: { enabled in
+                        if enabled {
+                            Task { await settingsManager.enableQueryFailureNotifications() }
+                        } else {
+                            settingsManager.disableQueryFailureNotifications()
+                        }
+                    }
+                )
+            )
+            .help("Shows a private system notification without SQL, schema names, or server diagnostics.")
         } header: {
             Text("Query")
         } footer: {
-            Text("Limits protect memory use. Literal redaction applies only to history; it never changes SQL sent to a database.")
+            Text("Limits protect memory use. Literal redaction applies only to history; it never changes SQL sent to a database. Query-failure notifications contain no database details.")
         }
     }
 
@@ -221,10 +236,15 @@ struct SettingsView: View {
                 suffix: "pt"
             )
             Toggle("Show line numbers", isOn: $settings.showLineNumbers)
+            Toggle(
+                "Format JSON automatically while editing",
+                isOn: $settings.autoFormatJSONInRecordEditor
+            )
+            .help("Pretty-prints JSON and JSONB values when the record editor opens.")
         } header: {
             Text("Editor")
         } footer: {
-            Text("Text sizes apply to newly rendered editors and results grids.")
+            Text("Text sizes apply to newly rendered editors and results grids. Valid JSON is always compacted before it is sent to the database, regardless of its editor formatting.")
         }
     }
 

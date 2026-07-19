@@ -98,6 +98,11 @@
 - [x] Pagination: page nav bar, rows-per-page input, total row count, LIMIT/OFFSET
 - [x] Pager syncs with query LIMIT (isAutoQuery flag)
 - [x] Font size setting (dataGridFontSize, default 13.0)
+- [x] Searchable staged Columns manager with visible/frozen switches, bulk show/hide/unfreeze, reset, and persisted per-table layout
+- [x] Native Mac row-number selection: plain, Shift range, Command toggle, Command-Shift range union, and double-click edit
+- [x] Selected-row Copy, Compare, and CSV/TSV/JSON/SQL export use one shared ordered selection model
+- [x] Typed Filter Rows sheet with bound server-query mode by default and an explicit loaded-page-only Display Only mode
+- [x] Pinned adaptive column headers and row-number gutter remain legible while scrolling across transparent/blurred database canvases
 
 ### Completed — Query Execution
 - [x] Auto-repeat: table-data Execute context menu offers a fixed 10-second interval
@@ -144,14 +149,15 @@
 - [x] Native Mac form/input UX audit completed: tabbed grouped Settings, bounded steppers/sliders, inline validation and input gates, keyboard actions, adaptive editor/grid controls, and a 300-point minimum / 340-point default connection sidebar
 
 ### Completed — Final Automated QA
-- [x] Native macOS 27 arm64 application suite passed 60/60, including finite/stable native Settings layout coverage
+- [x] Native macOS 27 arm64 application suite passed 84/84, including finite/stable native Settings layout, JSON round-trip, workspace, schema tooling, filtering, and Mac row-selection coverage
 - [x] visionOS 26.4 arm64 simulator application suite passed 59/59; the prior visionOS 26.5 minimum-runtime checkpoint passed 44/44
 - [x] Both final app result bundles report zero errors, build/analyzer/runtime warnings, skips, and expected failures; final diff whitespace validation is clean
 - [x] Native macOS Release archive verified as arm64 with macOS 27.0 minimum and `macosx`/`MacOSX` platform metadata
 - [x] Native Settings crash regression passed ten fresh Debug launches plus the exact Release archive with Settings auto-opened; no new `.ips` or AppKit constraint-loop signature
-- [x] GlassDBKit passed 24/24 package tests plus the existing 2/2 live MySQL/PostgreSQL integrations; the added passwordless `caching_sha2_password` GlassDBKit harness also completed against MySQL 9.7.1
+- [x] GlassDBKit aggregate coverage is 25/25: the current local run passed all 22 non-live tests, while the three environment-gated MySQL 8, PostgreSQL 17, and passwordless MySQL 9.7.1 tests retain their recorded live passes
 - [x] Citadel passed 31 executed tests with 5 environment-gated skips and 0 failures; swift-nio-ssh passed 320/320; GlasSecretStore passed 68/68
 - [x] Transport pending buffers are bounded; Citadel payload/SFTP/invalid-state paths use typed failure handling rather than process traps
+- [x] Latest development-signed macOS arm64 bundle and generic visionOS simulator arm64 build passed; strict Mac signature verification succeeded
 
 ### In Progress
 - [ ] C3 cross-device Glass-family credential catalog and eligible-secret synchronization; shared access group/App Group behavior is currently same-device only

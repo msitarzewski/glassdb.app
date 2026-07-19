@@ -17,7 +17,7 @@ public final class SQLiteEngine: DatabaseEngine, Sendable {
         [
             .transactions, .parameterBinding, .queryTimeout, .cancellation,
             .metadata, .schemas, .indexes, .foreignKeys,
-            .createTableDefinition, .explain, .serverVersion,
+            .createTableDefinition, .explain, .serverVersion, .tableStatistics,
         ]
     }
 
@@ -180,7 +180,7 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
     let capabilities: Set<DatabaseCapability> = [
         .transactions, .parameterBinding, .queryTimeout, .cancellation,
         .metadata, .schemas, .indexes, .foreignKeys,
-        .createTableDefinition, .explain, .serverVersion,
+        .createTableDefinition, .explain, .serverVersion, .tableStatistics,
     ]
     let identifierQuoteCharacter: Character = "\""
 
@@ -360,6 +360,7 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
         for indexRow in list.rows {
             guard let name = indexRow[safe: 1]?.displayString else { continue }
             let unique = indexRow[safe: 2]?.displayString == "1"
+            let primary = indexRow[safe: 3]?.displayString == "pk"
             let detail = try await execute(
                 "PRAGMA \(quotedIdentifier(database)).index_info(\(quotedIdentifier(name)))",
                 parameters: []
@@ -370,6 +371,7 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
                         name: name,
                         columnName: "<expression>",
                         isUnique: unique,
+                        isPrimary: primary,
                         type: "BTREE",
                         sequenceInIndex: 1
                     )
@@ -382,6 +384,7 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
                         name: name,
                         columnName: columnName,
                         isUnique: unique,
+                        isPrimary: primary,
                         type: "BTREE",
                         sequenceInIndex: position + 1
                     ))
@@ -408,7 +411,17 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
     }
 
     func tableStatus(in database: String) async throws -> [TableStatus] {
-        throw DatabaseError.unsupportedCapability(.tableStatistics, engine: engineName)
+        var statuses: [TableStatus] = []
+        for table in try await tables(in: database) {
+            statuses.append(TableStatus(
+                name: table,
+                engine: "SQLite",
+                rowCount: try await rowCount(table: table, database: database),
+                dataLength: 0,
+                collation: nil
+            ))
+        }
+        return statuses
     }
 
     func rowCount(table: String, database: String) async throws -> Int {

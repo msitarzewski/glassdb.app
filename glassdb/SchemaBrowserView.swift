@@ -2,7 +2,7 @@
 //  SchemaBrowserView.swift
 //  glassdb
 //
-//  Tree navigation: databases -> tables -> columns -> indexes
+//  Tree navigation: databases -> tables
 //  Selection drives the workspace detail surface
 //
 
@@ -35,7 +35,6 @@ struct SchemaBrowserView: View {
     @State private var databases: [String] = []
     @State private var expandedDatabases: Set<String> = []
     @State private var tablesCache: [String: [String]] = [:]
-    @State private var columnsCache: [String: [ColumnInfo]] = [:]
     @State private var rowCountCache: [String: Int] = [:]
     @State private var loadErrors: [String: String] = [:]
     @State private var isLoading = false
@@ -233,112 +232,65 @@ struct SchemaBrowserView: View {
         .databaseLookScrollEnabled()
     }
 
-    private func columnAccessibilityLabel(_ col: ColumnInfo) -> String {
-        var parts = [col.name, col.type]
-        if col.isPrimaryKey { parts.append("primary key") }
-        if !col.isNullable { parts.append("not null") }
-        return parts.joined(separator: ", ")
-    }
-
     private func tableRow(_ table: String, database: String) -> some View {
         let cacheKey = "\(database).\(table)"
-        return DisclosureGroup {
-            if let columns = columnsCache[cacheKey] {
-                ForEach(columns) { col in
-                    HStack(spacing: 8) {
-                        Image(systemName: col.isPrimaryKey ? "key.fill" : "minus")
-                            .font(.caption2)
-                            .foregroundStyle(col.isPrimaryKey ? AnyShapeStyle(.yellow) : AnyShapeStyle(.tertiary))
-                            .frame(width: 16)
-
-                        Text(col.name)
-                            .font(.system(.caption, design: .monospaced))
-
-                        Spacer()
-
-                        Text(col.type)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                        if !col.isNullable {
-                            Text("NOT NULL")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(columnAccessibilityLabel(col))
-                }
-            } else if let error = loadErrors[cacheKey] {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .task {
-                        await loadColumns(for: table, database: database)
-                    }
-            }
+        return Button {
+            onSelectionChanged?(.table(database: database, table: table))
         } label: {
+            HStack {
+                Label(table, systemImage: "tablecells")
+                Spacer()
+                if let count = rowCountCache[cacheKey] {
+                    Text(count.formatted())
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
             Button {
                 onSelectionChanged?(.table(database: database, table: table))
             } label: {
-                HStack {
-                    Label(table, systemImage: "tablecells")
-                    Spacer()
-                    if let count = rowCountCache[cacheKey] {
-                        Text(count.formatted())
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .contentShape(Rectangle())
+                Label("Browse Data", systemImage: "tablecells")
             }
-            .buttonStyle(.plain)
-            .contextMenu {
-                Button {
-                    onSelectionChanged?(.table(database: database, table: table))
-                } label: {
-                    Label("Browse Data", systemImage: "tablecells")
-                }
-                Button {
-                    guard let connection = session?.connection else { return }
-                    PlatformClipboard.copy("\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))")
-                } label: {
-                    Label("Copy Table Name", systemImage: "doc.on.doc")
-                }
-                Button {
-                    guard let connection = session?.connection else { return }
-                    let object = "\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))"
-                    PlatformClipboard.copy("SELECT * FROM \(object) LIMIT 100;")
-                } label: {
-                    Label("Copy SELECT Statement", systemImage: "text.page")
-                }
-                Divider()
-                Button {
-                    tablesCache.removeValue(forKey: database)
-                    Task { await loadTables(for: database) }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                Divider()
-                if session?.connection?.capabilities.contains(.truncateTable) == true {
-                    Button(role: .destructive) {
-                        confirmingTruncate = SchemaMutationTarget(database: database, table: table)
-                    } label: {
-                        Label("Truncate Table...", systemImage: "trash")
-                    }
-                }
+            Button {
+                guard let connection = session?.connection else { return }
+                PlatformClipboard.copy("\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))")
+            } label: {
+                Label("Copy Table Name", systemImage: "doc.on.doc")
+            }
+            Button {
+                guard let connection = session?.connection else { return }
+                let object = "\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))"
+                PlatformClipboard.copy("SELECT * FROM \(object) LIMIT 100;")
+            } label: {
+                Label("Copy SELECT Statement", systemImage: "text.page")
+            }
+            Divider()
+            Button {
+                tablesCache.removeValue(forKey: database)
+                Task { await loadTables(for: database) }
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+            Divider()
+            if session?.connection?.capabilities.contains(.truncateTable) == true {
                 Button(role: .destructive) {
-                    confirmingDrop = SchemaMutationTarget(database: database, table: table)
+                    confirmingTruncate = SchemaMutationTarget(database: database, table: table)
                 } label: {
-                    Label("Drop Table...", systemImage: "xmark.bin")
+                    Label("Truncate Table...", systemImage: "trash")
                 }
             }
-            .task {
-                await loadRowCount(for: table, database: database)
+            Button(role: .destructive) {
+                confirmingDrop = SchemaMutationTarget(database: database, table: table)
+            } label: {
+                Label("Drop Table...", systemImage: "xmark.bin")
             }
+        }
+        .task {
+            await loadRowCount(for: table, database: database)
         }
     }
 
@@ -378,7 +330,6 @@ struct SchemaBrowserView: View {
             ))
             if operation == .drop {
                 tablesCache.removeValue(forKey: target.database)
-                columnsCache.removeValue(forKey: "\(target.database).\(target.table)")
                 await loadTables(for: target.database)
             } else {
                 rowCountCache["\(target.database).\(target.table)"] = 0
@@ -418,19 +369,6 @@ struct SchemaBrowserView: View {
         } catch {
             loadErrors[database] = error.localizedDescription
             Logger.database.error("Failed to load tables for \(database): \(error)")
-        }
-    }
-
-    private func loadColumns(for table: String, database: String) async {
-        guard let connection = session?.connection else { return }
-        let cacheKey = "\(database).\(table)"
-        guard columnsCache[cacheKey] == nil else { return }
-        loadErrors.removeValue(forKey: cacheKey)
-        do {
-            columnsCache[cacheKey] = try await connection.columns(in: table, database: database)
-        } catch {
-            loadErrors[cacheKey] = error.localizedDescription
-            Logger.database.error("Failed to load columns for \(database).\(table): \(error)")
         }
     }
 

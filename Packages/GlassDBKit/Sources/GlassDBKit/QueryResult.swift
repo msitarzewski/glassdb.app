@@ -191,13 +191,22 @@ public struct IndexInfo: Identifiable, Sendable {
     public let name: String
     public let columnName: String
     public let isUnique: Bool
+    public let isPrimary: Bool
     public let type: String
     public let sequenceInIndex: Int
 
-    public init(name: String, columnName: String, isUnique: Bool, type: String, sequenceInIndex: Int) {
+    public init(
+        name: String,
+        columnName: String,
+        isUnique: Bool,
+        isPrimary: Bool = false,
+        type: String,
+        sequenceInIndex: Int
+    ) {
         self.name = name
         self.columnName = columnName
         self.isUnique = isUnique
+        self.isPrimary = isPrimary
         self.type = type
         self.sequenceInIndex = sequenceInIndex
     }

@@ -371,6 +371,21 @@ import Testing
 }
 
 @Suite struct SQLiteAdapterTests {
+    @Test func tableStatisticsExposeRealTablesAndExactRowCounts() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        defer { Task { try? await connection.close() } }
+
+        _ = try await connection.execute("CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT)")
+        _ = try await connection.execute("INSERT INTO projects (name) VALUES ('one'), ('two')")
+
+        #expect(connection.capabilities.contains(.tableStatistics))
+        let statuses = try await connection.tableStatus(in: "main")
+        let projects = try #require(statuses.first { $0.name == "projects" })
+        #expect(projects.engine == "SQLite")
+        #expect(projects.rowCount == 2)
+        #expect(projects.dataLength == 0)
+    }
+
     @Test func managedSnapshotCapturesCommittedWALPages() async throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("glassdb-snapshot-\(UUID().uuidString)", isDirectory: true)

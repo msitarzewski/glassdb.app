@@ -712,7 +712,7 @@ struct SQLHighlighter {
             string: sql,
             attributes: [
                 .font: UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
-                .foregroundColor: UIColor.white,
+                .foregroundColor: UIColor.label,
             ]
         )
 
@@ -721,28 +721,28 @@ struct SQLHighlighter {
             let color: UIColor
             switch token.kind {
             case .keyword:
-                color = UIColor(red: 0.4, green: 0.6, blue: 1.0, alpha: 1.0)
+                color = .systemBlue
                 attr.addAttribute(.font, value: UIFont.monospacedSystemFont(ofSize: fontSize, weight: .bold), range: nsRange)
             case .function:
-                color = UIColor(red: 0.7, green: 0.5, blue: 1.0, alpha: 1.0)
+                color = .systemPurple
             case .string:
                 color = UIColor.systemGreen
             case .number:
                 color = UIColor.systemOrange
             case .comment:
-                color = UIColor(white: 0.55, alpha: 1.0)
+                color = .secondaryLabel
             case .identifier:
-                color = UIColor(red: 0.4, green: 0.8, blue: 0.8, alpha: 1.0)
+                color = .systemTeal
             case .operator_:
-                color = UIColor.white
+                color = .label
             case .punctuation:
-                color = UIColor(white: 0.6, alpha: 1.0)
+                color = .secondaryLabel
             case .error:
                 color = UIColor.systemRed
                 attr.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: nsRange)
                 attr.addAttribute(.underlineColor, value: UIColor.systemRed, range: nsRange)
             case .plain:
-                color = UIColor.white
+                color = .label
             }
             attr.addAttribute(.foregroundColor, value: color, range: nsRange)
         }
@@ -773,22 +773,22 @@ struct SQLHighlighter {
             let color: NSColor
             switch token.kind {
             case .keyword:
-                color = NSColor(red: 0.4, green: 0.6, blue: 1.0, alpha: 1.0)
+                color = .systemBlue
                 attr.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold), range: nsRange)
             case .function:
-                color = NSColor(red: 0.7, green: 0.5, blue: 1.0, alpha: 1.0)
+                color = .systemPurple
             case .string:
                 color = .systemGreen
             case .number:
                 color = .systemOrange
             case .comment:
-                color = NSColor(white: 0.55, alpha: 1.0)
+                color = .secondaryLabelColor
             case .identifier:
-                color = NSColor(red: 0.4, green: 0.8, blue: 0.8, alpha: 1.0)
+                color = .systemTeal
             case .operator_:
                 color = .labelColor
             case .punctuation:
-                color = NSColor(white: 0.6, alpha: 1.0)
+                color = .secondaryLabelColor
             case .error:
                 color = .systemRed
                 attr.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: nsRange)

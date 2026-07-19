@@ -29,7 +29,9 @@ enum UserDefaultsKeys {
     static let editorFontSize = "glassdb.editorFontSize"
     static let dataGridFontSize = "glassdb.dataGridFontSize"
     static let showLineNumbers = "glassdb.showLineNumbers"
+    static let autoFormatJSONInRecordEditor = "glassdb.autoFormatJSONInRecordEditor"
     static let redactQueryHistoryLiterals = "glassdb.redactQueryHistoryLiterals"
+    static let queryFailureNotificationPreference = "glassdb.queryFailureNotificationPreference"
 }
 
 enum KeychainServiceNames {
@@ -48,6 +50,48 @@ enum DatabaseSidebarLayout {
     static let minimumWidth: CGFloat = 300
     static let idealWidth: CGFloat = 340
     static let maximumWidth: CGFloat = 440
+}
+
+/// Canonical independent levels for database-canvas paint and passthrough
+/// blur. Foreground content never inherits either value.
+struct DatabaseGlassAppearance: Equatable, Sendable {
+    let opacity: Double
+    let blur: Double
+
+    init(opacity: Double, blur: Double) {
+        self.opacity = Self.unitValue(opacity)
+        self.blur = Self.unitValue(blur)
+    }
+
+    var paintsCanvas: Bool { opacity > 0 }
+    var compositesBlur: Bool { blur > 0 }
+    var isFullyTransparent: Bool { !paintsCanvas && !compositesBlur }
+
+    func surfaceAlpha(strength: Double = 0.06) -> Double {
+        opacity * Self.unitValue(strength)
+    }
+
+    /// Pinned content must occlude scrolling text while preserving the exact
+    /// transparent and opaque endpoints selected by the user.
+    var pinnedSurfaceAlpha: Double {
+        sqrt(opacity)
+    }
+
+    private static func unitValue(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(1, max(0, value))
+    }
+}
+
+enum DatabaseCanvasPalette {
+    @MainActor
+    static var background: Color {
+        #if canImport(AppKit)
+        Color(nsColor: .textBackgroundColor)
+        #else
+        Color(uiColor: .systemBackground)
+        #endif
+    }
 }
 
 enum PlatformClipboard {
@@ -143,9 +187,48 @@ extension View {
         toolbar(removing: .sidebarToggle)
         #endif
     }
+
+    /// Structural contrast inside the live database canvas. Scaling by the
+    /// user's paint opacity guarantees the surface disappears at 0%.
+    func databaseCanvasSurface(opacity: Double, strength: Double = 0.06) -> some View {
+        let alpha = DatabaseGlassAppearance(opacity: opacity, blur: 0)
+            .surfaceAlpha(strength: strength)
+        return background(Color.primary.opacity(alpha))
+    }
+
+    /// Appearance-aware backing for headers that remain fixed while database
+    /// rows scroll beneath them. This intentionally strengthens intermediate
+    /// opacity values but still disappears completely at 0%.
+    func databaseCanvasPinnedSurface(opacity: Double) -> some View {
+        let alpha = DatabaseGlassAppearance(opacity: opacity, blur: 0)
+            .pinnedSurfaceAlpha
+        return background(DatabaseCanvasPalette.background.opacity(alpha))
+    }
 }
 
 #if os(macOS)
+/// Uses AppKit's behind-window compositor without changing the opacity of SQL,
+/// grid text, selection, or toolbar content.
+struct MacDatabaseCanvasVisualEffect: NSViewRepresentable {
+    let amount: Double
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView(frame: .zero)
+        view.blendingMode = .behindWindow
+        view.material = .underWindowBackground
+        view.state = .active
+        view.wantsLayer = true
+        view.alphaValue = DatabaseGlassAppearance(opacity: 0, blur: amount).blur
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = .underWindowBackground
+        nsView.state = .active
+        nsView.alphaValue = DatabaseGlassAppearance(opacity: 0, blur: amount).blur
+    }
+}
+
 /// A non-interactive material layer for AppKit's titlebar region. It must never
 /// participate in hit testing: the window's toolbar and SwiftUI content retain
 /// normal pointer, keyboard, and accessibility behavior.
@@ -198,6 +281,11 @@ enum MacDatabaseWorkspaceWindowPolicy {
         window.ignoresMouseEvents = false
         window.isMovableByWindowBackground = false
         window.autorecalculatesKeyViewLoop = true
+        window.toolbarStyle = .unifiedCompact
+        // SwiftUI's unifiedCompact style can still resolve to regular-height
+        // Liquid Glass controls on macOS 27. Keep workspace toolbar items in the
+        // compact native row without changing control sizes inside the canvas.
+        window.toolbar?.sizeMode = .small
         installTitlebarMaterial(in: window)
     }
 

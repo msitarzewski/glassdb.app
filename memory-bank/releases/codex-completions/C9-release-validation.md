@@ -20,14 +20,14 @@ Prove the completed native Vision Pro and Apple-silicon Mac release is secure, c
 
 ### Automated and integration tests
 
-- [x] Keep the original package coverage green and record expanded totals: GlassDBKit 24/24 and GlasSecretStore 68/68.
-- [x] Run the shared app transport, host-trust, credential migration, typed-value, parser, mutation, AI-policy, persistence-integrity, platform-shell, and Mac form/layout suites: 60/60 on native macOS 27 arm64 and 59/59 on the visionOS 26.4 arm64 simulator.
+- [x] Keep the original package coverage green and record expanded totals: GlassDBKit aggregate coverage 25/25 (22 current local non-live passes plus three previously recorded gated live passes) and GlasSecretStore 68/68.
+- [x] Run the shared app transport, host-trust, credential migration, typed-value, parser, mutation, AI-policy, persistence-integrity, platform-shell, and Mac form/layout suites: latest native Mac suite 84/84 on macOS 27 arm64; frozen cross-platform checkpoint 59/59 on the visionOS 26.4 arm64 simulator; fresh shared-workspace visionOS arm64 build passed on 2026-07-19.
 - [x] Run the claimed live-server matrix: MySQL 8 and PostgreSQL 17 integrations passed 2/2; managed-copy SQLite is covered by GlassDBKit and app tests. MySQL 5.7 remains unclaimed.
 - [ ] Inject certificate/key rotation, network loss, timeout, cancellation, reconnect, transaction conflict, disk-full, Keychain denial, and process termination.
 
 ### Scale and UX
 
-- [ ] Test server-bounded/paged 1K, 10K, and 100K result/export workflows with latency and allocation-conscious algorithms; incremental driver streaming remains an explicit post-release gap.
+- [x] Test server-bounded/paged 1K, 10K, and 100K result/export workflows with latency and allocation-conscious algorithms; incremental driver streaming remains an explicit post-release gap.
 - [ ] Profile repeated connect/query/disconnect, multiwindow workspaces, detached results, grid edits, imports/exports, and AI sessions for leaks.
 - [ ] Complete keyboard, pointer, touch, visionOS interaction, VoiceOver, contrast, motion, and dynamic-type checks per platform.
 - [ ] Exercise the Vision Pro `query-editor` workspace at opacity endpoints and intermediate values, blur endpoints and intermediate values, multiple simultaneous workspaces, relaunch, and window restoration; verify 0% opacity remains available and controls/content remain usable.
@@ -62,6 +62,9 @@ Prove the completed native Vision Pro and Apple-silicon Mac release is secure, c
 
 | Date | Gate/Suite | Environment | Result | Artifact/Commit |
 |---|---|---|---|---|
+| 2026-07-19 | Shared workspace/data-management candidate | native macOS 27 arm64 host plus generic visionOS simulator arm64 build | Mac 84/84 with zero failures, skips, expected failures, or runtime warnings; both platform builds passed; development-signed Mac bundle passed strict signature verification | local Xcode result bundle and build artifacts |
+| 2026-07-19 | Grid/record UX regressions | native Mac test host | semantic JSON compaction, query/display-only filters, plain/Shift/Command row selection, selected-row export, staged column manager, and pinned grid surfaces passed | focused tests within 84-test app suite |
+| 2026-07-19 | GlassDBKit refresh | native arm64 Mac package run plus retained gated-live evidence | 22/22 non-live tests passed locally; all three gated live tests have previously recorded passes, for aggregate 25/25 coverage | Swift Testing output and prior disposable-server logs |
 | 2026-07-18 | Final app functional/unit suites | native macOS 27 arm64 host and visionOS 26.4 arm64 simulator | Mac 60/60; visionOS 59/59; zero result-bundle errors, build/analyzer/runtime warnings, skips, or expected failures | local Xcode test results |
 | 2026-07-18 | Native Mac UX and Settings layout | macOS 27 native controls and hosted finite-layout regression | grouped/tabbed Settings and bounded sheets/inputs completed ten stable layout cycles; connection sidebar defaults to 340 points with a 300-point minimum; Vision Pro opacity/blur controls remain wired and continuous | local source review and application tests; no screenshot artifact claimed |
 | 2026-07-18 | Native Settings crash regression | macOS 27 Debug cycles and exact unsigned Release archive | ten fresh Debug Settings launches plus Release Settings probe survived; no new `.ips` or AppKit constraint-loop diagnostic | local runtime and unified-log evidence |

@@ -8,6 +8,17 @@ The native macOS implementation and automated platform/package QA are complete. 
 
 ## Recent Changes
 
+### Codex Completions (2026-07-19) — Shared Workspace and Data-Management UX
+- Completed the shared Mac/visionOS database workspace: native material chrome remains separate from the user-controlled live database canvas, multiple SQL/database/table tabs remain connected until individually closed, and table/database clicks now open data and operational database dashboards respectively
+- Replaced read-only table metadata surfaces with capability-gated Structure, DDL, Index, and Foreign Key workflows that preview generated SQL, require confirmation for mutations, propagate server errors, and refresh verified metadata after success
+- Modernized query failures into accessible Apple-style error cards with first-error notification consent, bounded native notification delivery, copyable diagnostics, and runtime-gated on-device Foundation Models fix suggestions that only draft SQL into the editor
+- Added semantic JSON/JSONB record editing: optional automatic pretty formatting for humans, validation while editing, and lossless compact machine serialization on save without changing string whitespace, escapes, key order, or numeric lexemes
+- Replaced the unbounded Columns command menu with a searchable staged manager for visibility, freezing, bulk actions, reset, and Cancel/Done; layouts remain persisted per connection/database/table
+- Added native Mac row-number selection semantics: plain click selects one row, Shift extends a visible range, Command toggles discontiguous rows, Command-Shift adds a range, and double-click edits; Copy, Compare, and Export consume the same selected-row set
+- Added dual-mode row filtering: bound server-side query updates remain the default, while Display Only filters the currently loaded page without changing SQL or contacting the database
+- Restored the dedicated Mac application icon by removing the duplicate resource-name collision between the flattened asset catalog and retained layered source; the Vision Pro solid image stack remains unchanged
+- Current evidence: 84/84 native macOS 27 arm64 app tests passed with zero failures, skips, expected failures, or runtime warnings; fresh arm64 macOS and visionOS simulator builds passed; the development-signed Mac bundle passed strict signature verification
+
 ### Codex Completions (2026-07-18) — Native macOS Completion and Final Automated QA
 - Added the native SwiftUI macOS application path with platform-native scenes, commands, window behavior, settings, editor/grid controls, Keychain integration, Mac app metadata/entitlements, and a dedicated Mac icon while preserving the Vision Pro database-workspace opacity/blur experience
 - Set the Mac application and test deployment target to macOS 27.0 and restricted shipping application architectures to arm64; Intel and Catalyst remain unsupported

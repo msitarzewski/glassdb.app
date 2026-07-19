@@ -617,44 +617,55 @@ final class MySQLDatabaseConnection: DatabaseConnection, @unchecked Sendable {
         let safeDB = Self.escapeLiteral(database)
         let safeTable = Self.escapeLiteral(table)
         let result = try await execute(
-            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, ORDINAL_POSITION, COLUMN_DEFAULT, EXTRA " +
+            "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, ORDINAL_POSITION, COLUMN_DEFAULT, EXTRA " +
             "FROM INFORMATION_SCHEMA.COLUMNS " +
             "WHERE TABLE_SCHEMA = '\(safeDB)' AND TABLE_NAME = '\(safeTable)' " +
             "ORDER BY ORDINAL_POSITION"
         )
         return result.rows.enumerated().compactMap { index, row in
-            guard row.count >= 7,
+            guard row.count >= 8,
                   case .string(let name) = row[0],
                   case .string(let type) = row[1] else {
                 return nil
             }
+            let columnType = row[2].isNull ? type : row[2].displayString
+            let lowercaseColumnType = columnType.lowercased()
+            let editableType: String
+            if lowercaseColumnType.hasSuffix(" unsigned zerofill") {
+                editableType = String(columnType.dropLast(" unsigned zerofill".count)) + " ZEROFILL"
+            } else if lowercaseColumnType.hasSuffix(" unsigned") {
+                editableType = String(columnType.dropLast(" unsigned".count))
+            } else {
+                editableType = columnType
+            }
             let nullable: Bool
-            if case .string(let n) = row[2] {
+            if case .string(let n) = row[3] {
                 nullable = n == "YES"
             } else {
                 nullable = true
             }
             let isPK: Bool
-            if case .string(let k) = row[3] {
+            if case .string(let k) = row[4] {
                 isPK = k == "PRI"
             } else {
                 isPK = false
             }
             let ordinalPosition: Int
-            switch row[4] {
+            switch row[5] {
             case .int(let value): ordinalPosition = (Int(exactly: value) ?? 1) - 1
             case .uint(let value): ordinalPosition = (Int(exactly: value) ?? 1) - 1
             case .string(let value): ordinalPosition = (Int(value) ?? 1) - 1
             default: ordinalPosition = index
             }
-            let defaultValue = row[5].isNull ? nil : row[5].displayString
-            let extra = row[6].isNull ? "" : row[6].displayString.uppercased()
+            let defaultValue = row[6].isNull ? nil : row[6].displayString
+            let extra = row[7].isNull ? "" : row[7].displayString.uppercased()
             return ColumnInfo(
                 name: name,
-                type: type,
+                type: editableType,
                 isNullable: nullable,
                 isPrimaryKey: isPK,
                 ordinalPosition: max(ordinalPosition, 0),
+                isUnsigned: columnType.localizedCaseInsensitiveContains("unsigned"),
                 defaultValue: defaultValue,
                 isGenerated: extra.contains("GENERATED")
             )
@@ -688,6 +699,7 @@ final class MySQLDatabaseConnection: DatabaseConnection, @unchecked Sendable {
                 name: keyName,
                 columnName: columnName,
                 isUnique: nonUnique == "0",
+                isPrimary: keyName.uppercased() == "PRIMARY",
                 type: indexType,
                 sequenceInIndex: seqInIndex
             )

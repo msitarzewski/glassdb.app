@@ -56,13 +56,14 @@ Evolve the shared engine/model layer into capability-based interfaces while pres
 
 | Date | Engine/Platform | Scenario | Result | Test/Commit |
 |---|---|---|---|---|
+| 2026-07-19 | native macOS + visionOS shared workspace | transparent database canvas, native material chrome, persistent tabs, database dashboard, table metadata/mutation tools, staged column/filter managers | 84/84 native Mac tests passed; fresh arm64 Mac and visionOS simulator builds passed; development-signed Mac bundle passed strict verification | local Xcode results and artifacts |
 | 2026-07-18 | native macOS + visionOS 27 simulator | final arm64 app suites | 56/56 passed on Mac; 55/55 passed on visionOS 27 | local Xcode test results |
 | 2026-07-18 | Release builds | native Mac archive and Vision Pro build | unsigned macOS Release archive passed; generic visionOS Release build passed | local Xcode artifacts |
 | 2026-07-18 | MySQL/PostgreSQL/SQLite | engine contracts and live/local execution | 24/24 package tests; live MySQL 8 and PostgreSQL 17 integrations 2/2 | `GlassDBKitTests`; disposable containers |
 | 2026-07-18 | MySQL passwordless auth | `caching_sha2_password` with empty credential | official mysql-nio 1.9.1 rejected the connection as password-bearing; pinned fork `3ad138f` passed the gated GlassDBKit test against MySQL 9.7.1; user confirmed the fresh Mac app connects | focused mysql-nio tests; local live test; upstream draft PR #126 |
 | 2026-07-18 | Native Mac parity | shared workflows with AppKit/SwiftUI adaptations | connection, schema, SQL editor, results grid, row management, settings, and security surfaces compile and pass 56 native app tests | native macOS target |
 | 2026-07-18 | Native Mac Settings | repeated native Settings presentation and exact Release launch | finite 760×680 content sizing; ten Debug launches and Release probe survived with no new `.ips` or constraint-loop log | local runtime regression |
-| 2026-07-17 | App icons | visionOS solid image stacks | glassdb and sibling glas.sh passed `actool` | asset compiler output |
+| 2026-07-19 | App icons | platform-specific compiled assets | Mac duplicate `MacAppIcon` resource collision removed; flattened Mac icon restored; Vision Pro solid image stack retained; both platform builds passed asset compilation | asset compiler output |
 
 ## Residual Platform Gates
 

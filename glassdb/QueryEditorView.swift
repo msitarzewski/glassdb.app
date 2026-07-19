@@ -35,6 +35,261 @@ struct SQLTextDocument: FileDocument {
     }
 }
 
+struct QueryFailurePresentation: Equatable, Sendable {
+    let title: String
+    let detail: String
+
+    init(message: String) {
+        let normalized = message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\u{0000}", with: "")
+        detail = normalized.isEmpty
+            ? "The database did not provide an error description."
+            : String(normalized.prefix(16_384))
+
+        let lowercase = normalized.lowercased()
+        if lowercase.contains("syntax") || lowercase.contains("parse error") {
+            title = "Invalid SQL Syntax"
+        } else if lowercase.contains("access denied") || lowercase.contains("authentication") {
+            title = "Authentication Failed"
+        } else if lowercase.contains("timed out") || lowercase.contains("timeout") {
+            title = "Query Timed Out"
+        } else if lowercase.contains("duplicate") || lowercase.contains("unique constraint") {
+            title = "Duplicate Value"
+        } else if lowercase.contains("foreign key") {
+            title = "Foreign Key Constraint"
+        } else {
+            title = "Query Failed"
+        }
+    }
+}
+
+struct QueryErrorCard: View {
+    let error: String
+    let query: String
+    let schemaContext: SchemaContext
+    let aiAssistant: AIAssistant?
+    var summary = "The database rejected this query."
+    var offersNotifications = true
+    var offersAISuggestion = true
+    let onUseSuggestedSQL: (String) -> Void
+    let onDismiss: () -> Void
+
+    @Environment(SettingsManager.self) private var settingsManager
+    @State private var requestedAISuggestion = false
+    @State private var handledNotification = false
+    @State private var notificationAuthorizationFailed = false
+
+    private var presentation: QueryFailurePresentation {
+        QueryFailurePresentation(message: error)
+    }
+
+    private var suggestedSQL: String? {
+        guard let raw = aiAssistant?.lastError?.suggestedFix else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("```") {
+            let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false)
+            return lines
+                .dropFirst()
+                .drop(while: { $0.trimmingCharacters(in: .whitespaces).isEmpty })
+                .dropLast(lines.last?.trimmingCharacters(in: .whitespacesAndNewlines) == "```" ? 1 : 0)
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title2)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.red)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(presentation.title)
+                        .font(.headline)
+                    Text(summary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 16)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Dismiss this error")
+                .accessibilityLabel("Dismiss query error")
+            }
+
+            Text(presentation.detail)
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 10) {
+                Button {
+                    PlatformClipboard.copy(presentation.detail)
+                } label: {
+                    Label("Copy Error", systemImage: "doc.on.doc")
+                }
+
+                if offersAISuggestion, aiAssistant?.isAvailable == true {
+                    Button {
+                        requestAISuggestion()
+                    } label: {
+                        Label("Suggest Fix", systemImage: "apple.intelligence")
+                    }
+                    .disabled(aiAssistant?.isProcessing == true || query.isEmpty)
+                    .help("Ask the on-device model for a potential correction")
+                }
+            }
+            .controlSize(.small)
+
+            if offersNotifications, settingsManager.shouldOfferQueryFailureNotifications {
+                notificationOffer
+            } else if notificationAuthorizationFailed {
+                Label(
+                    "Notifications remain off. You can allow them in System Settings.",
+                    systemImage: "bell.slash"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            if requestedAISuggestion {
+                aiSuggestion
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: 760, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.red.opacity(0.22), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 18, y: 8)
+        .padding(24)
+        .task(id: error) {
+            guard offersNotifications,
+                  !handledNotification,
+                  settingsManager.queryFailureNotificationsEnabled else { return }
+            handledNotification = true
+            await settingsManager.postQueryFailureNotification()
+        }
+    }
+
+    private var notificationOffer: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Get notified when a query fails", systemImage: "bell.badge")
+                .font(.subheadline.weight(.semibold))
+            Text("Notifications contain no SQL, schema names, literals, or server diagnostics.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Not Now") {
+                    settingsManager.declineQueryFailureNotifications()
+                }
+                Button("Enable Notifications") {
+                    Task {
+                        let enabled = await settingsManager.enableQueryFailureNotifications()
+                        notificationAuthorizationFailed = !enabled
+                        if enabled {
+                            handledNotification = true
+                            await settingsManager.postQueryFailureNotification()
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private var aiSuggestion: some View {
+        Divider()
+        if aiAssistant?.isProcessing == true {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Apple Intelligence is reviewing the query and schema metadata…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        } else if let explanation = aiAssistant?.lastError,
+                  let suggestedSQL {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Potential Fix", systemImage: "apple.intelligence")
+                    .font(.headline)
+
+                Text(explanation.problem)
+                    .font(.callout)
+
+                Text(suggestedSQL)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
+
+                let safety = SQLHighlighter.safetyClassification(of: suggestedSQL)
+                if safety.requiresConfirmation {
+                    Label(
+                        "This suggestion can modify database state and will still require confirmation.",
+                        systemImage: "exclamationmark.shield"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
+
+                HStack {
+                    Button("Copy Suggested SQL", systemImage: "doc.on.doc") {
+                        PlatformClipboard.copy(suggestedSQL)
+                    }
+                    Button("Use in Editor", systemImage: "arrow.up.doc") {
+                        onUseSuggestedSQL(suggestedSQL)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .controlSize(.small)
+
+                DisclosureGroup("Why this may work") {
+                    Text(explanation.reasoning)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .padding(.top, 6)
+                }
+            }
+        } else if let message = aiAssistant?.errorMessage {
+            Label(message, systemImage: "apple.intelligence")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func requestAISuggestion() {
+        guard let aiAssistant else { return }
+        requestedAISuggestion = true
+        aiAssistant.reset()
+        Task {
+            await aiAssistant.explainError(
+                error: presentation.detail,
+                query: query,
+                context: schemaContext
+            )
+        }
+    }
+}
+
 private struct QueryDocumentTab: Identifiable {
     let id: UUID
     var text: String
@@ -90,6 +345,7 @@ struct QueryEditorView: View {
     @State private var documentError: String?
     @State private var schemaCompletionIdentifiers: [String] = []
     @State private var completionLoadError: String?
+    @State private var aiErrorSchemaContext: SchemaContext?
     @State private var statementsAwaitingConfirmation: [SQLStatement] = []
     @State private var showingExecutionConfirmation = false
 
@@ -242,6 +498,11 @@ struct QueryEditorView: View {
             if selectedTabID == nil {
                 selectedTabID = tabs[0].id
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbOpenSQLDraft)) { notification in
+            guard let request = notification.object as? SQLDraftRequest,
+                  request.sessionID == sessionID else { return }
+            createTab(with: request.sql)
         }
         .task(id: session?.currentDatabase) {
             await loadCompletionIdentifiers()
@@ -621,17 +882,31 @@ struct QueryEditorView: View {
             .frame(maxWidth: .infinity, minHeight: 200)
         } else if let result = currentResult {
             if let error = result.error {
-                VStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.title)
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                ScrollView {
+                    QueryErrorCard(
+                        error: error,
+                        query: result.query,
+                        schemaContext: aiErrorSchemaContext ?? SchemaContext(
+                            databaseName: session?.currentDatabase ?? "Current database",
+                            tables: []
+                        ),
+                        aiAssistant: session?.aiAssistant,
+                        onUseSuggestedSQL: { suggestedSQL in
+                            queryText = suggestedSQL
+                            selectedRange = NSRange(
+                                location: (suggestedSQL as NSString).length,
+                                length: 0
+                            )
+                            currentResult = nil
+                            saveActiveTab()
+                        },
+                        onDismiss: {
+                            currentResult = nil
+                            saveActiveTab()
+                        }
+                    )
                 }
                 .frame(maxWidth: .infinity, minHeight: 200)
-                .padding()
             } else {
                 inlineResultsGrid(result)
             }
@@ -696,7 +971,16 @@ struct QueryEditorView: View {
                                         Color.clear.frame(width: fillerWidth, height: rowHeight)
                                     }
                                 }
-                                .background(rowIndex.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.02))
+                                .background(
+                                    rowIndex.isMultiple(of: 2)
+                                        ? Color.clear
+                                        : Color.primary.opacity(
+                                            DatabaseGlassAppearance(
+                                                opacity: settingsManager.windowOpacity,
+                                                blur: 0
+                                            ).surfaceAlpha(strength: 0.02)
+                                        )
+                                )
                             }
                         } header: {
                             HStack(spacing: 0) {
@@ -713,7 +997,7 @@ struct QueryEditorView: View {
                                     Spacer().frame(width: fillerWidth)
                                 }
                             }
-                            .background(.ultraThinMaterial)
+                            .databaseCanvasSurface(opacity: settingsManager.windowOpacity)
                         }
                     }
                 }
@@ -825,22 +1109,41 @@ struct QueryEditorView: View {
             if let database = session?.currentDatabase, !database.isEmpty {
                 let tables = try await connection.tables(in: database)
                 identifiers.formUnion(tables)
-                await withTaskGroup(of: [String].self) { group in
+                var tableInfos: [SchemaContext.TableInfo] = []
+                await withTaskGroup(of: SchemaContext.TableInfo?.self) { group in
                     for table in tables.prefix(50) {
                         group.addTask {
                             guard let columns = try? await connection.columns(
                                 in: table,
                                 database: database
-                            ) else { return [] }
-                            return columns.flatMap { column in
-                                [column.name, "\(table).\(column.name)"]
-                            }
+                            ) else { return nil }
+                            return SchemaContext.TableInfo(
+                                name: table,
+                                columns: columns.map {
+                                    SchemaContext.ColumnInfo(name: $0.name, type: $0.type)
+                                }
+                            )
                         }
                     }
-                    for await columns in group {
-                        identifiers.formUnion(columns)
+                    for await tableInfo in group {
+                        guard let tableInfo else { continue }
+                        tableInfos.append(tableInfo)
+                        identifiers.formUnion(tableInfo.columns.flatMap { column in
+                            [column.name, "\(tableInfo.name).\(column.name)"]
+                        })
                     }
                 }
+                aiErrorSchemaContext = SchemaContext(
+                    databaseName: database,
+                    tables: tableInfos.sorted {
+                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+                )
+            } else {
+                aiErrorSchemaContext = SchemaContext(
+                    databaseName: "Current database",
+                    tables: []
+                )
             }
             schemaCompletionIdentifiers = identifiers.sorted {
                 $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
@@ -848,6 +1151,10 @@ struct QueryEditorView: View {
             completionLoadError = nil
         } catch {
             schemaCompletionIdentifiers = []
+            aiErrorSchemaContext = SchemaContext(
+                databaseName: session?.currentDatabase ?? "Current database",
+                tables: []
+            )
             completionLoadError = error.localizedDescription
         }
     }

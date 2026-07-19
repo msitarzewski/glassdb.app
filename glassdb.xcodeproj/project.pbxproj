@@ -23,7 +23,6 @@
 		29D787D970624B23ABE13289 /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF83AE0207B342A29E2ADEE7 /* ConnectionManager.swift */; };
 		3711EDCA0BA34F4E98E10CE0 /* ConnectionFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BFCB3DBBA154885A5CF2BFB /* ConnectionFormView.swift */; };
 		3B64A03BF9CD4108BE9A5DEC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 990BF6E8175444E180F44614 /* Assets.xcassets */; };
-		A11C0A1C0A1C0A1C0A1C0001 /* MacAppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A11C0A1C0A1C0A1C0A1C0002 /* MacAppIcon.icon */; };
 		4EEEE200E4F6459C9A24647C /* DatabaseSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBC442DB6AB4D709CB10272 /* DatabaseSessionManager.swift */; };
 		5760A471B09743FFA44D4265 /* QueryEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3792B5DAA1074993A43635A7 /* QueryEditorView.swift */; };
 		5FF0BC99598B472C869B9ACD /* SettingsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02EDAE92FBA4446990FFA07F /* SettingsManager.swift */; };
@@ -253,7 +252,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				3B64A03BF9CD4108BE9A5DEC /* Assets.xcassets in Resources */,
-				A11C0A1C0A1C0A1C0A1C0001 /* MacAppIcon.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

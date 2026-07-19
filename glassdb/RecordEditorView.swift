@@ -9,6 +9,115 @@
 import SwiftUI
 import GlassDBKit
 
+enum RecordJSONText {
+    static func compact(_ text: String) throws -> String {
+        _ = try object(from: text)
+
+        var result = String()
+        result.reserveCapacity(text.utf8.count)
+        var isInsideString = false
+        var isEscaped = false
+
+        for character in text {
+            if isInsideString {
+                result.append(character)
+                if isEscaped {
+                    isEscaped = false
+                } else if character == "\\" {
+                    isEscaped = true
+                } else if character == "\"" {
+                    isInsideString = false
+                }
+            } else if character == "\"" {
+                isInsideString = true
+                result.append(character)
+            } else if !jsonWhitespace.contains(character) {
+                result.append(character)
+            }
+        }
+        return result
+    }
+
+    static func pretty(_ text: String) throws -> String {
+        _ = try object(from: text)
+
+        let characters = Array(text)
+        var result = String()
+        result.reserveCapacity(text.utf8.count + 32)
+        var indent = 0
+        var expandedContainers: [Bool] = []
+        var isInsideString = false
+        var isEscaped = false
+
+        func appendLineBreak() {
+            result.append("\n")
+            result.append(String(repeating: "  ", count: indent))
+        }
+
+        for (index, character) in characters.enumerated() {
+            if isInsideString {
+                result.append(character)
+                if isEscaped {
+                    isEscaped = false
+                } else if character == "\\" {
+                    isEscaped = true
+                } else if character == "\"" {
+                    isInsideString = false
+                }
+                continue
+            }
+
+            switch character {
+            case "\"":
+                isInsideString = true
+                result.append(character)
+            case "{", "[":
+                result.append(character)
+                let closing: Character = character == "{" ? "}" : "]"
+                let next = characters[(index + 1)...].first { !jsonWhitespace.contains($0) }
+                let expands = next != closing
+                expandedContainers.append(expands)
+                if expands {
+                    indent += 1
+                    appendLineBreak()
+                }
+            case "}", "]":
+                if expandedContainers.popLast() == true {
+                    indent = max(0, indent - 1)
+                    appendLineBreak()
+                }
+                result.append(character)
+            case ",":
+                result.append(character)
+                appendLineBreak()
+            case ":":
+                result.append(": ")
+            default:
+                if !jsonWhitespace.contains(character) {
+                    result.append(character)
+                }
+            }
+        }
+        return result
+    }
+
+    static func isEquivalent(_ lhs: String, _ rhs: String) -> Bool {
+        guard let left = try? object(from: lhs),
+              let right = try? object(from: rhs) else { return false }
+        guard let leftObject = left as? NSObject else { return false }
+        return leftObject.isEqual(right)
+    }
+
+    private static let jsonWhitespace: Set<Character> = [" ", "\t", "\n", "\r"]
+
+    private static func object(from text: String) throws -> Any {
+        try JSONSerialization.jsonObject(
+            with: Data(text.utf8),
+            options: [.fragmentsAllowed]
+        )
+    }
+}
+
 // MARK: - Staged Edit Model
 
 struct StagedEdit: Identifiable {
@@ -31,11 +140,17 @@ struct StagedEdit: Identifiable {
         if useDefault { return false }
         if isNull != originalValue.isNull { return true }
         if isNull { return false }
+        if isJSON {
+            return !RecordJSONText.isEquivalent(editText, originalValue.displayString)
+        }
         return editText != originalValue.displayString
     }
 
     var typeLower: String { columnType.lowercased() }
-    var isJSON: Bool { typeLower == "json" }
+    var isJSON: Bool {
+        let baseType = typeLower.split(separator: "(", maxSplits: 1).first.map(String.init) ?? typeLower
+        return baseType == "json" || baseType == "jsonb"
+    }
     var isLargeText: Bool { typeLower.contains("text") || typeLower.contains("blob") }
     var isBool: Bool { typeLower.contains("bool") || typeLower == "tinyint" || typeLower.hasPrefix("tinyint(1)") }
     var isBinary: Bool { typeLower.contains("binary") || typeLower.contains("blob") || typeLower.hasPrefix("bit") }
@@ -103,11 +218,11 @@ struct StagedEdit: Identifiable {
             }
             return .double(parsed)
         }
-        if baseType == "json" {
-            guard (try? JSONSerialization.jsonObject(with: Data(value.utf8))) != nil else {
+        if baseType == "json" || baseType == "jsonb" {
+            guard let compact = try? RecordJSONText.compact(value) else {
                 throw RecordValueError.invalidValue(column: columnName, expected: "valid JSON")
             }
-            return .json(value)
+            return .json(compact)
         }
         if baseType == "bit" {
             let bits = value.filter { !$0.isWhitespace }
@@ -165,6 +280,8 @@ enum RecordValueError: LocalizedError {
 // MARK: - Record Editor
 
 struct RecordEditorView: View {
+    @Environment(SettingsManager.self) private var settingsManager
+
     enum RecordEditorMode {
         case edit(rowIndex: Int, originalRow: [DatabaseValue])
         case add
@@ -304,9 +421,16 @@ struct RecordEditorView: View {
     private func fieldSection(edit: StagedEdit, index: Int) -> some View {
         Section {
             if edit.isGenerated {
-                LabeledContent("Value", value: "GENERATED BY SERVER")
+                Label("Generated by server", systemImage: "gearshape.2")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else if isAddMode && edit.useDefault {
-                LabeledContent("Value", value: edit.defaultValue.map { "DEFAULT (\($0))" } ?? "DEFAULT")
+                Label(
+                    edit.defaultValue.map { "Use default: \($0)" } ?? "Use column default",
+                    systemImage: "arrow.turn.down.right"
+                )
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Provide Value") {
                     edits[index].useDefault = false
                     edits[index].isNull = false
@@ -376,6 +500,7 @@ struct RecordEditorView: View {
                         .foregroundStyle(.orange)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -383,11 +508,14 @@ struct RecordEditorView: View {
 
     private func standardField(edit: StagedEdit, index: Int) -> some View {
         TextField(
-            edit.columnName,
+            "Value",
             text: fieldBinding(index: index),
             prompt: edit.isNull ? Text("NULL") : nil
         )
+        .labelsHidden()
         .font(.system(.body, design: .monospaced))
+        .multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .autocorrectionDisabled()
         .databaseNoAutocapitalization()
         .databaseASCIICapableKeyboard()
@@ -399,12 +527,15 @@ struct RecordEditorView: View {
 
     private func largeTextField(edit: StagedEdit, index: Int) -> some View {
         TextField(
-            edit.columnName,
+            "Value",
             text: fieldBinding(index: index),
             prompt: edit.isNull ? Text("NULL") : nil,
             axis: .vertical
         )
+        .labelsHidden()
         .font(.system(.body, design: .monospaced))
+        .multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .lineLimit(3...10)
         .autocorrectionDisabled()
         .databaseNoAutocapitalization()
@@ -419,29 +550,29 @@ struct RecordEditorView: View {
         let isTrue = edit.editText == "1" || edit.editText.lowercased() == "true"
         let displayValue = edit.isNull ? "NULL" : (isTrue ? "True" : "False")
 
-        return LabeledContent("Value") {
-            HStack(spacing: 8) {
-                Text(displayValue)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                Toggle(
-                    "",
-                    isOn: Binding(
-                        get: { !edit.isNull && isTrue },
-                        set: { value in
-                            edits[index].editText = value ? "1" : "0"
-                            edits[index].isNull = false
-                            edits[index].useDefault = false
-                        }
-                    )
+        return HStack(spacing: 10) {
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { !edit.isNull && isTrue },
+                    set: { value in
+                        edits[index].editText = value ? "1" : "0"
+                        edits[index].isNull = false
+                        edits[index].useDefault = false
+                    }
                 )
-                .labelsHidden()
-                .accessibilityLabel("\(edit.columnName), Boolean value")
-                .accessibilityValue(displayValue)
-                .help("Toggle the Boolean value for \(edit.columnName)")
-            }
+            )
+            .labelsHidden()
+            .accessibilityLabel("\(edit.columnName), Boolean value")
+            .accessibilityValue(displayValue)
+            .help("Toggle the Boolean value for \(edit.columnName)")
+            Text(displayValue)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - JSON Field
@@ -450,11 +581,14 @@ struct RecordEditorView: View {
     private func jsonField(edit: StagedEdit, index: Int) -> some View {
         if edit.isNull {
             TextField(
-                edit.columnName,
+                "Value",
                 text: fieldBinding(index: index),
                 prompt: Text("NULL")
             )
+            .labelsHidden()
             .font(.system(.body, design: .monospaced))
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .autocorrectionDisabled()
             .databaseNoAutocapitalization()
             .databaseASCIICapableKeyboard()
@@ -463,16 +597,19 @@ struct RecordEditorView: View {
         } else {
             TextEditor(text: fieldBinding(index: index))
                 .font(.system(.body, design: .monospaced))
+                .multilineTextAlignment(.leading)
                 .autocorrectionDisabled()
                 .databaseNoAutocapitalization()
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: 120, maxHeight: 300)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel("\(edit.columnName), JSON")
                 .help("Enter valid JSON for \(edit.columnName)")
 
             HStack {
                 Button("Format") { formatJSON(index: index) }
                 Button("Validate") { validateJSON(edits[index].editText, index: index) }
+                Spacer(minLength: 0)
             }
             .font(.caption)
         }
@@ -500,7 +637,7 @@ struct RecordEditorView: View {
             return
         }
         do {
-            _ = try JSONSerialization.jsonObject(with: Data(text.utf8))
+            _ = try RecordJSONText.compact(text)
             jsonErrors.removeValue(forKey: index)
         } catch {
             jsonErrors[index] = error.localizedDescription
@@ -509,13 +646,11 @@ struct RecordEditorView: View {
 
     private func formatJSON(index: Int) {
         let text = edits[index].editText
-        guard let data = text.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let formatted = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
-              let str = String(data: formatted, encoding: .utf8) else {
+        guard let formatted = try? RecordJSONText.pretty(text) else {
             return
         }
-        edits[index].editText = str
+        edits[index].editText = formatted
+        jsonErrors.removeValue(forKey: index)
     }
 
     // MARK: - Init
@@ -526,7 +661,7 @@ struct RecordEditorView: View {
         case .edit(_, let originalRow):
             edits = columns.enumerated().map { colIndex, col in
                 let value = colIndex < originalRow.count ? originalRow[colIndex] : .null
-                return StagedEdit(
+                var edit = StagedEdit(
                     columnIndex: colIndex,
                     columnName: col.name,
                     columnType: col.type,
@@ -540,6 +675,13 @@ struct RecordEditorView: View {
                     isNull: value.isNull,
                     useDefault: false
                 )
+                if settingsManager.autoFormatJSONInRecordEditor,
+                   edit.isJSON,
+                   !edit.isNull,
+                   let formatted = try? RecordJSONText.pretty(edit.editText) {
+                    edit.editText = formatted
+                }
+                return edit
             }
         case .add:
             edits = columns.enumerated().map { colIndex, col in

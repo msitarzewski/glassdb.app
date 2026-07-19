@@ -26,7 +26,7 @@ public final class PostgreSQLEngine: DatabaseEngine, @unchecked Sendable {
         [
             .transactions, .parameterBinding, .transportTLS, .queryTimeout,
             .metadata, .schemas, .indexes, .foreignKeys, .explain,
-            .serverVersion, .cancellation,
+            .serverVersion, .cancellation, .tableStatistics,
             .truncateTable,
         ]
     }
@@ -116,7 +116,7 @@ actor PostgreSQLDatabaseConnection: DatabaseConnection {
     nonisolated let capabilities: Set<DatabaseCapability> = [
         .transactions, .parameterBinding, .transportTLS, .queryTimeout,
         .metadata, .schemas, .indexes, .foreignKeys, .explain,
-        .serverVersion, .cancellation,
+        .serverVersion, .cancellation, .tableStatistics,
         .truncateTable,
     ]
     nonisolated let identifierQuoteCharacter: Character = "\""
@@ -281,7 +281,7 @@ actor PostgreSQLDatabaseConnection: DatabaseConnection {
         let result = try await performQuery(
             """
             SELECT index_class.relname, attribute.attname, index.indisunique,
-                   access_method.amname, ordinality.ordinality
+                   access_method.amname, ordinality.ordinality, index.indisprimary
             FROM pg_catalog.pg_class table_class
             JOIN pg_catalog.pg_namespace namespace
               ON namespace.oid = table_class.relnamespace
@@ -303,6 +303,7 @@ actor PostgreSQLDatabaseConnection: DatabaseConnection {
                 name: row[safe: 0]?.displayString ?? "",
                 columnName: row[safe: 1]?.displayString ?? "<expression>",
                 isUnique: row[safe: 2] == .bool(true),
+                isPrimary: row[safe: 5] == .bool(true),
                 type: row[safe: 3]?.displayString ?? "",
                 sequenceInIndex: Int(row[safe: 4]?.displayString ?? "0") ?? 0
             )
@@ -339,7 +340,31 @@ actor PostgreSQLDatabaseConnection: DatabaseConnection {
     }
 
     func tableStatus(in database: String) async throws -> [TableStatus] {
-        throw DatabaseError.unsupportedCapability(.tableStatistics, engine: engineName)
+        let result = try await performQuery(
+            """
+            SELECT table_class.relname,
+                   COALESCE(stats.n_live_tup, table_class.reltuples)::bigint,
+                   pg_total_relation_size(table_class.oid)
+            FROM pg_catalog.pg_class table_class
+            JOIN pg_catalog.pg_namespace namespace
+              ON namespace.oid = table_class.relnamespace
+            LEFT JOIN pg_catalog.pg_stat_user_tables stats
+              ON stats.relid = table_class.oid
+            WHERE namespace.nspname = $1
+              AND table_class.relkind IN ('r', 'p')
+            ORDER BY table_class.relname
+            """,
+            parameters: [.string(database)]
+        )
+        return result.rows.map { row in
+            TableStatus(
+                name: row[safe: 0]?.displayString ?? "",
+                engine: "PostgreSQL",
+                rowCount: Int(row[safe: 1]?.displayString ?? "0") ?? 0,
+                dataLength: Int(row[safe: 2]?.displayString ?? "0") ?? 0,
+                collation: nil
+            )
+        }
     }
 
     func rowCount(table: String, database: String) async throws -> Int {

@@ -184,14 +184,15 @@ struct DatabaseWorkspaceView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Keep Apple-provided titlebar, tab, and sidebar materials intact.
-            // Only the live database canvas responds to opacity and blur.
-            .modifier(DatabaseWorkspaceBackground(
-                material: .ultraThinMaterial,
-                fillOpacity: settingsManager.windowOpacity,
-                blurAmount: settingsManager.blurBackground
-            ))
         }
+        // Keep Apple-provided titlebar and sidebar materials intact. The SQL
+        // tab strip belongs to the live database canvas and follows the same
+        // user-controlled opacity and blur as its editor and results grid.
+        .modifier(DatabaseWorkspaceBackground(
+            material: .ultraThinMaterial,
+            fillOpacity: settingsManager.windowOpacity,
+            blurAmount: settingsManager.blurBackground
+        ))
     }
 
     private var workspaceTabBar: some View {
@@ -271,7 +272,10 @@ struct DatabaseWorkspaceView: View {
             DatabaseDetailView(
                 sessionID: sessionID,
                 database: database,
-                isWorkspaceActive: isActive
+                isWorkspaceActive: isActive,
+                onOpenTable: { table in
+                    tabState.open(.table(database: database, table: table))
+                }
             ) {
                 tabState.open(.query)
             }
@@ -328,25 +332,28 @@ private struct DatabaseWorkspaceBackground: ViewModifier {
     let blurAmount: Double
 
     func body(content: Content) -> some View {
+        let appearance = DatabaseGlassAppearance(opacity: fillOpacity, blur: blurAmount)
         content.background(alignment: .center) {
-            // Keep the layers in one background hierarchy. Separate chained
-            // backgrounds can be reordered by NavigationSplitView's AppKit
-            // compositor in light appearance, leaving only the pale material.
-            // Blur is always behind paint, matching glas.sh's terminal canvas.
             ZStack {
-                if blurAmount > 0 {
+                if appearance.compositesBlur {
+                    #if os(macOS)
+                    MacDatabaseCanvasVisualEffect(amount: appearance.blur)
+                    #else
                     Rectangle()
                         .fill(material)
-                        .opacity(blurAmount)
+                        .opacity(appearance.blur)
+                    #endif
                 }
 
                 Rectangle()
-                    .fill(Color.black)
-                    .opacity(fillOpacity)
+                    .fill(DatabaseCanvasPalette.background)
+                    .opacity(appearance.opacity)
             }
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+            #if !os(macOS)
             .ignoresSafeArea()
+            #endif
         }
     }
 }
