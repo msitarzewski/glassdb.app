@@ -37,5 +37,18 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ]
         ),
+        .testTarget(
+            name: "CitadelTests",
+            dependencies: [
+                "Citadel",
+                .product(name: "NIOSSH", package: "swift-nio-ssh"),
+                .product(name: "NIO", package: "swift-nio"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "_CryptoExtras", package: "swift-crypto"),
+                .product(name: "BigInt", package: "BigInt"),
+                .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
     ]
 )

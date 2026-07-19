@@ -35,6 +35,261 @@ struct SQLTextDocument: FileDocument {
     }
 }
 
+struct QueryFailurePresentation: Equatable, Sendable {
+    let title: String
+    let detail: String
+
+    init(message: String) {
+        let normalized = message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\u{0000}", with: "")
+        detail = normalized.isEmpty
+            ? "The database did not provide an error description."
+            : String(normalized.prefix(16_384))
+
+        let lowercase = normalized.lowercased()
+        if lowercase.contains("syntax") || lowercase.contains("parse error") {
+            title = "Invalid SQL Syntax"
+        } else if lowercase.contains("access denied") || lowercase.contains("authentication") {
+            title = "Authentication Failed"
+        } else if lowercase.contains("timed out") || lowercase.contains("timeout") {
+            title = "Query Timed Out"
+        } else if lowercase.contains("duplicate") || lowercase.contains("unique constraint") {
+            title = "Duplicate Value"
+        } else if lowercase.contains("foreign key") {
+            title = "Foreign Key Constraint"
+        } else {
+            title = "Query Failed"
+        }
+    }
+}
+
+struct QueryErrorCard: View {
+    let error: String
+    let query: String
+    let schemaContext: SchemaContext
+    let aiAssistant: AIAssistant?
+    var summary = "The database rejected this query."
+    var offersNotifications = true
+    var offersAISuggestion = true
+    let onUseSuggestedSQL: (String) -> Void
+    let onDismiss: () -> Void
+
+    @Environment(SettingsManager.self) private var settingsManager
+    @State private var requestedAISuggestion = false
+    @State private var handledNotification = false
+    @State private var notificationAuthorizationFailed = false
+
+    private var presentation: QueryFailurePresentation {
+        QueryFailurePresentation(message: error)
+    }
+
+    private var suggestedSQL: String? {
+        guard let raw = aiAssistant?.lastError?.suggestedFix else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("```") {
+            let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false)
+            return lines
+                .dropFirst()
+                .drop(while: { $0.trimmingCharacters(in: .whitespaces).isEmpty })
+                .dropLast(lines.last?.trimmingCharacters(in: .whitespacesAndNewlines) == "```" ? 1 : 0)
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title2)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.red)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(presentation.title)
+                        .font(.headline)
+                    Text(summary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 16)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Dismiss this error")
+                .accessibilityLabel("Dismiss query error")
+            }
+
+            Text(presentation.detail)
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 10) {
+                Button {
+                    PlatformClipboard.copy(presentation.detail)
+                } label: {
+                    Label("Copy Error", systemImage: "doc.on.doc")
+                }
+
+                if offersAISuggestion, aiAssistant?.isAvailable == true {
+                    Button {
+                        requestAISuggestion()
+                    } label: {
+                        Label("Suggest Fix", systemImage: "apple.intelligence")
+                    }
+                    .disabled(aiAssistant?.isProcessing == true || query.isEmpty)
+                    .help("Ask the on-device model for a potential correction")
+                }
+            }
+            .controlSize(.small)
+
+            if offersNotifications, settingsManager.shouldOfferQueryFailureNotifications {
+                notificationOffer
+            } else if notificationAuthorizationFailed {
+                Label(
+                    "Notifications remain off. You can allow them in System Settings.",
+                    systemImage: "bell.slash"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            if requestedAISuggestion {
+                aiSuggestion
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: 760, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.red.opacity(0.22), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 18, y: 8)
+        .padding(24)
+        .task(id: error) {
+            guard offersNotifications,
+                  !handledNotification,
+                  settingsManager.queryFailureNotificationsEnabled else { return }
+            handledNotification = true
+            await settingsManager.postQueryFailureNotification()
+        }
+    }
+
+    private var notificationOffer: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Get notified when a query fails", systemImage: "bell.badge")
+                .font(.subheadline.weight(.semibold))
+            Text("Notifications contain no SQL, schema names, literals, or server diagnostics.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Not Now") {
+                    settingsManager.declineQueryFailureNotifications()
+                }
+                Button("Enable Notifications") {
+                    Task {
+                        let enabled = await settingsManager.enableQueryFailureNotifications()
+                        notificationAuthorizationFailed = !enabled
+                        if enabled {
+                            handledNotification = true
+                            await settingsManager.postQueryFailureNotification()
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private var aiSuggestion: some View {
+        Divider()
+        if aiAssistant?.isProcessing == true {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Apple Intelligence is reviewing the query and schema metadata…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        } else if let explanation = aiAssistant?.lastError,
+                  let suggestedSQL {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Potential Fix", systemImage: "apple.intelligence")
+                    .font(.headline)
+
+                Text(explanation.problem)
+                    .font(.callout)
+
+                Text(suggestedSQL)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
+
+                let safety = SQLHighlighter.safetyClassification(of: suggestedSQL)
+                if safety.requiresConfirmation {
+                    Label(
+                        "This suggestion can modify database state and will still require confirmation.",
+                        systemImage: "exclamationmark.shield"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
+
+                HStack {
+                    Button("Copy Suggested SQL", systemImage: "doc.on.doc") {
+                        PlatformClipboard.copy(suggestedSQL)
+                    }
+                    Button("Use in Editor", systemImage: "arrow.up.doc") {
+                        onUseSuggestedSQL(suggestedSQL)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .controlSize(.small)
+
+                DisclosureGroup("Why this may work") {
+                    Text(explanation.reasoning)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .padding(.top, 6)
+                }
+            }
+        } else if let message = aiAssistant?.errorMessage {
+            Label(message, systemImage: "apple.intelligence")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func requestAISuggestion() {
+        guard let aiAssistant else { return }
+        requestedAISuggestion = true
+        aiAssistant.reset()
+        Task {
+            await aiAssistant.explainError(
+                error: presentation.detail,
+                query: query,
+                context: schemaContext
+            )
+        }
+    }
+}
+
 private struct QueryDocumentTab: Identifiable {
     let id: UUID
     var text: String
@@ -66,6 +321,8 @@ private struct QueryDocumentTab: Identifiable {
 
 struct QueryEditorView: View {
     let sessionID: UUID
+    var isWorkspaceActive = true
+    var onOpenSQLEditor: (() -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
@@ -84,14 +341,25 @@ struct QueryEditorView: View {
     @State private var showingSQLImporter = false
     @State private var showingSQLExporter = false
     @State private var savedQueryName = ""
+    @FocusState private var savedQueryNameFocused: Bool
     @State private var documentError: String?
     @State private var schemaCompletionIdentifiers: [String] = []
     @State private var completionLoadError: String?
+    @State private var aiErrorSchemaContext: SchemaContext?
     @State private var statementsAwaitingConfirmation: [SQLStatement] = []
     @State private var showingExecutionConfirmation = false
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
+    }
+
+    private var normalizedSavedQueryName: String {
+        savedQueryName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSaveCurrentQuery: Bool {
+        !normalizedSavedQueryName.isEmpty
+            && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -111,110 +379,130 @@ struct QueryEditorView: View {
             }
         }
         .toolbar {
-            ToolbarItemGroup(placement: .bottomOrnament) {
-                Button {
-                    prepareCurrentStatementExecution()
-                } label: {
-                    Label("Execute Statement", systemImage: "play.fill")
+            if isWorkspaceActive {
+                #if os(macOS)
+                ToolbarSpacer(.flexible, placement: databaseToolbarPlacement)
+                DatabasePersistentToolbar {
+                    onOpenSQLEditor?()
                 }
-                .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
-                .keyboardShortcut(.return, modifiers: .command)
-
-                Button {
-                    prepareScriptExecution()
-                } label: {
-                    Label("Execute Script", systemImage: "play.square.stack")
-                }
-                .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
-                .keyboardShortcut(.return, modifiers: [.command, .shift])
-
-                Button {
-                    prepareExplainExecution()
-                } label: {
-                    Label("Explain Plan", systemImage: "point.3.connected.trianglepath.dotted")
-                }
-                .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
-                .keyboardShortcut("e", modifiers: [.command, .shift])
-
-                if isExecuting,
-                   session?.connection?.capabilities.contains(.cancellation) == true {
-                    Button(role: .destructive) {
-                        Task { await cancelExecution() }
+                #endif
+                ToolbarItem(placement: databaseToolbarPlacement) {
+                    Button {
+                        prepareCurrentStatementExecution()
                     } label: {
-                        Label("Cancel Query", systemImage: "stop.fill")
+                        Label("Execute Statement", systemImage: "play.fill")
                     }
+                    .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
+                    .keyboardShortcut(.return, modifiers: .command)
                 }
+                .databaseHighVisibilityPriority()
 
-                Menu {
-                    Button("Open SQL Document", systemImage: "folder") {
-                        showingSQLImporter = true
+                ToolbarItemGroup(placement: databaseToolbarPlacement) {
+                    Button {
+                        prepareScriptExecution()
+                    } label: {
+                        Label("Execute Script", systemImage: "play.square.stack")
                     }
-                    Button("Save SQL Document", systemImage: "square.and.arrow.down") {
-                        showingSQLExporter = true
+                    .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+
+                    Button {
+                        prepareExplainExecution()
+                    } label: {
+                        Label("Explain Plan", systemImage: "point.3.connected.trianglepath.dotted")
                     }
-                    .disabled(queryText.isEmpty)
+                    .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+
+                    if isExecuting,
+                       session?.connection?.capabilities.contains(.cancellation) == true {
+                        Button(role: .destructive) {
+                            Task { await cancelExecution() }
+                        } label: {
+                            Label("Cancel Query", systemImage: "stop.fill")
+                        }
+                    }
+
+                    Menu {
+                        Button("Open SQL Document", systemImage: "folder") {
+                            showingSQLImporter = true
+                        }
+                        Button("Save SQL Document", systemImage: "square.and.arrow.down") {
+                            showingSQLExporter = true
+                        }
+                        .disabled(queryText.isEmpty)
+                        Divider()
+                        Button("Query History", systemImage: "clock.arrow.circlepath") {
+                            showingHistory = true
+                        }
+                        Button("Saved Queries", systemImage: "bookmark") {
+                            showingSavedQueries = true
+                        }
+                        Divider()
+                        Button("Save Current Query", systemImage: "bookmark.fill") {
+                            savedQueryName = queryText
+                                .split(whereSeparator: \.isNewline)
+                                .first
+                                .map { String($0.prefix(48)) } ?? ""
+                            showingSaveQuery = true
+                        }
+                        .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    } label: {
+                        Label("Queries", systemImage: "books.vertical")
+                    }
+
+                    Button {
+                        queryText = ""
+                        currentResult = nil
+                    } label: {
+                        Label("Clear", systemImage: "trash")
+                    }
+                    .disabled(queryText.isEmpty && currentResult == nil)
+
+                    Button {
+                        let formatted = SQLHighlighter.formatted(queryText)
+                        queryText = formatted
+                        selectedRange = NSRange(location: (formatted as NSString).length, length: 0)
+                        saveActiveTab()
+                    } label: {
+                        Label("Format SQL", systemImage: "text.alignleft")
+                    }
+                    .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+
                     Divider()
-                    Button("Query History", systemImage: "clock.arrow.circlepath") {
-                        showingHistory = true
+
+                    Button {
+                        createTab()
+                    } label: {
+                        Label("New Query Tab", systemImage: "plus.square.on.square")
                     }
-                    Button("Saved Queries", systemImage: "bookmark") {
-                        showingSavedQueries = true
+                    .disabled(isExecuting)
+                    .keyboardShortcut("t", modifiers: .command)
+
+                    Button {
+                        requestCloseCurrentTab()
+                    } label: {
+                        Label("Close Query Tab", systemImage: "xmark.square")
                     }
-                    Divider()
-                    Button("Save Current Query", systemImage: "bookmark.fill") {
-                        savedQueryName = queryText
-                            .split(whereSeparator: \.isNewline)
-                            .first
-                            .map { String($0.prefix(48)) } ?? ""
-                        showingSaveQuery = true
-                    }
-                    .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                } label: {
-                    Label("Queries", systemImage: "books.vertical")
+                    .disabled(tabs.count == 1 || isExecuting)
+                    .keyboardShortcut("w", modifiers: [.command, .shift])
                 }
-
-                Button {
-                    queryText = ""
-                    currentResult = nil
-                } label: {
-                    Label("Clear", systemImage: "trash")
-                }
-                .disabled(queryText.isEmpty && currentResult == nil)
-
-                Button {
-                    let formatted = SQLHighlighter.formatted(queryText)
-                    queryText = formatted
-                    selectedRange = NSRange(location: (formatted as NSString).length, length: 0)
-                    saveActiveTab()
-                } label: {
-                    Label("Format SQL", systemImage: "text.alignleft")
-                }
-                .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-
-                Divider()
-
-                Button {
-                    createTab()
-                } label: {
-                    Label("New Query Tab", systemImage: "plus.square.on.square")
-                }
-                .disabled(isExecuting)
-                .keyboardShortcut("t", modifiers: .command)
-
-                Button {
-                    requestCloseCurrentTab()
-                } label: {
-                    Label("Close Query Tab", systemImage: "xmark.square")
-                }
-                .disabled(tabs.count == 1 || isExecuting)
-                .keyboardShortcut("w", modifiers: .command)
             }
         }
+        .focusedSceneValue(
+            \.databaseCommandActions,
+            isWorkspaceActive ? commandActions : nil
+        )
         .onAppear {
             if selectedTabID == nil {
                 selectedTabID = tabs[0].id
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbOpenSQLDraft)) { notification in
+            guard let request = notification.object as? SQLDraftRequest,
+                  request.sessionID == sessionID else { return }
+            createTab(with: request.sql)
         }
         .task(id: session?.currentDatabase) {
             await loadCompletionIdentifiers()
@@ -254,31 +542,33 @@ struct QueryEditorView: View {
                 showingSavedQueries = false
             }
         }
+        #if os(macOS)
+        .sheet(isPresented: $showingSaveQuery) {
+            saveQuerySheet
+        }
+        #else
         .alert("Save Query", isPresented: $showingSaveQuery) {
             TextField("Name", text: $savedQueryName)
             Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                let name = savedQueryName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.isEmpty else { return }
-                settingsManager.addSavedQuery(SavedQuery(
-                    name: name,
-                    sql: queryText,
-                    connectionID: session?.connectionConfig.id
-                ))
-            }
-            .disabled(savedQueryName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.cancelAction)
+            Button("Save") { saveCurrentQuery() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSaveCurrentQuery)
         } message: {
             Text("Saved queries remain available after the app restarts.")
         }
+        #endif
         .alert("Review SQL Before Executing", isPresented: $showingExecutionConfirmation) {
             Button("Cancel", role: .cancel) {
                 statementsAwaitingConfirmation = []
             }
+            .keyboardShortcut(.cancelAction)
             Button("Execute", role: .destructive) {
                 let statements = statementsAwaitingConfirmation
                 statementsAwaitingConfirmation = []
                 Task { await execute(statements) }
             }
+            .help("Execute the reviewed SQL against the connected database")
         } message: {
             let classifications = Set(statementsAwaitingConfirmation.map(\.safety.displayName)).sorted()
             Text("This script contains SQL classified as \(classifications.joined(separator: ", ")). Review it carefully before continuing.")
@@ -288,6 +578,7 @@ struct QueryEditorView: View {
             set: { if !$0 { tabPendingClose = nil } }
         )) {
             Button("Cancel", role: .cancel) { tabPendingClose = nil }
+                .keyboardShortcut(.cancelAction)
             Button("Close", role: .destructive) {
                 if let tabPendingClose {
                     closeTab(tabPendingClose)
@@ -302,9 +593,93 @@ struct QueryEditorView: View {
             set: { if !$0 { documentError = nil } }
         )) {
             Button("OK", role: .cancel) { documentError = nil }
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text(documentError ?? "")
         }
+    }
+
+    #if os(macOS)
+    private var saveQuerySheet: some View {
+        NavigationStack {
+            Form {
+                Section("Saved Query") {
+                    TextField("Name", text: $savedQueryName)
+                        .focused($savedQueryNameFocused)
+                        .onSubmit { saveCurrentQuery() }
+                        .accessibilityLabel("Saved query name")
+                        .help("Enter a name used to find this query later")
+                    if normalizedSavedQueryName.isEmpty {
+                        Label("Enter a name before saving.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+                Section("SQL Preview") {
+                    Text(queryText)
+                        .font(.system(.callout, design: .monospaced))
+                        .lineLimit(6)
+                        .textSelection(.enabled)
+                }
+                Section {
+                    Text("Saved queries remain available after the app restarts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Save Query")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showingSaveQuery = false }
+                        .keyboardShortcut(.cancelAction)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { saveCurrentQuery() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!canSaveCurrentQuery)
+                }
+            }
+        }
+        .frame(width: 520, height: 400)
+        .onAppear { savedQueryNameFocused = true }
+    }
+    #endif
+
+    private func saveCurrentQuery() {
+        guard canSaveCurrentQuery else { return }
+        settingsManager.addSavedQuery(SavedQuery(
+            name: normalizedSavedQueryName,
+            sql: queryText,
+            connectionID: session?.connectionConfig.id
+        ))
+        showingSaveQuery = false
+    }
+
+    private var commandActions: DatabaseCommandActions {
+        let hasQuery = !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return DatabaseCommandActions(
+            canExecute: hasQuery && !isExecuting,
+            canCancel: isExecuting && session?.connection?.capabilities.contains(.cancellation) == true,
+            canSave: !queryText.isEmpty,
+            canCloseTab: tabs.count > 1 && !isExecuting,
+            executeStatement: prepareCurrentStatementExecution,
+            executeScript: prepareScriptExecution,
+            explainPlan: prepareExplainExecution,
+            cancel: { Task { await cancelExecution() } },
+            openDocument: { showingSQLImporter = true },
+            saveDocument: { showingSQLExporter = true },
+            showHistory: { showingHistory = true },
+            showSavedQueries: { showingSavedQueries = true },
+            formatSQL: {
+                let formatted = SQLHighlighter.formatted(queryText)
+                queryText = formatted
+                selectedRange = NSRange(location: (formatted as NSString).length, length: 0)
+                saveActiveTab()
+            },
+            newTab: { createTab() },
+            closeTab: requestCloseCurrentTab
+        )
     }
 
     // MARK: - Editor
@@ -333,7 +708,8 @@ struct QueryEditorView: View {
                 text: $queryText,
                 fontSize: CGFloat(settingsManager.editorFontSize),
                 showLineNumbers: settingsManager.showLineNumbers,
-                selection: $selectedRange
+                selection: $selectedRange,
+                isActive: isWorkspaceActive
             )
             .frame(minHeight: 200)
             .accessibilityLabel("SQL query editor")
@@ -382,34 +758,46 @@ struct QueryEditorView: View {
             HStack(spacing: 6) {
                 ForEach(tabs) { tab in
                     let isSelected = tab.id == selectedTabID
-                    Button {
-                        switchToTab(tab.id)
-                    } label: {
-                        HStack(spacing: 6) {
+                    HStack(spacing: 2) {
+                        Button {
+                            switchToTab(tab.id)
+                        } label: {
+                            HStack(spacing: 6) {
                             Image(systemName: "text.page")
                             Text(isSelected ? activeTabTitle : tab.title)
                                 .lineLimit(1)
-                            if tabs.count > 1 {
+                                .truncationMode(.middle)
+                                .frame(maxWidth: 200)
+                            }
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .databaseWorkspaceTabControlTarget()
+                        .disabled(isExecuting)
+                        .accessibilityLabel("Query tab \(isSelected ? activeTabTitle : tab.title)")
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+
+                        if tabs.count > 1 {
+                            Button {
+                                requestCloseTab(tab.id)
+                            } label: {
                                 Image(systemName: "xmark")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
-                                    .onTapGesture {
-                                        requestCloseTab(tab.id)
-                                    }
                             }
+                            .buttonStyle(.borderless)
+                            .databaseWorkspaceTabControlTarget()
+                            .disabled(isExecuting)
+                            .accessibilityLabel("Close \(isSelected ? activeTabTitle : tab.title)")
                         }
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            isSelected ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear),
-                            in: Capsule()
-                        )
                     }
-                    .buttonStyle(.plain)
-                    .disabled(isExecuting)
-                    .accessibilityLabel("Query tab \(isSelected ? activeTabTitle : tab.title)")
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    .padding(.horizontal, 4)
+                    .background(
+                        isSelected ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear),
+                        in: Capsule()
+                    )
                 }
 
                 Button {
@@ -418,6 +806,7 @@ struct QueryEditorView: View {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(.borderless)
+                .databaseWorkspaceTabControlTarget()
                 .disabled(isExecuting)
                 .accessibilityLabel("New query tab")
             }
@@ -425,6 +814,7 @@ struct QueryEditorView: View {
             .padding(.vertical, 6)
         }
         .scrollIndicators(.hidden)
+        .databaseLookScrollEnabled()
     }
 
     private var activeTabTitle: String {
@@ -492,17 +882,31 @@ struct QueryEditorView: View {
             .frame(maxWidth: .infinity, minHeight: 200)
         } else if let result = currentResult {
             if let error = result.error {
-                VStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.title)
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                ScrollView {
+                    QueryErrorCard(
+                        error: error,
+                        query: result.query,
+                        schemaContext: aiErrorSchemaContext ?? SchemaContext(
+                            databaseName: session?.currentDatabase ?? "Current database",
+                            tables: []
+                        ),
+                        aiAssistant: session?.aiAssistant,
+                        onUseSuggestedSQL: { suggestedSQL in
+                            queryText = suggestedSQL
+                            selectedRange = NSRange(
+                                location: (suggestedSQL as NSString).length,
+                                length: 0
+                            )
+                            currentResult = nil
+                            saveActiveTab()
+                        },
+                        onDismiss: {
+                            currentResult = nil
+                            saveActiveTab()
+                        }
+                    )
                 }
                 .frame(maxWidth: .infinity, minHeight: 200)
-                .padding()
             } else {
                 inlineResultsGrid(result)
             }
@@ -567,7 +971,16 @@ struct QueryEditorView: View {
                                         Color.clear.frame(width: fillerWidth, height: rowHeight)
                                     }
                                 }
-                                .background(rowIndex.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.02))
+                                .background(
+                                    rowIndex.isMultiple(of: 2)
+                                        ? Color.clear
+                                        : Color.primary.opacity(
+                                            DatabaseGlassAppearance(
+                                                opacity: settingsManager.windowOpacity,
+                                                blur: 0
+                                            ).surfaceAlpha(strength: 0.02)
+                                        )
+                                )
                             }
                         } header: {
                             HStack(spacing: 0) {
@@ -584,12 +997,12 @@ struct QueryEditorView: View {
                                     Spacer().frame(width: fillerWidth)
                                 }
                             }
-                            .background(.ultraThinMaterial)
+                            .databaseCanvasSurface(opacity: settingsManager.windowOpacity)
                         }
                     }
                 }
                 .scrollIndicators(.visible)
-                .scrollInputBehavior(.enabled, for: .look)
+                .databaseLookScrollEnabled()
             }
         }
     }
@@ -696,22 +1109,41 @@ struct QueryEditorView: View {
             if let database = session?.currentDatabase, !database.isEmpty {
                 let tables = try await connection.tables(in: database)
                 identifiers.formUnion(tables)
-                await withTaskGroup(of: [String].self) { group in
+                var tableInfos: [SchemaContext.TableInfo] = []
+                await withTaskGroup(of: SchemaContext.TableInfo?.self) { group in
                     for table in tables.prefix(50) {
                         group.addTask {
                             guard let columns = try? await connection.columns(
                                 in: table,
                                 database: database
-                            ) else { return [] }
-                            return columns.flatMap { column in
-                                [column.name, "\(table).\(column.name)"]
-                            }
+                            ) else { return nil }
+                            return SchemaContext.TableInfo(
+                                name: table,
+                                columns: columns.map {
+                                    SchemaContext.ColumnInfo(name: $0.name, type: $0.type)
+                                }
+                            )
                         }
                     }
-                    for await columns in group {
-                        identifiers.formUnion(columns)
+                    for await tableInfo in group {
+                        guard let tableInfo else { continue }
+                        tableInfos.append(tableInfo)
+                        identifiers.formUnion(tableInfo.columns.flatMap { column in
+                            [column.name, "\(tableInfo.name).\(column.name)"]
+                        })
                     }
                 }
+                aiErrorSchemaContext = SchemaContext(
+                    databaseName: database,
+                    tables: tableInfos.sorted {
+                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+                )
+            } else {
+                aiErrorSchemaContext = SchemaContext(
+                    databaseName: "Current database",
+                    tables: []
+                )
             }
             schemaCompletionIdentifiers = identifiers.sorted {
                 $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
@@ -719,6 +1151,10 @@ struct QueryEditorView: View {
             completionLoadError = nil
         } catch {
             schemaCompletionIdentifiers = []
+            aiErrorSchemaContext = SchemaContext(
+                databaseName: session?.currentDatabase ?? "Current database",
+                tables: []
+            )
             completionLoadError = error.localizedDescription
         }
     }
@@ -871,6 +1307,7 @@ private struct QueryHistoryView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
@@ -887,12 +1324,18 @@ private struct QueryHistoryView: View {
                     } label: {
                         Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
                     }
+                    .help("Filter history by execution status or clear this connection's history")
                 }
             }
         }
+        #if os(macOS)
+        .frame(width: 760, height: 560)
+        #else
         .frame(minWidth: 720, minHeight: 520)
+        #endif
         .alert("Clear Query History?", isPresented: $confirmingDeleteAll) {
             Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.cancelAction)
             Button("Clear", role: .destructive) {
                 sessionManager.deleteAllQueryHistory(connectionID: connectionID)
             }
@@ -968,9 +1411,14 @@ private struct SavedQueriesView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
             }
         }
+        #if os(macOS)
+        .frame(width: 760, height: 560)
+        #else
         .frame(minWidth: 720, minHeight: 520)
+        #endif
     }
 }

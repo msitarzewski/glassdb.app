@@ -17,13 +17,110 @@ public final class SQLiteEngine: DatabaseEngine, Sendable {
         [
             .transactions, .parameterBinding, .queryTimeout, .cancellation,
             .metadata, .schemas, .indexes, .foreignKeys,
-            .createTableDefinition, .explain, .serverVersion,
+            .createTableDefinition, .explain, .serverVersion, .tableStatistics,
         ]
     }
 
     /// Opens an SQLite database without forcing filesystem state into network fields.
     public func connect(path: String, readOnly: Bool = false) async throws -> any DatabaseConnection {
         try SQLiteDatabaseConnection(path: path, readOnly: readOnly)
+    }
+
+    /// Creates a transactionally consistent, app-owned SQLite snapshot.
+    ///
+    /// Using SQLite's online backup API is required here: copying only the main
+    /// file can omit committed pages that are still present in a live database's
+    /// write-ahead log. The destination must not already exist and is removed if
+    /// opening, backup, or integrity validation fails.
+    @discardableResult
+    public static func createManagedSnapshot(
+        from sourceURL: URL,
+        at destinationURL: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        guard sourceURL.isFileURL, destinationURL.isFileURL,
+              sourceURL.standardizedFileURL != destinationURL.standardizedFileURL else {
+            throw DatabaseError.unexpectedResult("SQLite snapshot paths must be distinct file URLs.")
+        }
+        guard !fileManager.fileExists(atPath: destinationURL.path) else {
+            throw DatabaseError.unexpectedResult("The managed SQLite snapshot destination already exists.")
+        }
+
+        var source: OpaquePointer?
+        var destination: OpaquePointer?
+        var backup: OpaquePointer?
+        var retainDestination = false
+        defer {
+            if let backup {
+                sqlite3_backup_finish(backup)
+            }
+            if let destination {
+                sqlite3_close_v2(destination)
+            }
+            if let source {
+                sqlite3_close_v2(source)
+            }
+            if !retainDestination {
+                try? fileManager.removeItem(at: destinationURL)
+            }
+        }
+
+        let sourceStatus = sqlite3_open_v2(
+            sourceURL.path,
+            &source,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard sourceStatus == SQLITE_OK, let source else {
+            throw snapshotError(handle: source, fallback: "SQLite could not open the selected database.")
+        }
+        sqlite3_busy_timeout(source, 1_000)
+
+        let destinationStatus = sqlite3_open_v2(
+            destinationURL.path,
+            &destination,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard destinationStatus == SQLITE_OK, let destination else {
+            throw snapshotError(handle: destination, fallback: "SQLite could not create the managed snapshot.")
+        }
+        sqlite3_busy_timeout(destination, 1_000)
+
+        guard let initializedBackup = sqlite3_backup_init(destination, "main", source, "main") else {
+            throw snapshotError(handle: destination, fallback: "SQLite could not initialize the managed snapshot.")
+        }
+        backup = initializedBackup
+
+        var retryCount = 0
+        backupLoop: while true {
+            switch sqlite3_backup_step(initializedBackup, 256) {
+            case SQLITE_DONE:
+                break backupLoop
+            case SQLITE_OK:
+                continue
+            case SQLITE_BUSY, SQLITE_LOCKED:
+                guard retryCount < 100 else {
+                    throw DatabaseError.unexpectedResult(
+                        "The selected SQLite database remained busy while creating its managed snapshot."
+                    )
+                }
+                retryCount += 1
+                sqlite3_sleep(10)
+            default:
+                throw snapshotError(handle: destination, fallback: "SQLite could not copy the selected database.")
+            }
+        }
+
+        let finishStatus = sqlite3_backup_finish(initializedBackup)
+        backup = nil
+        guard finishStatus == SQLITE_OK else {
+            throw snapshotError(handle: destination, fallback: "SQLite could not finalize the managed snapshot.")
+        }
+
+        try validateManagedSnapshot(destination)
+        retainDestination = true
+        return destinationURL
     }
 
     /// Compatibility with `DatabaseEngine`. `database` is the SQLite file path;
@@ -51,6 +148,30 @@ public final class SQLiteEngine: DatabaseEngine, Sendable {
         }
         return try await connect(path: path)
     }
+
+    private static func validateManagedSnapshot(_ database: OpaquePointer) throws {
+        var statement: OpaquePointer?
+        let prepareStatus = sqlite3_prepare_v2(database, "PRAGMA quick_check", -1, &statement, nil)
+        guard prepareStatus == SQLITE_OK, let statement else {
+            throw snapshotError(handle: database, fallback: "SQLite could not validate the managed snapshot.")
+        }
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let resultBytes = sqlite3_column_text(statement, 0),
+              String(cString: resultBytes) == "ok" else {
+            throw DatabaseError.unexpectedResult("The managed SQLite snapshot failed its integrity check.")
+        }
+    }
+
+    private static func snapshotError(
+        handle: OpaquePointer?,
+        fallback: String
+    ) -> DatabaseError {
+        guard let handle else { return .unexpectedResult(fallback) }
+        let message = String(cString: sqlite3_errmsg(handle))
+        return .unexpectedResult(message.isEmpty ? fallback : message)
+    }
 }
 
 final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
@@ -59,7 +180,7 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
     let capabilities: Set<DatabaseCapability> = [
         .transactions, .parameterBinding, .queryTimeout, .cancellation,
         .metadata, .schemas, .indexes, .foreignKeys,
-        .createTableDefinition, .explain, .serverVersion,
+        .createTableDefinition, .explain, .serverVersion, .tableStatistics,
     ]
     let identifierQuoteCharacter: Character = "\""
 
@@ -239,6 +360,7 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
         for indexRow in list.rows {
             guard let name = indexRow[safe: 1]?.displayString else { continue }
             let unique = indexRow[safe: 2]?.displayString == "1"
+            let primary = indexRow[safe: 3]?.displayString == "pk"
             let detail = try await execute(
                 "PRAGMA \(quotedIdentifier(database)).index_info(\(quotedIdentifier(name)))",
                 parameters: []
@@ -249,6 +371,7 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
                         name: name,
                         columnName: "<expression>",
                         isUnique: unique,
+                        isPrimary: primary,
                         type: "BTREE",
                         sequenceInIndex: 1
                     )
@@ -261,6 +384,7 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
                         name: name,
                         columnName: columnName,
                         isUnique: unique,
+                        isPrimary: primary,
                         type: "BTREE",
                         sequenceInIndex: position + 1
                     ))
@@ -287,7 +411,17 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
     }
 
     func tableStatus(in database: String) async throws -> [TableStatus] {
-        throw DatabaseError.unsupportedCapability(.tableStatistics, engine: engineName)
+        var statuses: [TableStatus] = []
+        for table in try await tables(in: database) {
+            statuses.append(TableStatus(
+                name: table,
+                engine: "SQLite",
+                rowCount: try await rowCount(table: table, database: database),
+                dataLength: 0,
+                collation: nil
+            ))
+        }
+        return statuses
     }
 
     func rowCount(table: String, database: String) async throws -> Int {

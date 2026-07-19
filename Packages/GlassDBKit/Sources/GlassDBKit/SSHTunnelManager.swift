@@ -368,6 +368,8 @@ private final class LocalToSSHForwarder: ChannelInboundHandler, @unchecked Senda
     private var sshChannel: Channel?
     private var localChannel: Channel?
     private var pendingBuffers: [ByteBuffer] = []
+    private var pendingBufferBudget = PendingTunnelBufferBudget()
+    private var isClosing = false
 
     init(sshClient: SSHClient, remoteHost: String, remotePort: Int) {
         self.sshClient = sshClient
@@ -401,13 +403,21 @@ private final class LocalToSSHForwarder: ChannelInboundHandler, @unchecked Senda
                 }
                 // Hop back to the local channel's event loop to avoid racing with channelRead
                 localChannel.eventLoop.execute { [weak self] in
-                    guard let self else { return }
+                    guard let self else {
+                        channel.close(promise: nil)
+                        return
+                    }
+                    guard localChannel.isActive, !self.isClosing else {
+                        channel.close(promise: nil)
+                        return
+                    }
                     self.sshChannel = channel
                     // Flush anything that arrived while we were connecting
                     for buffer in self.pendingBuffers {
                         channel.writeAndFlush(buffer, promise: nil)
                     }
                     self.pendingBuffers.removeAll()
+                    self.pendingBufferBudget.reset()
                 }
             } catch {
                 localChannel.pipeline.fireErrorCaught(error)
@@ -418,24 +428,59 @@ private final class LocalToSSHForwarder: ChannelInboundHandler, @unchecked Senda
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let buffer = unwrapInboundIn(data)
+        guard !isClosing else { return }
         // Forward local data to SSH channel as raw ByteBuffer —
         // Citadel's DataToBufferCodec wraps it in SSHChannelData for us
         if let sshChannel = sshChannel {
             sshChannel.writeAndFlush(buffer, promise: nil)
         } else {
             // SSH channel not ready yet — buffer until it is
-            pendingBuffers.append(buffer)
+            do {
+                try pendingBufferBudget.reserve(bytes: buffer.readableBytes)
+                pendingBuffers.append(buffer)
+            } catch {
+                isClosing = true
+                pendingBuffers.removeAll()
+                pendingBufferBudget.reset()
+                context.fireErrorCaught(error)
+                context.close(promise: nil)
+            }
         }
     }
 
     func channelInactive(context: ChannelHandlerContext) {
+        isClosing = true
         sshChannel?.close(promise: nil)
         pendingBuffers.removeAll()
+        pendingBufferBudget.reset()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        isClosing = true
         pendingBuffers.removeAll()
+        pendingBufferBudget.reset()
         context.close(promise: nil)
+    }
+}
+
+/// Bounds local bytes accepted while the SSH direct-tcpip channel is opening.
+/// This state is confined to the local channel's event loop by the forwarder.
+struct PendingTunnelBufferBudget {
+    static let maximumBytes = 1_048_576
+
+    private(set) var reservedBytes = 0
+
+    mutating func reserve(bytes: Int) throws {
+        guard bytes >= 0,
+              bytes <= Self.maximumBytes,
+              reservedBytes <= Self.maximumBytes - bytes else {
+            throw SSHTunnelError.pendingBufferLimitExceeded(maximumBytes: Self.maximumBytes)
+        }
+        reservedBytes += bytes
+    }
+
+    mutating func reset() {
+        reservedBytes = 0
     }
 }
 
@@ -469,6 +514,7 @@ public enum SSHTunnelError: Error, LocalizedError {
     case unsupportedPrivateKeyFormat
     case bindFailed
     case tunnelClosed
+    case pendingBufferLimitExceeded(maximumBytes: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -486,6 +532,8 @@ public enum SSHTunnelError: Error, LocalizedError {
             return "Failed to bind local tunnel port."
         case .tunnelClosed:
             return "SSH tunnel was closed unexpectedly."
+        case .pendingBufferLimitExceeded(let maximumBytes):
+            return "SSH tunnel setup received more than \(maximumBytes) bytes before forwarding was ready. The local connection was closed."
         }
     }
 }

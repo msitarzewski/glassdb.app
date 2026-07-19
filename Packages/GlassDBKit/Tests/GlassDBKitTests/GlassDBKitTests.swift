@@ -15,6 +15,22 @@ import Testing
         return "\(begin)\n\(body)\n\(end)"
     }
 
+    @Test func sshPendingBufferBudgetIsStrictlyBoundedAndResettable() throws {
+        var budget = PendingTunnelBufferBudget()
+
+        try budget.reserve(bytes: PendingTunnelBufferBudget.maximumBytes - 1)
+        try budget.reserve(bytes: 1)
+        #expect(budget.reservedBytes == PendingTunnelBufferBudget.maximumBytes)
+        #expect(throws: SSHTunnelError.self) {
+            try budget.reserve(bytes: 1)
+        }
+
+        budget.reset()
+        #expect(budget.reservedBytes == 0)
+        try budget.reserve(bytes: PendingTunnelBufferBudget.maximumBytes)
+        #expect(budget.reservedBytes == PendingTunnelBufferBudget.maximumBytes)
+    }
+
     @Test func queryResultCreation() {
         let result = QueryResult(
             query: "SELECT 1",
@@ -355,6 +371,57 @@ import Testing
 }
 
 @Suite struct SQLiteAdapterTests {
+    @Test func tableStatisticsExposeRealTablesAndExactRowCounts() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        defer { Task { try? await connection.close() } }
+
+        _ = try await connection.execute("CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT)")
+        _ = try await connection.execute("INSERT INTO projects (name) VALUES ('one'), ('two')")
+
+        #expect(connection.capabilities.contains(.tableStatistics))
+        let statuses = try await connection.tableStatus(in: "main")
+        let projects = try #require(statuses.first { $0.name == "projects" })
+        #expect(projects.engine == "SQLite")
+        #expect(projects.rowCount == 2)
+        #expect(projects.dataLength == 0)
+    }
+
+    @Test func managedSnapshotCapturesCommittedWALPages() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("glassdb-snapshot-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let sourceURL = temporaryDirectory.appendingPathComponent("source.sqlite")
+        let destinationURL = temporaryDirectory.appendingPathComponent("managed.sqlite")
+        let source = try await SQLiteEngine().connect(path: sourceURL.path)
+        defer { Task { try? await source.close() } }
+
+        _ = try await source.execute("PRAGMA journal_mode = WAL")
+        _ = try await source.execute("PRAGMA wal_autocheckpoint = 0")
+        _ = try await source.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+        _ = try await source.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        _ = try await source.execute(
+            "INSERT INTO records (value) VALUES (?)",
+            parameters: [.string("committed in WAL")]
+        )
+
+        let walURL = URL(fileURLWithPath: sourceURL.path + "-wal")
+        #expect(FileManager.default.fileExists(atPath: walURL.path))
+        #expect((try walURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) > 0)
+
+        try SQLiteEngine.createManagedSnapshot(from: sourceURL, at: destinationURL)
+        let managed = try await SQLiteEngine().connect(path: destinationURL.path, readOnly: true)
+        let result = try await managed.execute("SELECT id, value FROM records ORDER BY id")
+        #expect(result.rows == [[.int(1), .string("committed in WAL")]])
+        try await managed.close()
+
+        #expect(throws: DatabaseError.self) {
+            try SQLiteEngine.createManagedSnapshot(from: sourceURL, at: destinationURL)
+        }
+        try await source.close()
+    }
+
     @Test func bindingsPreserveNULAndRejectSmuggledOrMismatchedStatements() async throws {
         let connection = try await SQLiteEngine().connect(path: ":memory:")
         defer { Task { try? await connection.close() } }
@@ -473,6 +540,44 @@ import Testing
 }
 
 @Suite struct LiveEngineIntegrationTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["GLASSDB_MYSQL_PASSWORDLESS_TEST"] == "1"))
+    func mysqlPasswordlessCachingSHA2RoundTrip() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let host = environment["GLASSDB_MYSQL_PASSWORDLESS_HOST"] ?? "127.0.0.1"
+        let loopbackHosts = ["127.0.0.1", "::1", "localhost"]
+        try #require(loopbackHosts.contains(host))
+        let port: Int
+        if let configuredPort = environment["GLASSDB_MYSQL_PASSWORDLESS_PORT"] {
+            port = try #require(Int(configuredPort))
+            try #require((1...65_535).contains(port))
+        } else {
+            port = 13_306
+        }
+        let username = environment["GLASSDB_MYSQL_PASSWORDLESS_USERNAME"] ?? "root"
+        let engine = MySQLEngine()
+        let connection = try await engine.connect(
+            host: host,
+            port: port,
+            username: username,
+            password: "",
+            database: nil,
+            tlsPolicy: .disabled
+        )
+        do {
+            let result = try await connection.execute("SELECT CURRENT_USER(), @@port")
+            let row = try #require(result.rows.first)
+            #expect(result.rows.count == 1)
+            #expect(row.count == 2)
+            #expect(row[0].displayString.hasPrefix("\(username)@"))
+            #expect(row[1].displayString == String(port))
+            #expect(await connection.isConnected)
+            try await connection.close()
+        } catch {
+            try? await connection.close()
+            throw error
+        }
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["GLASSDB_MYSQL_TEST_PASSWORD"] != nil))
     func mysql8LiveRoundTrip() async throws {
         let password = try #require(ProcessInfo.processInfo.environment["GLASSDB_MYSQL_TEST_PASSWORD"])

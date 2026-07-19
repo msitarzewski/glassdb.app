@@ -13,10 +13,9 @@
     {
       "identity" : "mysql-nio",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/vapor/mysql-nio.git",
+      "location" : "https://github.com/msitarzewski/mysql-nio.git",
       "state" : {
-        "revision" : "7fa853040169b604a16b963f23b481772f4ac181",
-        "version" : "1.9.1"
+        "revision" : "3ad138f198cdaeb1e85f81955852e8bc8028c188"
       }
     },
     {

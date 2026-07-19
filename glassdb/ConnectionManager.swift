@@ -11,6 +11,49 @@ import Foundation
 import Observation
 import os
 
+enum ConnectionPersistenceError: LocalizedError {
+    case readbackMismatch
+    case rollbackFailed
+    case credentialRollbackFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .readbackMismatch:
+            return "The saved connection list could not be verified. No connection or managed database changes were committed."
+        case .rollbackFailed:
+            return "The connection list could not be saved and its previous persisted state could not be restored. Reopen the app and verify the saved connections before continuing."
+        case .credentialRollbackFailed:
+            return "The connection list could not be saved and its credentials could not be fully restored. Re-enter the credentials before connecting again."
+        }
+    }
+}
+
+struct ConnectionPersistenceStore: @unchecked Sendable {
+    let load: () -> Data?
+    let save: (Data) throws -> Void
+    let restore: (Data?) throws -> Void
+
+    static let live = ConnectionPersistenceStore(
+        load: { UserDefaults.standard.data(forKey: UserDefaultsKeys.connections) },
+        save: { data in
+            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.connections)
+            guard UserDefaults.standard.data(forKey: UserDefaultsKeys.connections) == data else {
+                throw ConnectionPersistenceError.readbackMismatch
+            }
+        },
+        restore: { data in
+            if let data {
+                UserDefaults.standard.set(data, forKey: UserDefaultsKeys.connections)
+            } else {
+                UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.connections)
+            }
+            guard UserDefaults.standard.data(forKey: UserDefaultsKeys.connections) == data else {
+                throw ConnectionPersistenceError.rollbackFailed
+            }
+        }
+    )
+}
+
 @MainActor
 @Observable
 class ConnectionManager {
@@ -18,8 +61,13 @@ class ConnectionManager {
     var credentialError: String?
 
     private var hasLoaded = false
+    private let persistenceStore: ConnectionPersistenceStore
 
-    init(loadImmediately: Bool = true) {
+    init(
+        loadImmediately: Bool = true,
+        persistenceStore: ConnectionPersistenceStore = .live
+    ) {
+        self.persistenceStore = persistenceStore
         if loadImmediately {
             loadIfNeeded()
         }
@@ -38,7 +86,7 @@ class ConnectionManager {
     }
 
     func load() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.connections) else {
+        guard let data = persistenceStore.load() else {
             connections = []
             return
         }
@@ -51,24 +99,25 @@ class ConnectionManager {
         }
     }
 
-    func save() {
-        do {
-            let data = try JSONEncoder().encode(connections)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.connections)
-        } catch {
-            Logger.connections.error("Failed to save connections: \(error)")
-        }
+    func save() throws {
+        try persist(connections)
     }
 
-    func add(_ connection: DatabaseConnectionConfig) {
-        connections.append(connection)
-        save()
+    func add(_ connection: DatabaseConnectionConfig) throws {
+        var candidate = connections
+        candidate.append(connection)
+        try persist(candidate)
+        connections = candidate
     }
 
-    func update(_ connection: DatabaseConnectionConfig) {
+    func update(_ connection: DatabaseConnectionConfig) throws {
         if let index = connections.firstIndex(where: { $0.id == connection.id }) {
-            connections[index] = connection
-            save()
+            let previous = connections[index]
+            var candidate = connections
+            candidate[index] = connection
+            try persist(candidate)
+            connections = candidate
+            removeUnreferencedSQLiteFile(from: previous, replacingWith: connection)
         }
     }
 
@@ -77,27 +126,84 @@ class ConnectionManager {
     }
 
     func delete(_ connection: DatabaseConnectionConfig) throws {
-        if connection.engine.supportsCredentials {
-            try KeychainManager.deletePassword(for: connection)
+        let credentialReceipt = try KeychainManager.deleteCredentials(for: connection)
+        let candidate = connections.filter { $0.id != connection.id }
+        do {
+            try persist(candidate)
+        } catch {
+            do {
+                try KeychainManager.restoreCredentials(credentialReceipt)
+            } catch {
+                throw ConnectionPersistenceError.credentialRollbackFailed
+            }
+            throw error
         }
-        if connection.useSSHTunnel, connection.sshAuthMethod != .sshKey {
-            try KeychainManager.deleteSSHPassword(for: connection)
+        connections = candidate
+        removeUnreferencedSQLiteFile(from: connection, replacingWith: nil)
+    }
+
+    private func removeUnreferencedSQLiteFile(
+        from previous: DatabaseConnectionConfig,
+        replacingWith replacement: DatabaseConnectionConfig?
+    ) {
+        guard previous.engine == .sqlite,
+              replacement?.engine != .sqlite || replacement?.host != previous.host,
+              !connections.contains(where: { $0.engine == .sqlite && $0.host == previous.host }) else {
+            return
         }
-        connections.removeAll { $0.id == connection.id }
-        save()
+        do {
+            let managedURL = try SQLiteFileImporter.validatedURL(forPath: previous.host)
+            try FileManager.default.removeItem(at: managedURL)
+        } catch SQLiteFileImporter.ImportError.managedCopyMissing {
+            return
+        } catch {
+            Logger.connections.error(
+                "Failed to remove unreferenced SQLite database: \(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     func updateLastConnected(_ connectionID: UUID) {
         if let index = connections.firstIndex(where: { $0.id == connectionID }) {
-            connections[index].lastConnected = Date()
-            save()
+            var candidate = connections
+            candidate[index].lastConnected = Date()
+            do {
+                try persist(candidate)
+                connections = candidate
+            } catch {
+                credentialError = "The connection succeeded, but its recent-connection timestamp could not be saved. \(error.localizedDescription)"
+            }
         }
     }
 
     func toggleFavorite(_ connection: DatabaseConnectionConfig) {
         if let index = connections.firstIndex(where: { $0.id == connection.id }) {
-            connections[index].isFavorite.toggle()
-            save()
+            var candidate = connections
+            candidate[index].isFavorite.toggle()
+            do {
+                try persist(candidate)
+                connections = candidate
+            } catch {
+                credentialError = "The favorite change could not be saved, so it was not applied. \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func persist(_ candidate: [DatabaseConnectionConfig]) throws {
+        let data = try JSONEncoder().encode(candidate)
+        let previousData = persistenceStore.load()
+        do {
+            try persistenceStore.save(data)
+        } catch {
+            do {
+                try persistenceStore.restore(previousData)
+                guard persistenceStore.load() == previousData else {
+                    throw ConnectionPersistenceError.rollbackFailed
+                }
+            } catch {
+                throw ConnectionPersistenceError.rollbackFailed
+            }
+            throw error
         }
     }
 

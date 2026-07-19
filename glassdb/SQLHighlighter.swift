@@ -10,6 +10,8 @@ import Foundation
 import GlassDBKit
 #if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
 #endif
 
 // MARK: - Token Types
@@ -710,7 +712,7 @@ struct SQLHighlighter {
             string: sql,
             attributes: [
                 .font: UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
-                .foregroundColor: UIColor.white,
+                .foregroundColor: UIColor.label,
             ]
         )
 
@@ -719,28 +721,28 @@ struct SQLHighlighter {
             let color: UIColor
             switch token.kind {
             case .keyword:
-                color = UIColor(red: 0.4, green: 0.6, blue: 1.0, alpha: 1.0)
+                color = .systemBlue
                 attr.addAttribute(.font, value: UIFont.monospacedSystemFont(ofSize: fontSize, weight: .bold), range: nsRange)
             case .function:
-                color = UIColor(red: 0.7, green: 0.5, blue: 1.0, alpha: 1.0)
+                color = .systemPurple
             case .string:
                 color = UIColor.systemGreen
             case .number:
                 color = UIColor.systemOrange
             case .comment:
-                color = UIColor(white: 0.55, alpha: 1.0)
+                color = .secondaryLabel
             case .identifier:
-                color = UIColor(red: 0.4, green: 0.8, blue: 0.8, alpha: 1.0)
+                color = .systemTeal
             case .operator_:
-                color = UIColor.white
+                color = .label
             case .punctuation:
-                color = UIColor(white: 0.6, alpha: 1.0)
+                color = .secondaryLabel
             case .error:
                 color = UIColor.systemRed
                 attr.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: nsRange)
                 attr.addAttribute(.underlineColor, value: UIColor.systemRed, range: nsRange)
             case .plain:
-                color = UIColor.white
+                color = .label
             }
             attr.addAttribute(.foregroundColor, value: color, range: nsRange)
         }
@@ -751,6 +753,56 @@ struct SQLHighlighter {
             let nsRange = NSRange(diag.range, in: sql)
             attr.addAttribute(.underlineStyle, value: NSUnderlineStyle.patternDot.union(.single).rawValue, range: nsRange)
             attr.addAttribute(.underlineColor, value: UIColor.systemRed, range: nsRange)
+        }
+
+        return attr
+    }
+    #elseif canImport(AppKit)
+    static func highlight(_ sql: String, fontSize: CGFloat = 14) -> NSAttributedString {
+        let tokens = tokenize(sql)
+        let attr = NSMutableAttributedString(
+            string: sql,
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        )
+
+        for token in tokens {
+            let nsRange = NSRange(token.range, in: sql)
+            let color: NSColor
+            switch token.kind {
+            case .keyword:
+                color = .systemBlue
+                attr.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold), range: nsRange)
+            case .function:
+                color = .systemPurple
+            case .string:
+                color = .systemGreen
+            case .number:
+                color = .systemOrange
+            case .comment:
+                color = .secondaryLabelColor
+            case .identifier:
+                color = .systemTeal
+            case .operator_:
+                color = .labelColor
+            case .punctuation:
+                color = .secondaryLabelColor
+            case .error:
+                color = .systemRed
+                attr.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: nsRange)
+                attr.addAttribute(.underlineColor, value: NSColor.systemRed, range: nsRange)
+            case .plain:
+                color = .labelColor
+            }
+            attr.addAttribute(.foregroundColor, value: color, range: nsRange)
+        }
+
+        for diagnostic in lint(sql, tokens: tokens) {
+            let nsRange = NSRange(diagnostic.range, in: sql)
+            attr.addAttribute(.underlineStyle, value: NSUnderlineStyle.patternDot.union(.single).rawValue, range: nsRange)
+            attr.addAttribute(.underlineColor, value: NSColor.systemRed, range: nsRange)
         }
 
         return attr

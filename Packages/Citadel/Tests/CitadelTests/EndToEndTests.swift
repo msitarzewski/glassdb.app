@@ -1,8 +1,14 @@
 @testable import Citadel
 import Crypto
 import NIO
+import NIOEmbedded
 import NIOSSH
 import XCTest
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 final class AuthDelegate: NIOSSHServerUserAuthenticationDelegate {
     var supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods
@@ -22,6 +28,64 @@ final class AuthDelegate: NIOSSHServerUserAuthenticationDelegate {
 }
 
 final class EndToEndTests: XCTestCase {
+    private func unsupportedFileRegion() throws -> (FileRegion, NIOFileHandle) {
+        let descriptor = try XCTUnwrap({
+            let descriptor = open("/dev/null", O_RDONLY)
+            return descriptor >= 0 ? descriptor : nil
+        }())
+        let fileHandle = NIOFileHandle(_deprecatedTakingOwnershipOfDescriptor: descriptor)
+        return (
+            FileRegion(fileHandle: fileHandle, readerIndex: 0, endIndex: 0),
+            fileHandle
+        )
+    }
+
+    func testChannelUnwrapperRejectsUnsupportedPayloadAndClosesChannel() throws {
+        let channel = EmbeddedChannel(handler: SSHChannelDataUnwrapper())
+        let (region, fileHandle) = try unsupportedFileRegion()
+        defer { try? fileHandle.close() }
+
+        XCTAssertThrowsError(
+            try channel.writeInbound(
+                SSHChannelData(type: .channel, data: .fileRegion(region))
+            )
+        ) { error in
+            XCTAssertTrue(error is SSHChannelError)
+        }
+        XCTAssertFalse(channel.isActive)
+        _ = try? channel.finish()
+    }
+
+    func testDirectTCPIPCodecRejectsUnsupportedPayloadAndClosesChannel() throws {
+        let channel = EmbeddedChannel(handler: DataToBufferCodec())
+        let (region, fileHandle) = try unsupportedFileRegion()
+        defer { try? fileHandle.close() }
+
+        XCTAssertThrowsError(
+            try channel.writeInbound(
+                SSHChannelData(type: .channel, data: .fileRegion(region))
+            )
+        ) { error in
+            XCTAssertTrue(error is SSHChannelError)
+        }
+        XCTAssertFalse(channel.isActive)
+        _ = try? channel.finish()
+    }
+
+    func testChannelUnwrapperRejectsExtendedDataAndClosesChannel() throws {
+        let channel = EmbeddedChannel(handler: SSHChannelDataUnwrapper())
+
+        XCTAssertThrowsError(
+            try channel.writeInbound(
+                SSHChannelData(type: .stdErr, data: .byteBuffer(ByteBuffer(string: "error")))
+            )
+        ) { error in
+            XCTAssertTrue(error is SSHChannelError)
+        }
+        XCTAssertFalse(channel.isActive)
+        _ = try? channel.finish()
+    }
+
     func runTest<ExpectedError: Error & Equatable>(
         credentials: SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,

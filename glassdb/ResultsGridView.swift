@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import UIKit
 import GlassDBKit
 
 struct ResultsGridView: View {
@@ -16,6 +15,7 @@ struct ResultsGridView: View {
     @Environment(SettingsManager.self) private var settingsManager
     @State private var showExporter = false
     @State private var exportFormat: GridExportFormat = .csv
+    @State private var exportErrorMessage: String?
 
     private var result: QueryResult? {
         for (_, session) in sessionManager.sessions {
@@ -54,41 +54,85 @@ struct ResultsGridView: View {
             },
             contentType: exportFormat.contentType,
             defaultFilename: "result_\(resultSetID.uuidString.prefix(8)).\(exportFormat.rawValue)"
-        ) { _ in }
+        ) { outcome in
+            if case .failure(let error) = outcome {
+                exportErrorMessage = error.localizedDescription
+            }
+        }
+        .alert("Export Failed", isPresented: .init(
+            get: { exportErrorMessage != nil },
+            set: { if !$0 { exportErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { exportErrorMessage = nil }
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text(exportErrorMessage ?? "The result could not be exported.")
+        }
     }
 
+    @ViewBuilder
     private func resultHeader(_ result: QueryResult) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(result.query)
-                    .font(.system(size: settingsManager.dataGridFontSize, design: .monospaced))
-                    .lineLimit(2)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 12) {
-                    Label("\(result.rowCount) rows", systemImage: "tablecells")
-                    if result.isTruncated, let limit = result.appliedRowLimit {
-                        Label("More available; limited to \(limit)", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                    }
-                    Label("\(result.columnCount) columns", systemImage: "rectangle.split.3x1")
-                    Label(String(format: "%.3fs", result.executionTime), systemImage: "clock")
-                }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+        #if os(macOS)
+        ViewThatFits(in: .horizontal) {
+            HStack {
+                resultSummary(result)
+                Spacer()
+                resultActions(result)
             }
+            VStack(alignment: .leading, spacing: 12) {
+                resultSummary(result)
+                resultActions(result)
+            }
+        }
+        .padding(16)
+        .accessibilityElement(children: .contain)
+        #else
+        HStack {
+            resultSummary(result)
             Spacer()
+            resultActions(result)
+        }
+        .padding(16)
+        .accessibilityElement(children: .contain)
+        #endif
+    }
+
+    private func resultSummary(_ result: QueryResult) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(result.query)
+                .font(.system(size: settingsManager.dataGridFontSize, design: .monospaced))
+                .lineLimit(2)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                Label("\(result.rowCount) rows", systemImage: "tablecells")
+                if result.isTruncated, let limit = result.appliedRowLimit {
+                    Label("More available; limited to \(limit)", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+                Label("\(result.columnCount) columns", systemImage: "rectangle.split.3x1")
+                Label(String(format: "%.3fs", result.executionTime), systemImage: "clock")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func resultActions(_ result: QueryResult) -> some View {
+        HStack(spacing: 8) {
             Button {
                 guard !result.rows.isEmpty, !result.columns.isEmpty else { return }
-                UIPasteboard.general.string = GridExportFormatter.tsv(
+                PlatformClipboard.copy(GridExportFormatter.tsv(
                     result: result,
                     rowRange: 0...(result.rows.count - 1),
                     columnRange: 0...(result.columns.count - 1)
-                )
+                ))
             } label: {
                 Label("Copy All", systemImage: "doc.on.doc")
             }
             .keyboardShortcut("c", modifiers: .command)
+            .disabled(result.rows.isEmpty || result.columns.isEmpty)
+            .help("Copy every displayed row as tab-separated values")
 
             Menu {
                 ForEach(GridExportFormat.allCases) { format in
@@ -100,9 +144,8 @@ struct ResultsGridView: View {
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
+            .help("Export this result to a file")
         }
-        .padding(16)
-        .accessibilityElement(children: .combine)
     }
 
     private func resultGrid(_ result: QueryResult) -> some View {
@@ -174,7 +217,7 @@ struct ResultsGridView: View {
                 }
             }
             .scrollIndicators(.visible)
-            .scrollInputBehavior(.enabled, for: .look)
+            .databaseLookScrollEnabled()
         }
     }
 

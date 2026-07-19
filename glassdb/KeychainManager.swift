@@ -14,6 +14,7 @@ import os
 
 enum KeychainManager {
 
+    private static let accessGroupInfoKey = "GlasKeychainAccessGroup"
     static let credentialMigrationVersionKey = "app.glassdb.connectionCredentialMigrationVersion"
     static let currentCredentialMigrationVersion = 2
 
@@ -92,12 +93,46 @@ enum KeychainManager {
 
     struct CredentialPersistenceReport: Sendable {
         let cleanupWarnings: [String]
+        let rollbackReceipt: CredentialDeletionReceipt
+    }
+
+    struct CredentialMutationStore: @unchecked Sendable {
+        let retrieve: (_ account: String, _ descriptor: CredentialStorageDescriptor) throws -> String?
+        let save: (_ value: String, _ account: String, _ descriptor: CredentialStorageDescriptor) throws -> Void
+        let delete: (_ account: String, _ descriptor: CredentialStorageDescriptor) throws -> Void
+
+        static let live = CredentialMutationStore(
+            retrieve: { account, descriptor in
+                do {
+                    return try retrieveStablePassword(account: account, descriptor: descriptor)
+                } catch GlasSecretStore.SecretStoreError.notFound {
+                    return nil
+                }
+            },
+            save: { value, account, descriptor in
+                try KeychainManager.save(value, account: account, descriptor: descriptor)
+            },
+            delete: { account, descriptor in
+                try KeychainManager.delete(account: account, descriptor: descriptor)
+            }
+        )
+    }
+
+    struct CredentialSnapshot: Sendable {
+        let account: String
+        let descriptor: CredentialStorageDescriptor
+        let value: String?
+    }
+
+    struct CredentialDeletionReceipt: Sendable {
+        let snapshots: [CredentialSnapshot]
     }
 
     enum CredentialPolicyError: LocalizedError {
         case authenticationUnavailable(String)
         case authenticationCancelledOrCredentialUnavailable
         case verificationFailed
+        case mutationRollbackFailed
 
         var errorDescription: String? {
             switch self {
@@ -107,25 +142,68 @@ enum KeychainManager {
                 return "Authentication was canceled, failed, or the protected credential is unavailable."
             case .verificationFailed:
                 return "The credential could not be verified in its new secure storage location. The previous copy was retained."
+            case .mutationRollbackFailed:
+                return "A credential operation failed and the previous credentials could not be fully restored. Re-enter both database and SSH credentials before connecting again."
             }
         }
     }
 
     static let sharedConfig = SecretStoreConfiguration(
         serviceNamePrefix: "sh.glas",
-        accessGroup: "7JQGQ7CRH8.sh.glas.shared",
-        legacyServiceNamePrefixes: ["app.glassdb"]
+        accessGroup: resolvedAccessGroup,
+        legacyServiceNamePrefixes: ["app.glassdb"],
+        useDataProtectionKeychain: useDataProtectionKeychain
     )
 
     static let appOnlyConfig = SecretStoreConfiguration(
         serviceNamePrefix: "app.glassdb.private",
-        accessGroup: nil
+        accessGroup: nil,
+        useDataProtectionKeychain: useDataProtectionKeychain
     )
 
     static let authenticatedConfig = SecretStoreConfiguration(
         serviceNamePrefix: "app.glassdb.protected",
-        accessGroup: nil
+        accessGroup: nil,
+        useDataProtectionKeychain: useDataProtectionKeychain
     )
+
+    #if os(macOS)
+    private static let useDataProtectionKeychain = true
+    #else
+    private static let useDataProtectionKeychain = false
+    #endif
+
+    private static var resolvedAccessGroup: String? {
+        #if os(visionOS)
+        // The Vision Pro target uses Xcode's generated plist; its provisioning
+        // profile and entitlement are fixed to the shared Glass team group.
+        return "7JQGQ7CRH8.sh.glas.shared"
+        #else
+        guard let rawValue = Bundle.main.object(
+            forInfoDictionaryKey: accessGroupInfoKey
+        ) as? String else { return nil }
+        return validatedSharedAccessGroup(rawValue)
+        #endif
+    }
+
+    static var sharedCredentialAccessAvailable: Bool {
+        sharedConfig.accessGroup != nil
+    }
+
+    static func validatedSharedAccessGroup(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.contains("$(") else { return nil }
+        let components = value.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        guard components.count == 2,
+              components[0].count == 10,
+              components[0].allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }),
+              components[1] == "sh.glas.shared" else {
+            return nil
+        }
+        return value
+    }
+
 
     /// SSH keys and host pins remain intentionally shared with glas.sh.
     static let config = sharedConfig
@@ -204,15 +282,15 @@ enum KeychainManager {
         ))
     }
 
-    /// Saves and verifies every destination before removing any prior-policy
-    /// record. Cleanup failures are warnings because the verified destination is
-    /// already authoritative and blocking the metadata update would make it
-    /// unreachable despite retaining the source or destination bytes.
+    /// Saves and verifies every destination before removing prior-policy records.
+    /// Every touched record is snapshotted first so a later database/SSH write or
+    /// cleanup failure restores the complete pre-mutation state.
     static func saveCredentials(
         databasePassword: String,
         sshPassword: String?,
         for connection: DatabaseConnectionConfig,
-        replacing previousConnection: DatabaseConnectionConfig?
+        replacing previousConnection: DatabaseConnectionConfig?,
+        store: CredentialMutationStore = .live
     ) throws -> CredentialPersistenceReport {
         var writes: [CredentialWrite] = []
         if !databasePassword.isEmpty {
@@ -237,51 +315,110 @@ enum KeychainManager {
             ))
         }
 
-        var completedWrites: [CredentialWrite] = []
-        do {
-            for write in writes {
-                try save(write.value, account: write.account, descriptor: write.destination)
-                completedWrites.append(write)
-                let verified = try retrieveStablePassword(
-                    account: write.account,
-                    descriptor: write.destination
-                )
-                guard verified == write.value else { throw CredentialPolicyError.verificationFailed }
-            }
-        } catch {
-            // Only remove newly selected locations. A same-policy write is the
-            // source record and must never be deleted during recovery.
-            for write in completedWrites.reversed() where !write.destination.matches(write.source) {
-                try? delete(account: write.account, descriptor: write.destination)
-            }
-            throw error
-        }
-
-        var cleanupWarnings: [String] = []
+        var deletions: [CredentialLocation] = []
         for write in writes {
-            guard let source = write.source, !write.destination.matches(source) else { continue }
-            do {
-                try delete(account: write.account, descriptor: source)
-            } catch {
-                cleanupWarnings.append(
-                    "The credential was moved successfully, but its previous Keychain copy could not be removed."
-                )
+            if let source = write.source, !write.destination.matches(source) {
+                deletions.append(CredentialLocation(account: write.account, descriptor: source))
             }
         }
-
+        if let previousConnection,
+           previousConnection.engine.supportsCredentials,
+           !connection.engine.supportsCredentials {
+            deletions.append(CredentialLocation(
+                account: databaseAccount(for: previousConnection.id),
+                descriptor: descriptor(
+                    for: previousConnection.databaseCredentialPolicy,
+                    kind: .databasePassword
+                )
+            ))
+        }
         if let previousConnection,
            previousConnection.useSSHTunnel,
            previousConnection.sshAuthMethod != .sshKey,
            (!connection.useSSHTunnel || connection.sshAuthMethod == .sshKey) {
-            do {
-                try deleteSSHPassword(for: previousConnection)
-            } catch {
-                cleanupWarnings.append(
-                    "The unused SSH password could not be removed from its previous Keychain location."
-                )
-            }
+            deletions.append(CredentialLocation(
+                account: sshAccount(for: previousConnection.id),
+                descriptor: descriptor(for: previousConnection.sshCredentialPolicy, kind: .sshPassword)
+            ))
         }
-        return CredentialPersistenceReport(cleanupWarnings: cleanupWarnings)
+
+        let locations = writes.map {
+            CredentialLocation(account: $0.account, descriptor: $0.destination)
+        } + deletions
+        let snapshots = try snapshotCredentials(at: locations, store: store)
+        do {
+            for write in writes {
+                try store.save(write.value, write.account, write.destination)
+                let verified = try store.retrieve(write.account, write.destination)
+                guard verified == write.value else { throw CredentialPolicyError.verificationFailed }
+            }
+            for deletion in uniqueLocations(deletions) {
+                guard try store.retrieve(deletion.account, deletion.descriptor) != nil else { continue }
+                try store.delete(deletion.account, deletion.descriptor)
+                guard try store.retrieve(deletion.account, deletion.descriptor) == nil else {
+                    throw CredentialPolicyError.verificationFailed
+                }
+            }
+        } catch {
+            do {
+                try restoreCredentialSnapshots(snapshots, store: store)
+            } catch {
+                throw CredentialPolicyError.mutationRollbackFailed
+            }
+            throw error
+        }
+        return CredentialPersistenceReport(
+            cleanupWarnings: [],
+            rollbackReceipt: CredentialDeletionReceipt(snapshots: snapshots)
+        )
+    }
+
+    static func deleteCredentials(
+        for connection: DatabaseConnectionConfig,
+        store: CredentialMutationStore = .live
+    ) throws -> CredentialDeletionReceipt {
+        var locations: [CredentialLocation] = []
+        if connection.engine.supportsCredentials {
+            locations.append(CredentialLocation(
+                account: databaseAccount(for: connection.id),
+                descriptor: descriptor(for: connection.databaseCredentialPolicy, kind: .databasePassword)
+            ))
+        }
+        if connection.useSSHTunnel, connection.sshAuthMethod != .sshKey {
+            locations.append(CredentialLocation(
+                account: sshAccount(for: connection.id),
+                descriptor: descriptor(for: connection.sshCredentialPolicy, kind: .sshPassword)
+            ))
+        }
+
+        let snapshots = try snapshotCredentials(at: locations, store: store)
+        do {
+            for snapshot in snapshots where snapshot.value != nil {
+                try store.delete(snapshot.account, snapshot.descriptor)
+                guard try store.retrieve(snapshot.account, snapshot.descriptor) == nil else {
+                    throw CredentialPolicyError.verificationFailed
+                }
+            }
+        } catch {
+            do {
+                try restoreCredentialSnapshots(snapshots, store: store)
+            } catch {
+                throw CredentialPolicyError.mutationRollbackFailed
+            }
+            throw error
+        }
+        return CredentialDeletionReceipt(snapshots: snapshots)
+    }
+
+    static func restoreCredentials(
+        _ receipt: CredentialDeletionReceipt,
+        store: CredentialMutationStore = .live
+    ) throws {
+        do {
+            try restoreCredentialSnapshots(receipt.snapshots, store: store)
+        } catch {
+            throw CredentialPolicyError.mutationRollbackFailed
+        }
     }
 
     // MARK: - SSH Keys
@@ -412,7 +549,7 @@ enum KeychainManager {
             config = sharedConfig
             accessPolicy = .standard
             prompt = nil
-            isShared = true
+            isShared = config.accessGroup != nil
         case .glassdbOnly:
             config = appOnlyConfig
             accessPolicy = .standard
@@ -504,6 +641,55 @@ enum KeychainManager {
         let source: CredentialStorageDescriptor?
     }
 
+    private struct CredentialLocation {
+        let account: String
+        let descriptor: CredentialStorageDescriptor
+
+        func matches(_ other: CredentialLocation) -> Bool {
+            account == other.account && descriptor.matches(other.descriptor)
+        }
+    }
+
+    private static func uniqueLocations(_ locations: [CredentialLocation]) -> [CredentialLocation] {
+        locations.reduce(into: []) { result, location in
+            if !result.contains(where: { $0.matches(location) }) {
+                result.append(location)
+            }
+        }
+    }
+
+    private static func snapshotCredentials(
+        at locations: [CredentialLocation],
+        store: CredentialMutationStore
+    ) throws -> [CredentialSnapshot] {
+        try uniqueLocations(locations).map { location in
+            CredentialSnapshot(
+                account: location.account,
+                descriptor: location.descriptor,
+                value: try store.retrieve(location.account, location.descriptor)
+            )
+        }
+    }
+
+    private static func restoreCredentialSnapshots(
+        _ snapshots: [CredentialSnapshot],
+        store: CredentialMutationStore
+    ) throws {
+        for snapshot in snapshots.reversed() {
+            if let value = snapshot.value {
+                try store.save(value, snapshot.account, snapshot.descriptor)
+                guard try store.retrieve(snapshot.account, snapshot.descriptor) == value else {
+                    throw CredentialPolicyError.verificationFailed
+                }
+            } else if try store.retrieve(snapshot.account, snapshot.descriptor) != nil {
+                try store.delete(snapshot.account, snapshot.descriptor)
+                guard try store.retrieve(snapshot.account, snapshot.descriptor) == nil else {
+                    throw CredentialPolicyError.verificationFailed
+                }
+            }
+        }
+    }
+
     private static func save(
         _ value: String,
         account: String,
@@ -550,6 +736,8 @@ enum KeychainManager {
                 config: descriptor.config,
                 authenticationPrompt: descriptor.authenticationPrompt
             )
+        } catch GlasSecretStore.SecretStoreError.notFound {
+            throw GlasSecretStore.SecretStoreError.notFound
         } catch {
             if descriptor.accessPolicy == .userPresence {
                 throw CredentialPolicyError.authenticationCancelledOrCredentialUnavailable

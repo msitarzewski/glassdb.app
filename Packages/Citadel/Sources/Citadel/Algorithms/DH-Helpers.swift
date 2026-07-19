@@ -170,9 +170,12 @@ extension HashFunction {
             // bit of the next byte is not 1, we remove all of the leading zero bytes, and treat the rest as the
             // body.
             guard let firstNonZeroByteIndex = secretBytesPtr.firstIndex(where: { $0 != 0 }) else {
-                // Special case, this is the all zero secret. We shouldn't be able to hit this, as we check that this is a strong
-                // secret above. Time to bail.
-                preconditionFailure("Attempting to encode the all-zero secret as an mpint!")
+                // RFC 4251 represents zero as an mpint with an empty body. The key agreement
+                // validation should reject this value before hashing, but encoding it safely here
+                // keeps malformed peer input from becoming a process-wide trap.
+                var zeroLength = UInt32(0).bigEndian
+                withUnsafeBytes(of: &zeroLength) { self.update(bufferPointer: $0) }
+                return
             }
             let numberOfZeroBytes = firstNonZeroByteIndex - secretBytesPtr.startIndex
             let topBitOfFirstNonZeroByteIsSet = secretBytesPtr[firstNonZeroByteIndex] & 0x80 == 0x80

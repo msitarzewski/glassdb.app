@@ -15,11 +15,14 @@ final class SSHChannelDataUnwrapper: ChannelInboundHandler {
         let data = self.unwrapInboundIn(data)
 
         guard case .byteBuffer(let bytes) = data.data else {
-            fatalError("Unexpected read type")
+            context.fireErrorCaught(SSHChannelError.invalidDataType)
+            context.close(promise: nil)
+            return
         }
 
         guard case .channel = data.type else {
             context.fireErrorCaught(SSHChannelError.invalidDataType)
+            context.close(promise: nil)
             return
         }
 

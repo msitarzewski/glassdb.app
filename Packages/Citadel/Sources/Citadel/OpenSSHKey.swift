@@ -259,9 +259,7 @@ enum OpenSSH {
                     throw KeyError.missingDecryptionKey
                 }
                 
-                guard _SHA512.didInit else {
-                    fatalError("Internal library error")
-                }
+                try Self.validateCryptoInitialization(_SHA512.didInit)
                 
                 return try decryptionKey.withUnsafeBytes { decryptionKey in
                     let salt = salt.readBytes(length: salt.readableBytes)!
@@ -280,6 +278,12 @@ enum OpenSSH {
                     
                     return try perform(Array(key[..<cipher.keyLength]), Array(key[cipher.keyLength...]))
                 }
+            }
+        }
+
+        static func validateCryptoInitialization(_ didInitialize: Bool) throws {
+            guard didInitialize else {
+                throw KeyError.cryptoError
             }
         }
     }

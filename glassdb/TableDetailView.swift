@@ -9,92 +9,236 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import GlassDBKit
+#if os(macOS)
+import AppKit
+#endif
 
 struct TableDetailView: View {
     let sessionID: UUID
     let database: String
     let table: String
+    var isWorkspaceActive = true
+    var onOpenSQLEditor: (() -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
 
     @State private var selectedTab: TableTab = .data
+    @State private var actionScope = UUID()
+    #if os(macOS)
+    @State private var visitedTabs: Set<TableTab> = [.data]
+    #endif
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            Tab("Data", systemImage: "tablecells", value: .data) {
-                DataTabView(sessionID: sessionID, database: database, table: table)
-            }
-            Tab("Structure", systemImage: "list.bullet.rectangle", value: .structure) {
-                StructureTabView(sessionID: sessionID, database: database, table: table)
-            }
-            Tab("DDL", systemImage: "curlybraces", value: .ddl) {
-                DDLTabView(sessionID: sessionID, database: database, table: table)
-            }
-            Tab("Indexes", systemImage: "arrow.triangle.branch", value: .indexes) {
-                IndexesTabView(sessionID: sessionID, database: database, table: table)
-            }
-            Tab("Foreign Keys", systemImage: "arrow.triangle.turn.up.right.diamond", value: .foreignKeys) {
-                ForeignKeysTabView(sessionID: sessionID, database: database, table: table)
-            }
+        Group {
+            #if os(macOS)
+            macOSContent
+            #else
+            spatialContent
+            #endif
         }
-        .navigationTitle("\(database) · \(table)")
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                if selectedTab == .data {
-                    #if canImport(FoundationModels)
-                    Button {
-                        NotificationCenter.default.post(name: .glassdbShowAI, object: nil)
-                    } label: {
-                        Image(systemName: "sparkles")
-                    }
-                    #endif
+            if isWorkspaceActive {
+                #if os(macOS)
+                ToolbarSpacer(.flexible, placement: databaseContextToolbarPlacement)
+                #endif
 
-                    Button {
-                        NotificationCenter.default.post(name: .glassdbExecuteQuery, object: nil)
-                    } label: {
-                        Image(systemName: "play.fill")
-                    }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .contextMenu {
-                        Button("Run every 10s") {
-                            NotificationCenter.default.post(name: .glassdbStartRepeat, object: nil)
+                if selectedTab == .data {
+                    ToolbarItemGroup(placement: databaseTransferToolbarPlacement) {
+                        Button {
+                            NotificationCenter.default.post(
+                                name: .glassdbTransfer,
+                                object: GridTransferRequest(scope: actionScope, operation: .importTSV)
+                            )
+                        } label: {
+                            Label("Import TSV", systemImage: "square.and.arrow.down")
                         }
+                        .help("Import tab-separated values")
+
+                        exportMenu
                     }
                 }
-            }
-            ToolbarItemGroup(placement: .bottomOrnament) {
+
+                #if os(macOS)
                 if selectedTab == .data {
-                    Button {
-                        NotificationCenter.default.post(name: .glassdbAddRow, object: nil)
-                    } label: {
-                        Label("Add Row", systemImage: "plus")
+                    ToolbarSpacer(.fixed, placement: databaseContextToolbarPlacement)
+                }
+                ToolbarItemGroup(placement: databaseContextToolbarPlacement) {
+                    ForEach(TableTab.allCases) { tab in
+                        Toggle(isOn: tableTabSelection(for: tab)) {
+                            Label(tab.title, systemImage: tab.systemImage)
+                        }
+                        .toggleStyle(.button)
+                        .labelStyle(.iconOnly)
+                        .help(tab.helpText)
+                        .accessibilityLabel(tab.title)
+                        .accessibilityHint(tab.helpText)
                     }
-                    Button {
-                        NotificationCenter.default.post(name: .glassdbRefreshData, object: nil)
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    Menu {
-                        ForEach(GridExportFormat.allCases) { format in
-                            Button(format.displayName) {
-                                NotificationCenter.default.post(
-                                    name: .glassdbExport,
-                                    object: format.rawValue
-                                )
+                }
+                ToolbarSpacer(.fixed, placement: databaseToolbarPlacement)
+                DatabasePersistentToolbar {
+                    onOpenSQLEditor?()
+                }
+                #endif
+
+                ToolbarItemGroup(placement: databaseExecutionToolbarPlacement) {
+                    if selectedTab == .data {
+                        #if canImport(FoundationModels)
+                        Button {
+                            NotificationCenter.default.post(name: .glassdbShowAI, object: actionScope)
+                        } label: {
+                            Image(systemName: "sparkles")
+                        }
+                        .help("Ask the on-device assistant about this table")
+                        #endif
+
+                        Button {
+                            NotificationCenter.default.post(name: .glassdbExecuteQuery, object: actionScope)
+                        } label: {
+                            Image(systemName: "play.fill")
+                        }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Run the current query (Command-Return)")
+                        .contextMenu {
+                            Button("Run every 10s") {
+                                NotificationCenter.default.post(name: .glassdbStartRepeat, object: actionScope)
                             }
                         }
-                    } label: {
-                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                }
+
+                ToolbarItemGroup(placement: databaseToolbarPlacement) {
+                    if selectedTab == .data {
+                        Button {
+                            NotificationCenter.default.post(name: .glassdbAddRow, object: actionScope)
+                        } label: {
+                            Label("Add Row", systemImage: "plus")
+                        }
+                        .help("Stage a new row")
+                        Button {
+                            NotificationCenter.default.post(name: .glassdbRefreshData, object: actionScope)
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .help("Reload table data")
                     }
                 }
             }
         }
+    }
+
+    private var exportMenu: some View {
+        Menu {
+            ForEach(GridExportFormat.allCases) { format in
+                Button(format.displayName) {
+                    NotificationCenter.default.post(
+                        name: .glassdbTransfer,
+                        object: GridTransferRequest(scope: actionScope, operation: .export(format))
+                    )
+                }
+                .help("Export table data as \(format.displayName)")
+            }
+        } label: {
+            Label("Export", systemImage: "square.and.arrow.up")
+        }
+        .menuIndicator(.hidden)
+        .help("Export table data")
+    }
+
+    private func tableTabSelection(for tab: TableTab) -> Binding<Bool> {
+        Binding(
+            get: { selectedTab == tab },
+            set: { isSelected in
+                if isSelected { selectedTab = tab }
+            }
+        )
+    }
+
+    #if os(macOS)
+    private var macOSContent: some View {
+        ZStack {
+            ForEach(TableTab.allCases.filter(visitedTabs.contains)) { tab in
+                let isActive = selectedTab == tab
+                tableContent(for: tab, isActive: isWorkspaceActive && isActive)
+                    .opacity(isActive ? 1 : 0)
+                    .allowsHitTesting(isActive)
+                    .accessibilityHidden(!isActive)
+                    .zIndex(isActive ? 1 : 0)
+            }
+        }
+        .onChange(of: selectedTab) { _, newTab in
+            visitedTabs.insert(newTab)
+        }
+    }
+    #endif
+
+    #if !os(macOS)
+    private var spatialContent: some View {
+        TabView(selection: $selectedTab) {
+            Tab("Data", systemImage: "tablecells", value: .data) {
+                tableContent(for: .data, isActive: isWorkspaceActive && selectedTab == .data)
+            }
+            Tab("Structure", systemImage: "list.bullet.rectangle", value: .structure) {
+                tableContent(for: .structure, isActive: selectedTab == .structure)
+            }
+            Tab("DDL", systemImage: "curlybraces", value: .ddl) {
+                tableContent(for: .ddl, isActive: selectedTab == .ddl)
+            }
+            Tab("Indexes", systemImage: "arrow.triangle.branch", value: .indexes) {
+                tableContent(for: .indexes, isActive: selectedTab == .indexes)
+            }
+            Tab("Foreign Keys", systemImage: "arrow.triangle.turn.up.right.diamond", value: .foreignKeys) {
+                tableContent(for: .foreignKeys, isActive: selectedTab == .foreignKeys)
+            }
+        }
+    }
+    #endif
+
+    @ViewBuilder
+    private func tableContent(for tab: TableTab, isActive: Bool) -> some View {
+        switch tab {
+        case .data:
+            DataTabView(
+                sessionID: sessionID,
+                database: database,
+                table: table,
+                actionScope: actionScope,
+                isWorkspaceActive: isActive
+            )
+        case .structure:
+            StructureTabView(
+                sessionID: sessionID,
+                database: database,
+                table: table,
+                onOpenSQL: onOpenSQLEditor
+            )
+        case .ddl:
+            DDLTabView(
+                sessionID: sessionID,
+                database: database,
+                table: table,
+                onOpenSQL: onOpenSQLEditor
+            )
+        case .indexes:
+            IndexesTabView(sessionID: sessionID, database: database, table: table)
+        case .foreignKeys:
+            ForeignKeysTabView(sessionID: sessionID, database: database, table: table)
+        }
+    }
+}
+
+private struct GridTransferRequest {
+    let scope: UUID
+    let operation: Operation
+
+    enum Operation {
+        case importTSV
+        case export(GridExportFormat)
     }
 }
 
@@ -104,13 +248,51 @@ extension Notification.Name {
     static let glassdbRefreshData = Notification.Name("glassdbRefreshData")
     static let glassdbShowAI = Notification.Name("glassdbShowAI")
     static let glassdbStartRepeat = Notification.Name("glassdbStartRepeat")
-    static let glassdbExport = Notification.Name("glassdbExport")
+    static let glassdbTransfer = Notification.Name("glassdbTransfer")
+    static let glassdbOpenSQLDraft = Notification.Name("glassdbOpenSQLDraft")
+}
+
+struct SQLDraftRequest: Sendable {
+    let sessionID: UUID
+    let sql: String
 }
 
 // MARK: - Tab Enum
 
-enum TableTab: Hashable {
+enum TableTab: Hashable, CaseIterable, Identifiable {
     case data, structure, ddl, indexes, foreignKeys
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .data: "Data"
+        case .structure: "Structure"
+        case .ddl: "DDL"
+        case .indexes: "Indexes"
+        case .foreignKeys: "Foreign Keys"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .data: "tablecells"
+        case .structure: "list.bullet.rectangle"
+        case .ddl: "curlybraces"
+        case .indexes: "arrow.triangle.branch"
+        case .foreignKeys: "link"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .data: "Browse and edit table data"
+        case .structure: "Inspect and modify table columns"
+        case .ddl: "Review or open the table definition as SQL"
+        case .indexes: "Inspect and modify table indexes"
+        case .foreignKeys: "Inspect and modify foreign-key relationships"
+        }
+    }
 }
 
 enum GridSortDirection: String, Codable, Sendable {
@@ -186,6 +368,97 @@ struct GridColumnFilter: Codable, Hashable, Identifiable, Sendable {
             isNull: false,
             useDefault: false
         ).boundValue()
+    }
+
+    var validationError: String? {
+        do {
+            _ = try boundValue()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+}
+
+enum GridFilterApplicationMode: String, CaseIterable, Identifiable, Sendable, Equatable {
+    case updateQuery
+    case displayOnly
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .updateQuery: "Update SQL Query"
+        case .displayOnly: "Display Only"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .updateQuery:
+            "Adds bound conditions to the generated SELECT and reloads rows from the database."
+        case .displayOnly:
+            "Hides nonmatching rows from the currently loaded page without changing SQL or contacting the database."
+        }
+    }
+}
+
+enum GridDisplayFilterEvaluator {
+    static func matchingRowIndices(
+        rows: [[DatabaseValue]],
+        columns: [ColumnInfo],
+        filters: [GridColumnFilter]
+    ) -> [Int] {
+        guard !filters.isEmpty else { return Array(rows.indices) }
+        let columnIndices = Dictionary(
+            uniqueKeysWithValues: columns.enumerated().map { ($0.element.name, $0.offset) }
+        )
+        return rows.indices.filter { rowIndex in
+            filters.allSatisfy { filter in
+                guard let columnIndex = columnIndices[filter.columnName],
+                      rows[rowIndex].indices.contains(columnIndex) else { return false }
+                return matches(rows[rowIndex][columnIndex], filter: filter)
+            }
+        }
+    }
+
+    private static func matches(_ value: DatabaseValue, filter: GridColumnFilter) -> Bool {
+        switch filter.operation {
+        case .isNull:
+            return value.isNull
+        case .isNotNull:
+            return !value.isNull
+        case .equals, .notEquals, .greaterThan, .lessThan:
+            guard !value.isNull, let comparison = try? filter.boundValue() else { return false }
+            let ordering = compare(value, comparison)
+            switch filter.operation {
+            case .equals: return ordering == .orderedSame
+            case .notEquals: return ordering != .orderedSame
+            case .greaterThan: return ordering == .orderedDescending
+            case .lessThan: return ordering == .orderedAscending
+            default: return false
+            }
+        }
+    }
+
+    private static func compare(_ lhs: DatabaseValue, _ rhs: DatabaseValue?) -> ComparisonResult {
+        guard let rhs else { return .orderedDescending }
+        if lhs == rhs { return .orderedSame }
+        if let leftNumber = decimalValue(lhs), let rightNumber = decimalValue(rhs) {
+            if leftNumber == rightNumber { return .orderedSame }
+            return leftNumber < rightNumber ? .orderedAscending : .orderedDescending
+        }
+        return lhs.displayString.compare(rhs.displayString, options: [.literal])
+    }
+
+    private static func decimalValue(_ value: DatabaseValue) -> Decimal? {
+        switch value {
+        case .int(let number): Decimal(string: String(number), locale: Locale(identifier: "en_US_POSIX"))
+        case .uint(let number): Decimal(string: String(number), locale: Locale(identifier: "en_US_POSIX"))
+        case .decimal(let number): Decimal(string: number, locale: Locale(identifier: "en_US_POSIX"))
+        case .double(let number): Decimal(string: String(number), locale: Locale(identifier: "en_US_POSIX"))
+        default: nil
+        }
     }
 }
 
@@ -524,6 +797,40 @@ struct GridCellCoordinate: Hashable, Sendable {
     let column: Int
 }
 
+struct GridRowSelectionState: Equatable, Sendable {
+    var rows: Set<Int> = []
+    var anchor: Int?
+
+    func selecting(
+        _ row: Int,
+        from displayedRows: [Int],
+        extendsSelection: Bool,
+        togglesSelection: Bool
+    ) -> GridRowSelectionState {
+        guard let clickedPosition = displayedRows.firstIndex(of: row) else { return self }
+        if extendsSelection,
+           let anchor,
+           let anchorPosition = displayedRows.firstIndex(of: anchor) {
+            let range = min(anchorPosition, clickedPosition)...max(anchorPosition, clickedPosition)
+            let rowsInRange = Set(displayedRows[range])
+            return GridRowSelectionState(
+                rows: togglesSelection ? rows.union(rowsInRange) : rowsInRange,
+                anchor: anchor
+            )
+        }
+        if togglesSelection {
+            var toggledRows = rows
+            if toggledRows.contains(row) {
+                toggledRows.remove(row)
+            } else {
+                toggledRows.insert(row)
+            }
+            return GridRowSelectionState(rows: toggledRows, anchor: row)
+        }
+        return GridRowSelectionState(rows: [row], anchor: row)
+    }
+}
+
 struct GridRowDifference: Equatable, Sendable {
     let columnName: String
     let left: DatabaseValue
@@ -758,6 +1065,8 @@ struct DataTabView: View {
     let sessionID: UUID
     let database: String
     let table: String
+    let actionScope: UUID
+    let isWorkspaceActive: Bool
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
@@ -768,6 +1077,7 @@ struct DataTabView: View {
     @State private var columnMeta: [ColumnInfo] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var errorIsQueryFailure = false
     @State private var selectedRowIndex: Int?
     @State private var showEditor = false
     @State private var addingNewRow = false
@@ -778,29 +1088,43 @@ struct DataTabView: View {
     @State private var exportFormat: GridExportFormat = .csv
     @State private var pendingQueryStatements: [SQLStatement]?
     @State private var pendingRecordMutation: PendingRecordMutation?
+    @State private var queuedRecordMutation: PendingRecordMutation?
 
     // Server-side grid state
     @State private var filters: [GridColumnFilter] = []
+    @State private var displayFilters: [GridColumnFilter] = []
     @State private var sorts: [GridSortDescriptor] = []
     @State private var groupColumns: [String] = []
     @State private var aggregates: [GridAggregateDescriptor] = []
     @State private var filterColumnName = ""
     @State private var filterOperation: GridFilterOperator = .equals
     @State private var filterValue = ""
+    @State private var showFilterEditor = false
+    @State private var filterApplicationMode: GridFilterApplicationMode = .updateQuery
+    @State private var stagedQueryFilters: [GridColumnFilter] = []
+    @State private var stagedDisplayFilters: [GridColumnFilter] = []
+    @State private var showColumnManager = false
+    @State private var columnSearchText = ""
+    @State private var stagedColumnLayout = GridColumnLayout()
 
     // Persisted presentation and bounded range selection
     @State private var columnLayout = GridColumnLayout()
     @State private var resizeStartWidths: [String: Double] = [:]
     @State private var selectionAnchor: GridCellCoordinate?
     @State private var selectionEnd: GridCellCoordinate?
+    @State private var selectedRowIndices: Set<Int> = []
+    @State private var rowSelectionAnchor: Int?
     @State private var pendingPasteTSV: String?
     @State private var pasteMappingMode: GridPasteMappingMode = .positional
     @State private var comparisonText: String?
     @State private var showTSVImporter = false
+    @State private var inputErrorMessage: String?
 
     // Pager
     @State private var currentPage: Int = 1
     @State private var pageSize: Int = 100
+    @State private var pageSizeDraft = "100"
+    @FocusState private var pageSizeFocused: Bool
     @State private var totalRowCount: Int?
 
     // Auto-repeat
@@ -822,17 +1146,58 @@ struct DataTabView: View {
         return max(1, Int(ceil(Double(total) / Double(pageSize))))
     }
 
+    private var filterDraft: GridColumnFilter? {
+        guard let column = columnMeta.first(where: { $0.name == filterColumnName }) else { return nil }
+        return GridColumnFilter(
+            columnName: column.name,
+            columnType: column.type,
+            isUnsigned: column.isUnsigned,
+            operation: filterOperation,
+            value: filterValue
+        )
+    }
+
+    private var filterValidationError: String? {
+        filterDraft?.validationError
+    }
+
+    private var canApplyFilter: Bool {
+        filterDraft != nil && filterValidationError == nil
+    }
+
+    private var activeFilterCount: Int {
+        filters.count + displayFilters.count
+    }
+
+    private var editedFilterCollection: [GridColumnFilter] {
+        filterApplicationMode == .updateQuery ? stagedQueryFilters : stagedDisplayFilters
+    }
+
+    private var filteredColumnMeta: [ColumnInfo] {
+        let search = columnSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !search.isEmpty else { return columnMeta }
+        return columnMeta.filter {
+            $0.name.localizedStandardContains(search) || $0.type.localizedStandardContains(search)
+        }
+    }
+
+    private var stagedVisibleColumnCount: Int {
+        columnMeta.lazy.filter { !stagedColumnLayout.hidden.contains($0.name) }.count
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // SQL editor area with dark background
+            // SQL editor area remains subordinate to the user-controlled canvas.
             HighlightedTextEditor(
                 text: $queryText,
-                fontSize: CGFloat(settingsManager.editorFontSize)
+                fontSize: CGFloat(settingsManager.editorFontSize),
+                isActive: isWorkspaceActive
             )
             .frame(height: editorHeight)
-            .background(Color.black.opacity(0.3))
+            .databaseCanvasSurface(opacity: settingsManager.windowOpacity, strength: 0.045)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .padding(.horizontal, 12)
+            .padding(.top, 12)
             .onChange(of: queryText) {
                 // User edited the query — disable auto-query sync
                 if !isLoading { isAutoQuery = false }
@@ -866,17 +1231,37 @@ struct DataTabView: View {
                 ProgressView("Executing...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = errorMessage {
-                VStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.title)
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                ScrollView {
+                    QueryErrorCard(
+                        error: error,
+                        query: queryText,
+                        schemaContext: SchemaContext(
+                            databaseName: database,
+                            tables: columnMeta.isEmpty ? [] : [
+                                SchemaContext.TableInfo(
+                                    name: table,
+                                    columns: columnMeta.map {
+                                        SchemaContext.ColumnInfo(name: $0.name, type: $0.type)
+                                    }
+                                )
+                            ]
+                        ),
+                        aiAssistant: session?.aiAssistant,
+                        offersNotifications: errorIsQueryFailure,
+                        offersAISuggestion: errorIsQueryFailure,
+                        onUseSuggestedSQL: { suggestedSQL in
+                            queryText = suggestedSQL
+                            isAutoQuery = false
+                            errorMessage = nil
+                            errorIsQueryFailure = false
+                        },
+                        onDismiss: {
+                            errorMessage = nil
+                            errorIsQueryFailure = false
+                        }
+                    )
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding()
             } else if let result {
                 dataGrid(result)
             } else {
@@ -891,11 +1276,16 @@ struct DataTabView: View {
             if let result {
                 Divider()
                 HStack(spacing: 12) {
-                    Text("\(result.rowCount) rows")
+                    let visibleRowCount = displayedRowIndices(in: result).count
+                    Text(displayFilters.isEmpty
+                        ? "\(result.rowCount) rows"
+                        : "\(visibleRowCount) of \(result.rowCount) loaded rows")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if let totalRowCount {
-                        Text("\(totalRowCount) matching total")
+                        Text(displayFilters.isEmpty
+                            ? "\(totalRowCount) matching total"
+                            : "\(totalRowCount) server-matched total")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
@@ -921,6 +1311,8 @@ struct DataTabView: View {
                         Image(systemName: "chevron.left")
                     }
                     .disabled(currentPage <= 1)
+                    .accessibilityLabel("Previous page")
+                    .help("Show the previous page")
 
                     Text("Page \(currentPage) of \(totalPages)")
                         .font(.caption)
@@ -932,44 +1324,54 @@ struct DataTabView: View {
                         Image(systemName: "chevron.right")
                     }
                     .disabled(currentPage >= totalPages)
+                    .accessibilityLabel("Next page")
+                    .help("Show the next page")
 
                     Text("Per page:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    TextField("", value: $pageSize, format: .number)
+                    TextField("Rows per page", text: $pageSizeDraft)
                         .frame(width: 60)
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
-                        .onSubmit {
-                            currentPage = 1
-                            Task { await executeCurrentQuery() }
-                        }
+                        .focused($pageSizeFocused)
+                        .onSubmit { commitPageSizeDraft() }
+                        .accessibilityLabel("Rows per page")
+                        .help("Enter a value from 1 through 10,000")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
             }
         }
-        .sheet(isPresented: $showEditor) {
+        .sheet(isPresented: $showEditor, onDismiss: presentQueuedRecordMutation) {
             if let result, let rowIdx = selectedRowIndex, rowIdx < result.rows.count {
                 RecordEditorView(
                     columns: columnMeta.isEmpty ? result.columns : columnMeta,
                     mode: .edit(rowIndex: rowIdx, originalRow: result.rows[rowIdx]),
                     onSave: { edits, mode in
-                        pendingRecordMutation = .update(edits: edits, rowIndex: rowIdx)
+                        queuedRecordMutation = .update(edits: edits, rowIndex: rowIdx)
+                        showEditor = false
                     },
                     onDiscard: { showEditor = false }
                 )
             }
         }
-        .sheet(isPresented: $addingNewRow) {
+        .sheet(isPresented: $addingNewRow, onDismiss: presentQueuedRecordMutation) {
             RecordEditorView(
                 columns: columnMeta,
                 mode: .add,
                 onSave: { edits, _ in
-                    pendingRecordMutation = .insert(edits: edits)
+                    queuedRecordMutation = .insert(edits: edits)
+                    addingNewRow = false
                 },
                 onDiscard: { addingNewRow = false }
             )
+        }
+        .sheet(isPresented: $showFilterEditor) {
+            filterEditor
+        }
+        .sheet(isPresented: $showColumnManager) {
+            columnManager
         }
         #if canImport(FoundationModels)
         .sheet(isPresented: $showAIAssistant) {
@@ -1005,71 +1407,100 @@ struct DataTabView: View {
                 Task { await execute(statements) }
             }
             Button("Cancel", role: .cancel) { pendingQueryStatements = nil }
+                .keyboardShortcut(.cancelAction)
         } message: {
             Text(queryMutationPreview)
         }
+        #if os(macOS)
+        .sheet(isPresented: .init(
+            get: { pendingRecordMutation != nil },
+            set: { if !$0 { pendingRecordMutation = nil } }
+        )) {
+            recordMutationReviewSheet
+        }
+        #else
         .alert("Review Row Mutation", isPresented: .init(
             get: { pendingRecordMutation != nil },
             set: { if !$0 { pendingRecordMutation = nil } }
         )) {
-            Button("Commit", role: .destructive) {
-                let mutation = pendingRecordMutation
-                pendingRecordMutation = nil
-                Task {
-                    switch mutation {
-                    case .update(let edits, let rowIndex): await applyEdits(edits, rowIndex: rowIndex)
-                    case .insert(let edits): await insertRow(edits)
-                    case .batchUpdate(let plan): await applyBatchPaste(plan)
-                    case .none: break
-                    }
-                }
-            }
+            Button("Commit", role: .destructive) { commitPendingRecordMutation() }
             Button("Cancel", role: .cancel) { pendingRecordMutation = nil }
+                .keyboardShortcut(.cancelAction)
         } message: {
             Text(recordMutationPreview)
         }
+        #endif
+        #if os(macOS)
+        .sheet(isPresented: .init(
+            get: { pendingPasteTSV != nil },
+            set: { if !$0 { pendingPasteTSV = nil } }
+        ), onDismiss: presentQueuedRecordMutation) {
+            pasteReviewSheet
+        }
+        #else
         .alert("Review Pasted Range", isPresented: .init(
             get: { pendingPasteTSV != nil },
             set: { if !$0 { pendingPasteTSV = nil } }
         )) {
-            Button("Stage Paste") {
-                let tsv = pendingPasteTSV ?? ""
-                pendingPasteTSV = nil
-                stagePastedRange(tsv)
-            }
+            Button("Stage Paste") { confirmPaste() }
+                .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { pendingPasteTSV = nil }
+                .keyboardShortcut(.cancelAction)
         } message: {
             Text(pastePreview)
         }
+        #endif
+        #if os(macOS)
+        .sheet(isPresented: .init(
+            get: { comparisonText != nil },
+            set: { if !$0 { comparisonText = nil } }
+        )) {
+            comparisonReviewSheet
+        }
+        #else
         .alert("Compare Rows", isPresented: .init(
             get: { comparisonText != nil },
             set: { if !$0 { comparisonText = nil } }
         )) {
             Button("Done", role: .cancel) { comparisonText = nil }
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text(comparisonText ?? "")
         }
-        .onReceive(NotificationCenter.default.publisher(for: .glassdbExecuteQuery)) { _ in
+        #endif
+        .alert("Table Action Failed", isPresented: .init(
+            get: { inputErrorMessage != nil },
+            set: { if !$0 { inputErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { inputErrorMessage = nil }
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text(inputErrorMessage ?? "")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbExecuteQuery)) { notification in
+            guard notification.object as? UUID == actionScope else { return }
             Task { await executeCurrentQuery() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .glassdbAddRow)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbAddRow)) { notification in
+            guard notification.object as? UUID == actionScope else { return }
             addingNewRow = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: .glassdbRefreshData)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbRefreshData)) { notification in
+            guard notification.object as? UUID == actionScope else { return }
             queryText = ""
             Task { await loadData() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .glassdbShowAI)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbShowAI)) { notification in
+            guard notification.object as? UUID == actionScope else { return }
             showAIAssistant = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: .glassdbStartRepeat)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbStartRepeat)) { notification in
+            guard isWorkspaceActive,
+                  notification.object as? UUID == actionScope else { return }
             startAutoRepeat()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .glassdbExport)) { notification in
-            guard let raw = notification.object as? String,
-                  let format = GridExportFormat(rawValue: raw) else { return }
-            exportFormat = format
-            showExporter = true
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbTransfer)) { notification in
+            handleTransfer(notification.object)
         }
         .fileExporter(
             isPresented: $showExporter,
@@ -1084,7 +1515,11 @@ struct DataTabView: View {
             },
             contentType: exportFormat.contentType,
             defaultFilename: "\(database)_\(table).\(exportFormat.rawValue)"
-        ) { _ in }
+        ) { result in
+            if case .failure(let error) = result {
+                inputErrorMessage = "The export could not be completed. \(error.localizedDescription)"
+            }
+        }
         .fileImporter(
             isPresented: $showTSVImporter,
             allowedContentTypes: [.tabSeparatedText, .plainText],
@@ -1103,17 +1538,25 @@ struct DataTabView: View {
                 }
                 pendingPasteTSV = text
             } catch {
-                errorMessage = "Import was not staged. \(error.localizedDescription)"
+                inputErrorMessage = "The import was not staged. \(error.localizedDescription)"
             }
         }
         .onChange(of: currentPage) {
             if isAutoQuery { Task { await loadData() } }
         }
         .onChange(of: pageSize) {
+            if !pageSizeFocused {
+                pageSizeDraft = String(pageSize)
+            }
             if isAutoQuery {
                 persistGridQueryState()
                 currentPage = 1
                 Task { await loadData() }
+            }
+        }
+        .onChange(of: pageSizeFocused) {
+            if !pageSizeFocused, pageSizeDraft != String(pageSize) {
+                commitPageSizeDraft()
             }
         }
         .task(id: "\(database).\(table)") {
@@ -1121,53 +1564,46 @@ struct DataTabView: View {
             loadGridQueryState()
             await loadData()
         }
+        .onChange(of: isWorkspaceActive) {
+            if !isWorkspaceActive {
+                stopAutoRepeat()
+            }
+        }
+        .onDisappear {
+            stopAutoRepeat()
+        }
     }
 
     // MARK: - Data Grid
 
+    @ViewBuilder
     private var gridControlBar: some View {
+        #if os(macOS)
+        ScrollView(.horizontal) {
+            gridControls
+        }
+        .scrollIndicators(.automatic)
+        .accessibilityLabel("Table data controls")
+        #else
+        gridControls
+        #endif
+    }
+
+    private var gridControls: some View {
         HStack(spacing: 8) {
-            Menu {
-                ForEach(columnMeta) { column in
-                    Button(column.name) { filterColumnName = column.name }
-                }
+            Button {
+                beginFilterEditing()
             } label: {
-                Label(filterColumnName.isEmpty ? "Column" : filterColumnName, systemImage: "line.3.horizontal.decrease")
+                Label(
+                    activeFilterCount == 0 ? "Filter" : "Filter \(activeFilterCount)",
+                    systemImage: activeFilterCount == 0
+                        ? "line.3.horizontal.decrease.circle"
+                        : "line.3.horizontal.decrease.circle.fill"
+                )
             }
-
-            Picker("Filter", selection: $filterOperation) {
-                ForEach(GridFilterOperator.allCases) { operation in
-                    Text(operation.displayName).tag(operation)
-                }
-            }
-            .labelsHidden()
-            .frame(maxWidth: 160)
-
-            if filterOperation.requiresValue {
-                TextField("Filter value", text: $filterValue)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 180)
-                    .onSubmit { applyFilter() }
-            }
-            Button("Apply") { applyFilter() }
-                .disabled(filterColumnName.isEmpty || (filterOperation.requiresValue && filterValue.isEmpty))
-
-            if !filters.isEmpty || !sorts.isEmpty {
-                Button("Clear") {
-                    filters = []
-                    sorts = []
-                    persistGridQueryState()
-                    currentPage = 1
-                    Task { await loadData() }
-                }
-                .buttonStyle(.bordered)
-            }
-
-            if !filters.isEmpty {
-                Label("\(filters.count)", systemImage: "line.3.horizontal.decrease.circle.fill")
-                    .foregroundStyle(.orange)
-                    .help(filters.map { "\($0.columnName) \($0.operation.displayName)" }.joined(separator: ", "))
-            }
+            .help(activeFilterCount == 0
+                ? "Choose rows to show using a server query or the currently loaded page"
+                : "Review \(activeFilterCount) active row filter\(activeFilterCount == 1 ? "" : "s")")
             if !sorts.isEmpty {
                 Text(sorts.enumerated().map { index, sort in
                     "\(index + 1):\(sort.columnName) \(sort.direction == .ascending ? "↑" : "↓")"
@@ -1215,38 +1651,30 @@ struct DataTabView: View {
 
             ControlGroup {
                 Button { moveSelection(rowDelta: 0, columnDelta: -1) } label: { Image(systemName: "arrow.left") }
-                    .keyboardShortcut(.leftArrow, modifiers: .shift)
+                    .accessibilityLabel("Extend selection left")
                 Button { moveSelection(rowDelta: 0, columnDelta: 1) } label: { Image(systemName: "arrow.right") }
-                    .keyboardShortcut(.rightArrow, modifiers: .shift)
+                    .accessibilityLabel("Extend selection right")
                 Button { moveSelection(rowDelta: -1, columnDelta: 0) } label: { Image(systemName: "arrow.up") }
-                    .keyboardShortcut(.upArrow, modifiers: .shift)
+                    .accessibilityLabel("Extend selection up")
                 Button { moveSelection(rowDelta: 1, columnDelta: 0) } label: { Image(systemName: "arrow.down") }
-                    .keyboardShortcut(.downArrow, modifiers: .shift)
+                    .accessibilityLabel("Extend selection down")
             }
+            .help("Adjust the selected cell range")
             .disabled(result?.rows.isEmpty != false)
 
-            Menu {
-                ForEach(columnMeta) { column in
-                    Button(columnLayout.hidden.contains(column.name) ? "Show \(column.name)" : "Hide \(column.name)") {
-                        toggleColumnVisibility(column.name)
-                    }
-                    Button(columnLayout.frozen.contains(column.name) ? "Unfreeze \(column.name)" : "Freeze \(column.name)") {
-                        toggleColumnFreeze(column.name)
-                    }
-                }
-                Divider()
-                Button("Reset Column Layout") { resetColumnLayout() }
+            Button {
+                beginColumnManagement()
             } label: {
                 Label("Columns", systemImage: "rectangle.split.3x1")
             }
+            .help("Choose visible and frozen columns")
 
             Button {
                 copySelectedRange()
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
             }
-            .keyboardShortcut("c", modifiers: .command)
-            .disabled(selectedRectangle == nil)
+            .disabled(selectedRectangle == nil && selectedRowIndices.isEmpty)
 
             PasteButton(payloadType: String.self) { values in
                 guard let value = values.first, !value.isEmpty else { return }
@@ -1254,16 +1682,18 @@ struct DataTabView: View {
                     try GridImportPolicy.validate(text: value)
                     pendingPasteTSV = value
                 } catch {
-                    errorMessage = "Paste was not staged. \(error.localizedDescription)"
+                    inputErrorMessage = "The paste was not staged. \(error.localizedDescription)"
                 }
             }
             .labelStyle(.iconOnly)
-            .keyboardShortcut("v", modifiers: .command)
+            .accessibilityLabel("Paste tab-separated values")
+            .help("Paste a tab-separated range at the selected cell")
             .disabled(selectionAnchor == nil || isAnalysisActive)
 
             Button { showTSVImporter = true } label: {
                 Label("Import TSV", systemImage: "square.and.arrow.down")
             }
+            .help("Choose a UTF-8 TSV file to stage at the selected cell")
             .disabled(selectionAnchor == nil || isAnalysisActive)
 
             Toggle("Header", isOn: .init(
@@ -1276,6 +1706,299 @@ struct DataTabView: View {
         .controlSize(.small)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+
+    private var filterEditor: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Filtering", selection: $filterApplicationMode) {
+                        ForEach(GridFilterApplicationMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                } header: {
+                    Text("Behavior")
+                } footer: {
+                    Text(filterApplicationMode.explanation)
+                }
+
+                Section("Active Conditions") {
+                    if editedFilterCollection.isEmpty {
+                        Label("No conditions in this mode", systemImage: "line.3.horizontal.decrease.circle")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(editedFilterCollection) { filter in
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(filter.columnName)
+                                        .fontWeight(.medium)
+                                    Text(filterDescription(filter))
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button(role: .destructive) {
+                                    removeStagedFilter(filter)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Remove filter for \(filter.columnName)")
+                                .help("Remove this condition")
+                            }
+                        }
+                        Button("Clear \(filterApplicationMode == .updateQuery ? "Query" : "Display") Filters", role: .destructive) {
+                            clearStagedFilters()
+                        }
+                    }
+                }
+
+                Section("Add or Replace Condition") {
+                    Picker("Column", selection: $filterColumnName) {
+                        ForEach(columnMeta) { column in
+                            Text(column.name).tag(column.name)
+                        }
+                    }
+                    Picker("Condition", selection: $filterOperation) {
+                        ForEach(GridFilterOperator.allCases) { operation in
+                            Text(operation.displayName).tag(operation)
+                        }
+                    }
+                    if filterOperation.requiresValue {
+                        TextField("Value", text: $filterValue)
+                            .font(.system(.body, design: .monospaced))
+                            .onSubmit { addStagedFilter() }
+                            .accessibilityLabel("Filter value")
+                            .help("Enter a value compatible with the selected column type")
+                    }
+                    if let filterValidationError {
+                        Label(filterValidationError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .accessibilityLabel("Invalid filter: \(filterValidationError)")
+                    }
+                    Button("Add Condition", systemImage: "plus") {
+                        addStagedFilter()
+                    }
+                    .disabled(!canApplyFilter)
+                }
+
+                if filterApplicationMode == .displayOnly, let result {
+                    Section {
+                        LabeledContent(
+                            "Visible rows",
+                            value: "\(displayedRowIndices(in: result, filters: stagedDisplayFilters).count) of \(result.rowCount) loaded"
+                        )
+                    } footer: {
+                        Text("Display-only comparisons are literal and may differ from the database server’s collation rules.")
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Filter Rows")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showFilterEditor = false }
+                        .keyboardShortcut(.cancelAction)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { commitFilterEditing() }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(width: 520, height: 600)
+        #endif
+    }
+
+    private var columnManager: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 10) {
+                        Button("Show All", systemImage: "eye") {
+                            stagedColumnLayout.hidden.removeAll()
+                        }
+                        Button("Hide All", systemImage: "eye.slash") {
+                            stagedColumnLayout.hidden = Set(columnMeta.map(\.name))
+                            stagedColumnLayout.frozen.removeAll()
+                        }
+                        Button("Unfreeze All", systemImage: "pin.slash") {
+                            stagedColumnLayout.frozen.removeAll()
+                        }
+                        Spacer()
+                        Button("Reset", systemImage: "arrow.counterclockwise") {
+                            stagedColumnLayout = GridColumnLayout(order: columnMeta.map(\.name))
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                } footer: {
+                    Text("Changes are staged until you choose Done. Frozen columns remain visible and stay at the leading edge while you scroll.")
+                }
+
+                Section {
+                    if filteredColumnMeta.isEmpty {
+                        ContentUnavailableView.search(text: columnSearchText)
+                    } else {
+                        ForEach(filteredColumnMeta) { column in
+                            HStack(spacing: 16) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(column.name)
+                                        .font(.body.monospaced())
+                                        .lineLimit(1)
+                                    Text(column.type)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 12)
+                                Toggle(isOn: columnVisibilityBinding(column.name)) {
+                                    Label("Visible", systemImage: "eye")
+                                }
+                                .fixedSize()
+                                .help("Show or hide \(column.name)")
+                                Toggle(isOn: columnFrozenBinding(column.name)) {
+                                    Label("Frozen", systemImage: "pin")
+                                }
+                                .fixedSize()
+                                .help("Keep \(column.name) visible at the leading edge")
+                            }
+                            .accessibilityElement(children: .contain)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Columns")
+                        Spacer()
+                        Text("\(stagedVisibleColumnCount) visible · \(stagedColumnLayout.frozen.count) frozen")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textCase(nil)
+                    }
+                }
+            }
+            .searchable(text: $columnSearchText, prompt: "Search columns")
+            .navigationTitle("Manage Columns")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showColumnManager = false }
+                        .keyboardShortcut(.cancelAction)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { commitColumnManagement() }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(width: 680, height: 620)
+        #endif
+    }
+
+    #if os(macOS)
+    private var pasteReviewSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Destination") {
+                    LabeledContent("Table", value: "\(database).\(table)")
+                    Picker("Column Mapping", selection: $pasteMappingMode) {
+                        Text("From Selected Cell").tag(GridPasteMappingMode.positional)
+                        Text("First Row Contains Column Names").tag(GridPasteMappingMode.headerRow)
+                    }
+                    .pickerStyle(.radioGroup)
+                }
+                Section("Preview") {
+                    Text(pastePreview)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Review Pasted Range")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { pendingPasteTSV = nil }
+                        .keyboardShortcut(.cancelAction)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Stage Paste") { confirmPaste() }
+                        .keyboardShortcut(.defaultAction)
+                        .help("Validate and stage this range without writing it yet")
+                }
+            }
+        }
+        .frame(width: 560, height: 430)
+    }
+
+    private var recordMutationReviewSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Pending Change") {
+                    Text(recordMutationPreview)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                }
+                Section {
+                    Label(
+                        "No database write occurs until you choose Commit.",
+                        systemImage: "checkmark.shield"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Review Row Mutation")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { pendingRecordMutation = nil }
+                        .keyboardShortcut(.cancelAction)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Commit", role: .destructive) { commitPendingRecordMutation() }
+                        .keyboardShortcut(.defaultAction)
+                        .help("Commit this reviewed row mutation")
+                }
+            }
+        }
+        .frame(width: 560, height: 420)
+    }
+
+    private var comparisonReviewSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Selected Rows") {
+                    Text(comparisonText ?? "")
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Compare Rows")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { comparisonText = nil }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .frame(width: 640, height: 500)
+    }
+    #endif
+
+    private func displayedRowIndices(
+        in result: QueryResult,
+        filters filterSet: [GridColumnFilter]? = nil
+    ) -> [Int] {
+        guard !isAnalysisActive else { return Array(result.rows.indices) }
+        return GridDisplayFilterEvaluator.matchingRowIndices(
+            rows: result.rows,
+            columns: result.columns,
+            filters: filterSet ?? displayFilters
+        )
     }
 
     private var selectedRectangle: (rows: ClosedRange<Int>, columns: [Int])? {
@@ -1311,21 +2034,26 @@ struct DataTabView: View {
     private var isAnalysisActive: Bool { !aggregates.isEmpty }
 
     private var canCompareSelectedRows: Bool {
-        guard let selectedRectangle else { return false }
-        return selectedRectangle.rows.count == 2 && !isAnalysisActive
+        guard !isAnalysisActive else { return false }
+        if selectedRowIndices.count == 2 { return true }
+        return selectedRectangle?.rows.count == 2
     }
 
     private var exportResult: QueryResult? {
         guard let result else { return nil }
         let visible = gridVisibleColumnIndices(for: result)
         let rowIndices: [Int]
-        if let selectedRectangle {
+        if !selectedRowIndices.isEmpty {
+            rowIndices = selectedRowIndices.sorted().filter { result.rows.indices.contains($0) }
+        } else if let selectedRectangle {
             rowIndices = selectedRectangle.rows.filter { result.rows.indices.contains($0) }
         } else {
-            rowIndices = Array(result.rows.indices)
+            rowIndices = displayedRowIndices(in: result)
         }
         let selectedColumns: [Int]
-        if let selectedRectangle {
+        if !selectedRowIndices.isEmpty {
+            selectedColumns = visible
+        } else if let selectedRectangle {
             selectedColumns = selectedRectangle.columns
         } else {
             selectedColumns = visible
@@ -1357,26 +2085,40 @@ struct DataTabView: View {
                 let selectedColumns = Set(activeSelection?.columns ?? [])
                 let totalDataWidth = rowNumWidth + widths.reduce(0, +)
                 let fillerWidth = max(0, geometry.size.width - totalDataWidth)
-                let dataHeight = CGFloat(result.rows.count) * rowHeight
+                let displayedRows = displayedRowIndices(in: result)
+                let dataHeight = CGFloat(displayedRows.count) * rowHeight
                 let headerHeight: CGFloat = 36
                 let fillerRowCount = max(0, Int((geometry.size.height - headerHeight - dataHeight) / rowHeight))
 
                 ScrollView([.horizontal, .vertical]) {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
                         Section {
-                            // Data rows with inline row numbers
-                            ForEach(Array(result.rows.enumerated()), id: \.offset) { rowIndex, row in
+                            // Data rows with a pinned row-number gutter
+                            ForEach(displayedRows, id: \.self) { rowIndex in
+                                let row = result.rows[rowIndex]
                                 HStack(spacing: 0) {
-                                    // Row number (inline, scrolls with data)
+                                    // Keep the generated row-number gutter fixed and legible while data scrolls.
                                     Text("\((currentPage - 1) * pageSize + rowIndex + 1)")
                                         .font(.system(size: fontSize - 1, design: .monospaced))
                                         .foregroundStyle(.secondary)
                                         .frame(width: rowNumWidth, height: rowHeight, alignment: .center)
-                                        .background(.ultraThinMaterial)
+                                        .background(
+                                            selectedRowIndices.contains(rowIndex)
+                                                ? Color.accentColor.opacity(0.22)
+                                                : Color.clear
+                                        )
+                                        .databaseCanvasPinnedSurface(opacity: settingsManager.windowOpacity)
                                         .visualEffect { content, proxy in
                                             content.offset(x: max(0, -proxy.frame(in: .scrollView(axis: .horizontal)).minX))
                                         }
                                         .zIndex(3)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture(count: 2) { openEditor(for: rowIndex) }
+                                        .onTapGesture { selectRow(rowIndex) }
+                                        .accessibilityLabel("Row \((currentPage - 1) * pageSize + rowIndex + 1)")
+                                        .accessibilityHint("Selects the entire row. Use Shift or Command for multiple rows. Double-click to edit.")
+                                        .accessibilityAddTraits(.isButton)
+                                        .help("Select row \((currentPage - 1) * pageSize + rowIndex + 1); Shift-click extends, Command-click toggles, and double-click edits")
 
                                     // Data cells
                                     ForEach(Array(visibleIndices.enumerated()), id: \.element) { visibleOffset, colIndex in
@@ -1391,7 +2133,16 @@ struct DataTabView: View {
                                             .padding(.vertical, 6)
                                             .frame(width: widths[visibleOffset], height: rowHeight, alignment: .leading)
                                             .foregroundStyle(value.isNull ? .tertiary : .primary)
-                                            .background(isFrozen ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.clear))
+                                            .background(
+                                                isFrozen
+                                                    ? AnyShapeStyle(Color.primary.opacity(
+                                                        DatabaseGlassAppearance(
+                                                            opacity: settingsManager.windowOpacity,
+                                                            blur: 0
+                                                        ).surfaceAlpha()
+                                                    ))
+                                                    : AnyShapeStyle(Color.clear)
+                                            )
                                             .background(isSelected ? AnyShapeStyle(Color.accentColor.opacity(0.22)) : AnyShapeStyle(Color.clear))
                                             .visualEffect { content, proxy in
                                                 content.offset(
@@ -1403,21 +2154,26 @@ struct DataTabView: View {
                                             .zIndex(isFrozen ? 2 : 0)
                                             .accessibilityLabel("\(result.columns[colIndex].name): \(value.isNull ? "null" : value.displayString)")
                                             .contentShape(Rectangle())
-                                            .onTapGesture(count: 2) { selectRow(rowIndex) }
+                                            .onTapGesture(count: 2) { openEditor(for: rowIndex) }
                                             .onTapGesture { selectCell(row: rowIndex, column: colIndex) }
                                     }
                                     if fillerWidth > 0 {
                                         Color.clear.frame(width: fillerWidth, height: rowHeight)
                                     }
                                 }
-                                .background(rowBackground(rowIndex: rowIndex, totalDataRows: result.rows.count))
-                                .onTapGesture { selectRow(rowIndex) }
+                                .background(rowBackground(rowIndex: rowIndex, totalDataRows: displayedRows.count))
                             }
                             // Filler rows
                             ForEach(0..<fillerRowCount, id: \.self) { fillerIndex in
                                 let globalIndex = result.rows.count + fillerIndex
                                 HStack(spacing: 0) {
-                                    Color.clear.frame(width: rowNumWidth, height: rowHeight)
+                                    Color.clear
+                                        .frame(width: rowNumWidth, height: rowHeight)
+                                        .databaseCanvasPinnedSurface(opacity: settingsManager.windowOpacity)
+                                        .visualEffect { content, proxy in
+                                            content.offset(x: max(0, -proxy.frame(in: .scrollView(axis: .horizontal)).minX))
+                                        }
+                                        .zIndex(3)
                                     ForEach(Array(widths.enumerated()), id: \.offset) { _, w in
                                         Color.clear.frame(width: w, height: rowHeight)
                                     }
@@ -1425,14 +2181,23 @@ struct DataTabView: View {
                                         Color.clear.frame(width: fillerWidth, height: rowHeight)
                                     }
                                 }
-                                .background(globalIndex.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.02))
+                                .background(
+                                    globalIndex.isMultiple(of: 2)
+                                        ? Color.clear
+                                        : Color.primary.opacity(
+                                            DatabaseGlassAppearance(
+                                                opacity: settingsManager.windowOpacity,
+                                                blur: 0
+                                            ).surfaceAlpha(strength: 0.02)
+                                        )
+                                )
                             }
                         } header: {
                             HStack(spacing: 0) {
                                 Text("#")
                                     .font(.system(size: fontSize, weight: .bold, design: .monospaced))
                                     .frame(width: rowNumWidth, alignment: .center)
-                                    .background(.ultraThinMaterial)
+                                    .databaseCanvasPinnedSurface(opacity: settingsManager.windowOpacity)
                                     .visualEffect { content, proxy in
                                         content.offset(x: max(0, -proxy.frame(in: .scrollView(axis: .horizontal)).minX))
                                     }
@@ -1461,7 +2226,16 @@ struct DataTabView: View {
                                     .padding(.leading, 12)
                                     .padding(.vertical, 8)
                                     .frame(width: widths[visibleOffset], alignment: .leading)
-                                    .background(isFrozen ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.clear))
+                                    .background(
+                                        isFrozen
+                                            ? AnyShapeStyle(Color.primary.opacity(
+                                                DatabaseGlassAppearance(
+                                                    opacity: settingsManager.windowOpacity,
+                                                    blur: 0
+                                                ).surfaceAlpha()
+                                            ))
+                                            : AnyShapeStyle(Color.clear)
+                                    )
                                     .visualEffect { content, proxy in
                                         content.offset(
                                             x: isFrozen
@@ -1502,56 +2276,91 @@ struct DataTabView: View {
                                 }
                             }
                             .frame(height: headerHeight)
-                            .background(.ultraThinMaterial)
+                            .databaseCanvasPinnedSurface(opacity: settingsManager.windowOpacity)
                         }
                     }
                 }
                 .scrollIndicators(.visible)
-                .scrollInputBehavior(.enabled, for: .look)
+                .databaseLookScrollEnabled()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func rowBackground(rowIndex: Int, totalDataRows: Int) -> some ShapeStyle {
-        if rowIndex == selectedRowIndex {
+        if selectedRowIndices.contains(rowIndex) {
             return AnyShapeStyle(Color.accentColor.opacity(0.15))
         }
-        return AnyShapeStyle(rowIndex.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(0.02))
+        return AnyShapeStyle(
+            rowIndex.isMultiple(of: 2)
+                ? Color.clear
+                : Color.primary.opacity(
+                    DatabaseGlassAppearance(
+                        opacity: settingsManager.windowOpacity,
+                        blur: 0
+                    ).surfaceAlpha(strength: 0.02)
+                )
+        )
     }
 
-    private func selectRow(_ rowIndex: Int) {
+    private func openEditor(for rowIndex: Int) {
         guard !isAnalysisActive else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
-            if selectedRowIndex == rowIndex {
-                showEditor.toggle()
-            } else {
-                selectedRowIndex = rowIndex
-                showEditor = true
-            }
+            selectedRowIndex = rowIndex
+            selectedRowIndices = [rowIndex]
+            rowSelectionAnchor = rowIndex
+            selectionAnchor = nil
+            selectionEnd = nil
+            showEditor = true
         }
     }
 
     private func selectCell(row: Int, column: Int) {
         let coordinate = GridCellCoordinate(row: row, column: column)
-        if selectionAnchor == nil || selectionAnchor != selectionEnd {
-            selectionAnchor = coordinate
-            selectionEnd = coordinate
-        } else {
-            selectionEnd = coordinate
-        }
+        selectedRowIndices.removeAll()
+        rowSelectionAnchor = nil
+        selectionAnchor = coordinate
+        selectionEnd = coordinate
         selectedRowIndex = row
+    }
+
+    private func selectRow(_ row: Int) {
+        guard let result, result.rows.indices.contains(row) else { return }
+        let displayedRows = displayedRowIndices(in: result)
+        #if os(macOS)
+        let modifierFlags = NSEvent.modifierFlags
+        let extendsSelection = modifierFlags.contains(.shift)
+        let togglesSelection = modifierFlags.contains(.command)
+        #else
+        let extendsSelection = false
+        let togglesSelection = false
+        #endif
+        let updated = GridRowSelectionState(
+            rows: selectedRowIndices,
+            anchor: rowSelectionAnchor
+        ).selecting(
+            row,
+            from: displayedRows,
+            extendsSelection: extendsSelection,
+            togglesSelection: togglesSelection
+        )
+        selectedRowIndices = updated.rows
+        rowSelectionAnchor = updated.anchor
+
+        selectionAnchor = nil
+        selectionEnd = nil
+        selectedRowIndex = selectedRowIndices.contains(row) ? row : selectedRowIndices.sorted().first
     }
 
     private func copySelectedRange() {
         guard let exportResult,
               !exportResult.rows.isEmpty,
               !exportResult.columns.isEmpty else { return }
-        UIPasteboard.general.string = GridExportFormatter.tsv(
+        PlatformClipboard.copy(GridExportFormatter.tsv(
             result: exportResult,
             rowRange: exportResult.rows.indices.lowerBound...(exportResult.rows.indices.upperBound - 1),
             columnRange: exportResult.columns.indices.lowerBound...(exportResult.columns.indices.upperBound - 1)
-        )
+        ))
     }
 
     private func moveSelection(rowDelta: Int, columnDelta: Int) {
@@ -1566,6 +2375,8 @@ struct DataTabView: View {
         )
         if selectionAnchor == nil { selectionAnchor = current }
         selectionEnd = next
+        selectedRowIndices.removeAll()
+        rowSelectionAnchor = nil
         selectedRowIndex = next.row
     }
 
@@ -1582,24 +2393,35 @@ struct DataTabView: View {
                 visibleColumnIndices: visible,
                 mappingMode: pasteMappingMode
             )
-            pendingRecordMutation = plan.rows.count == 1
+            queuedRecordMutation = plan.rows.count == 1
                 ? .update(edits: plan.rows[0].edits, rowIndex: plan.rows[0].rowIndex)
                 : .batchUpdate(plan)
         } catch {
-            errorMessage = "Paste was not staged. No values were changed. \(error.localizedDescription)"
+            inputErrorMessage = "The paste was not staged and no values were changed. \(error.localizedDescription)"
         }
     }
 
     private func compareSelectedRows() {
-        guard let result, let selectedRectangle, selectedRectangle.rows.count == 2 else { return }
+        guard let result else { return }
+        let rowIndices: [Int]
+        let columnIndices: [Int]
+        if selectedRowIndices.count == 2 {
+            rowIndices = selectedRowIndices.sorted()
+            columnIndices = gridVisibleColumnIndices(for: result)
+        } else if let selectedRectangle, selectedRectangle.rows.count == 2 {
+            rowIndices = [selectedRectangle.rows.lowerBound, selectedRectangle.rows.upperBound]
+            columnIndices = selectedRectangle.columns
+        } else {
+            return
+        }
         do {
             let differences = try GridRowComparison.differences(
                 result: result,
-                leftRow: selectedRectangle.rows.lowerBound,
-                rightRow: selectedRectangle.rows.upperBound,
-                columnIndices: selectedRectangle.columns
+                leftRow: rowIndices[0],
+                rightRow: rowIndices[1],
+                columnIndices: columnIndices
             )
-            let header = "Loaded rows \(selectedRectangle.rows.lowerBound + 1) and \(selectedRectangle.rows.upperBound + 1)"
+            let header = "Loaded rows \(rowIndices[0] + 1) and \(rowIndices[1] + 1)"
             comparisonText = differences.isEmpty
                 ? "\(header) are identical in the selected columns."
                 : header + "\n\n" + differences.map {
@@ -1607,23 +2429,119 @@ struct DataTabView: View {
                 }.joined(separator: "\n\n")
         } catch {
             errorMessage = error.localizedDescription
+            errorIsQueryFailure = false
         }
     }
 
-    private func applyFilter() {
-        guard let column = columnMeta.first(where: { $0.name == filterColumnName }) else { return }
-        let filter = GridColumnFilter(
-            columnName: column.name,
-            columnType: column.type,
-            isUnsigned: column.isUnsigned,
-            operation: filterOperation,
-            value: filterValue
-        )
-        filters.removeAll { $0.columnName == column.name }
-        filters.append(filter)
+    private func beginFilterEditing() {
+        filterApplicationMode = .updateQuery
+        stagedQueryFilters = filters
+        stagedDisplayFilters = displayFilters
+        filterValue = ""
+        showFilterEditor = true
+    }
+
+    private func addStagedFilter() {
+        guard let filter = filterDraft, filter.validationError == nil else { return }
+        if filterApplicationMode == .updateQuery {
+            stagedQueryFilters.removeAll { $0.columnName == filter.columnName }
+            stagedQueryFilters.append(filter)
+        } else {
+            stagedDisplayFilters.removeAll { $0.columnName == filter.columnName }
+            stagedDisplayFilters.append(filter)
+        }
+        filterValue = ""
+    }
+
+    private func removeStagedFilter(_ filter: GridColumnFilter) {
+        if filterApplicationMode == .updateQuery {
+            stagedQueryFilters.removeAll { $0.id == filter.id }
+        } else {
+            stagedDisplayFilters.removeAll { $0.id == filter.id }
+        }
+    }
+
+    private func clearStagedFilters() {
+        if filterApplicationMode == .updateQuery {
+            stagedQueryFilters.removeAll()
+        } else {
+            stagedDisplayFilters.removeAll()
+        }
+    }
+
+    private func commitFilterEditing() {
+        let queryFiltersChanged = stagedQueryFilters != filters
+        filters = stagedQueryFilters
+        displayFilters = stagedDisplayFilters
+        selectionAnchor = nil
+        selectionEnd = nil
+        selectedRowIndex = nil
+        selectedRowIndices.removeAll()
+        rowSelectionAnchor = nil
+        showFilterEditor = false
+
+        guard queryFiltersChanged else { return }
         persistGridQueryState()
         currentPage = 1
         Task { await loadData() }
+    }
+
+    private func filterDescription(_ filter: GridColumnFilter) -> String {
+        filter.operation.requiresValue
+            ? "\(filter.operation.displayName) \(filter.value)"
+            : filter.operation.displayName
+    }
+
+    private func confirmPaste() {
+        guard let pendingPasteTSV else { return }
+        self.pendingPasteTSV = nil
+        stagePastedRange(pendingPasteTSV)
+        #if !os(macOS)
+        presentQueuedRecordMutation()
+        #endif
+    }
+
+    private func handleTransfer(_ object: Any?) {
+        guard let request = object as? GridTransferRequest,
+              request.scope == actionScope else { return }
+        switch request.operation {
+        case .importTSV:
+            showTSVImporter = true
+        case .export(let format):
+            exportFormat = format
+            showExporter = true
+        }
+    }
+
+    private func presentQueuedRecordMutation() {
+        guard let queuedRecordMutation else { return }
+        self.queuedRecordMutation = nil
+        pendingRecordMutation = queuedRecordMutation
+    }
+
+    private func commitPendingRecordMutation() {
+        let mutation = pendingRecordMutation
+        pendingRecordMutation = nil
+        Task {
+            switch mutation {
+            case .update(let edits, let rowIndex): await applyEdits(edits, rowIndex: rowIndex)
+            case .insert(let edits): await insertRow(edits)
+            case .batchUpdate(let plan): await applyBatchPaste(plan)
+            case .none: break
+            }
+        }
+    }
+
+    private func commitPageSizeDraft() {
+        let trimmed = pageSizeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = Int(trimmed), (1...10_000).contains(parsed) else {
+            pageSizeDraft = String(pageSize)
+            inputErrorMessage = "Rows per page must be a whole number from 1 through 10,000."
+            return
+        }
+        pageSizeDraft = String(parsed)
+        guard parsed != pageSize else { return }
+        pageSize = parsed
     }
 
     private func cycleSort(for columnName: String) {
@@ -1657,6 +2575,52 @@ struct DataTabView: View {
         persistGridQueryState()
         currentPage = 1
         Task { await loadData() }
+    }
+
+    private func beginColumnManagement() {
+        stagedColumnLayout = columnLayout
+        stagedColumnLayout.reconcile(columns: columnMeta)
+        columnSearchText = ""
+        showColumnManager = true
+    }
+
+    private func columnVisibilityBinding(_ columnName: String) -> Binding<Bool> {
+        Binding(
+            get: { !stagedColumnLayout.hidden.contains(columnName) },
+            set: { isVisible in
+                if isVisible {
+                    stagedColumnLayout.hidden.remove(columnName)
+                } else {
+                    stagedColumnLayout.hidden.insert(columnName)
+                    stagedColumnLayout.frozen.remove(columnName)
+                }
+            }
+        )
+    }
+
+    private func columnFrozenBinding(_ columnName: String) -> Binding<Bool> {
+        Binding(
+            get: { stagedColumnLayout.frozen.contains(columnName) },
+            set: { isFrozen in
+                if isFrozen {
+                    stagedColumnLayout.frozen.insert(columnName)
+                    stagedColumnLayout.hidden.remove(columnName)
+                } else {
+                    stagedColumnLayout.frozen.remove(columnName)
+                }
+            }
+        )
+    }
+
+    private func commitColumnManagement() {
+        stagedColumnLayout.reconcile(columns: columnMeta)
+        columnLayout = stagedColumnLayout
+        selectionAnchor = nil
+        selectionEnd = nil
+        selectedRowIndices.removeAll()
+        rowSelectionAnchor = nil
+        persistColumnLayout()
+        showColumnManager = false
     }
 
     private func toggleColumnVisibility(_ columnName: String) {
@@ -1798,9 +2762,12 @@ struct DataTabView: View {
         isAutoQuery = true
         isLoading = true
         errorMessage = nil
+        errorIsQueryFailure = false
         showEditor = false
         do {
             columnMeta = try await connection.columns(in: table, database: database)
+            let validColumnNames = Set(columnMeta.map(\.name))
+            displayFilters.removeAll { !validColumnNames.contains($0.columnName) }
             columnLayout.reconcile(columns: columnMeta)
             persistColumnLayout()
             var queryState = GridQueryState(
@@ -1885,6 +2852,7 @@ struct DataTabView: View {
             restoreSelection(identity: preservedIdentity, in: loadedResult)
         } catch {
             errorMessage = error.localizedDescription
+            errorIsQueryFailure = true
         }
         isLoading = false
     }
@@ -1906,6 +2874,8 @@ struct DataTabView: View {
             selectedRowIndex = nil
             selectionAnchor = nil
             selectionEnd = nil
+            selectedRowIndices.removeAll()
+            rowSelectionAnchor = nil
             return
         }
         let indexByName = Dictionary(uniqueKeysWithValues: result.columns.enumerated().map { ($0.element.name, $0.offset) })
@@ -1918,6 +2888,11 @@ struct DataTabView: View {
         if selectedRowIndex == nil {
             selectionAnchor = nil
             selectionEnd = nil
+            selectedRowIndices.removeAll()
+            rowSelectionAnchor = nil
+        } else if let selectedRowIndex {
+            selectedRowIndices = [selectedRowIndex]
+            rowSelectionAnchor = selectedRowIndex
         }
     }
 
@@ -1955,7 +2930,12 @@ struct DataTabView: View {
     private func execute(_ statements: [SQLStatement]) async {
         isLoading = true
         errorMessage = nil
+        errorIsQueryFailure = false
         selectedRowIndex = nil
+        selectedRowIndices.removeAll()
+        rowSelectionAnchor = nil
+        selectionAnchor = nil
+        selectionEnd = nil
         showEditor = false
         do {
             var lastResult: QueryResult?
@@ -1980,6 +2960,7 @@ struct DataTabView: View {
             result = lastResult
         } catch {
             errorMessage = error.localizedDescription
+            errorIsQueryFailure = true
         }
         isLoading = false
     }
@@ -1987,6 +2968,7 @@ struct DataTabView: View {
     // MARK: - Auto-Repeat
 
     private func startAutoRepeat() {
+        guard isWorkspaceActive else { return }
         stopAutoRepeat()
         isAutoRepeating = true
         autoRepeatTask = Task {
@@ -2013,6 +2995,7 @@ struct DataTabView: View {
         let pkColumns = cols.filter(\.isPrimaryKey)
         guard !pkColumns.isEmpty else {
             errorMessage = "Cannot update: table has no primary key"
+            errorIsQueryFailure = false
             return
         }
 
@@ -2082,6 +3065,7 @@ struct DataTabView: View {
                 affectedRows: nil
             ))
             errorMessage = "Update failed (\(outcomeDescription(outcome))): \(error.localizedDescription)"
+            errorIsQueryFailure = false
         }
     }
 
@@ -2092,6 +3076,7 @@ struct DataTabView: View {
         let columns = columnMeta.isEmpty ? result.columns : columnMeta
         guard columns.contains(where: \.isPrimaryKey), !plan.rows.isEmpty else {
             errorMessage = "Batch paste was not started because the table has no primary key or the plan is empty."
+            errorIsQueryFailure = false
             return
         }
 
@@ -2100,6 +3085,7 @@ struct DataTabView: View {
         var affectedRows: UInt64 = 0
         isLoading = true
         errorMessage = nil
+        errorIsQueryFailure = false
         do {
             try await connection.beginTransaction()
             transactionStarted = true
@@ -2170,6 +3156,7 @@ struct DataTabView: View {
                 affectedRows: affectedRows
             ))
             errorMessage = "Batch paste failed after \(affectedRows) row(s) (\(outcomeDescription(outcome))): \(error.localizedDescription)"
+            errorIsQueryFailure = false
             isLoading = false
         }
     }
@@ -2181,6 +3168,7 @@ struct DataTabView: View {
         guard let connection = session?.connection else { return }
         guard !cols.isEmpty else {
             errorMessage = "Cannot insert: no column metadata"
+            errorIsQueryFailure = false
             return
         }
 
@@ -2249,6 +3237,7 @@ struct DataTabView: View {
                 affectedRows: nil
             ))
             errorMessage = "Insert failed (\(outcomeDescription(outcome))): \(error.localizedDescription)"
+            errorIsQueryFailure = false
         }
     }
 
@@ -2271,18 +3260,618 @@ struct DataTabView: View {
     }
 }
 
+// MARK: - Table Schema Editing
+
+enum TableSchemaEditError: LocalizedError, Equatable {
+    case invalidIdentifier(String)
+    case invalidType(String)
+    case unsupported(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidIdentifier(let value):
+            "‘\(value)’ is not a valid database identifier."
+        case .invalidType(let value):
+            "‘\(value)’ is not a safe SQL type expression."
+        case .unsupported(let message):
+            message
+        }
+    }
+}
+
+enum TableColumnDefaultMode: String, CaseIterable, Identifiable {
+    case keep = "Keep Current"
+    case none = "No Default"
+    case null = "NULL"
+    case literal = "Literal Value"
+    case currentTimestamp = "Current Timestamp"
+
+    var id: Self { self }
+}
+
+enum TableSchemaSQL {
+    static func addColumn(
+        database: String,
+        table: String,
+        name: String,
+        type: String,
+        nullable: Bool,
+        quoteCharacter: Character
+    ) throws -> String {
+        let column = try identifier(name, quoteCharacter: quoteCharacter)
+        let sqlType = try validatedType(type)
+        let nullability = nullable ? "NULL" : "NOT NULL"
+        return "ALTER TABLE \(try object(database, table, quoteCharacter: quoteCharacter)) ADD COLUMN \(column) \(sqlType) \(nullability)"
+    }
+
+    static func renameColumn(
+        database: String,
+        table: String,
+        oldName: String,
+        newName: String,
+        quoteCharacter: Character
+    ) throws -> String {
+        "ALTER TABLE \(try object(database, table, quoteCharacter: quoteCharacter)) RENAME COLUMN \(try identifier(oldName, quoteCharacter: quoteCharacter)) TO \(try identifier(newName, quoteCharacter: quoteCharacter))"
+    }
+
+    static func dropColumn(
+        database: String,
+        table: String,
+        name: String,
+        quoteCharacter: Character
+    ) throws -> String {
+        "ALTER TABLE \(try object(database, table, quoteCharacter: quoteCharacter)) DROP COLUMN \(try identifier(name, quoteCharacter: quoteCharacter))"
+    }
+
+    static func alterColumn(
+        database: String,
+        table: String,
+        original: ColumnInfo,
+        name: String,
+        type: String,
+        nullable: Bool,
+        unsigned: Bool,
+        defaultMode: TableColumnDefaultMode,
+        defaultLiteral: String,
+        dialect: DatabaseDialect,
+        quoteCharacter: Character
+    ) throws -> [String] {
+        let target = try object(database, table, quoteCharacter: quoteCharacter)
+        let oldName = try identifier(original.name, quoteCharacter: quoteCharacter)
+        let newName = try identifier(name, quoteCharacter: quoteCharacter)
+        let sqlType = try validatedType(type)
+        let normalizedOriginalType = original.type.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedNewType = sqlType.trimmingCharacters(in: .whitespacesAndNewlines)
+        let renamed = name.trimmingCharacters(in: .whitespacesAndNewlines) != original.name
+        let definitionChanged = normalizedNewType.caseInsensitiveCompare(normalizedOriginalType) != .orderedSame
+            || nullable != original.isNullable
+            || unsigned != original.isUnsigned
+            || defaultMode != .keep
+
+        guard renamed || definitionChanged else {
+            throw TableSchemaEditError.unsupported("Change at least one column setting before reviewing SQL.")
+        }
+        if original.isGenerated, definitionChanged {
+            throw TableSchemaEditError.unsupported(
+                "Generated expressions are managed in DDL. This editor can safely rename the column, then open the table definition in SQL for expression changes."
+            )
+        }
+        if nullable, original.isPrimaryKey {
+            throw TableSchemaEditError.unsupported(
+                "Primary-key columns cannot allow NULL values. Change the primary key in Indexes before changing nullability."
+            )
+        }
+        if unsigned, dialect != .mysql {
+            throw TableSchemaEditError.unsupported("Unsigned numeric columns are supported only by MySQL.")
+        }
+
+        switch dialect {
+        case .sqlite:
+            guard !definitionChanged else {
+                throw TableSchemaEditError.unsupported(
+                    "SQLite requires a table-rebuild migration to change a column type, nullability, or default. Rename-only changes can be applied here; open the DDL in SQL for a reviewed rebuild migration."
+                )
+            }
+            return ["ALTER TABLE \(target) RENAME COLUMN \(oldName) TO \(newName)"]
+
+        case .mysql:
+            if !definitionChanged {
+                return ["ALTER TABLE \(target) RENAME COLUMN \(oldName) TO \(newName)"]
+            }
+            let nullability = nullable ? "NULL" : "NOT NULL"
+            let unsignedClause = unsigned ? " UNSIGNED" : ""
+            let defaultClause = try mysqlDefaultClause(
+                mode: defaultMode,
+                literal: defaultLiteral,
+                original: original,
+                newType: sqlType,
+                nullable: nullable
+            )
+            return [
+                "ALTER TABLE \(target) CHANGE COLUMN \(oldName) \(newName) \(sqlType)\(unsignedClause) \(nullability)\(defaultClause)"
+            ]
+
+        case .postgresql:
+            var statements: [String] = []
+            var currentName = oldName
+            if renamed {
+                statements.append("ALTER TABLE \(target) RENAME COLUMN \(oldName) TO \(newName)")
+                currentName = newName
+            }
+            if normalizedNewType.caseInsensitiveCompare(normalizedOriginalType) != .orderedSame {
+                statements.append("ALTER TABLE \(target) ALTER COLUMN \(currentName) TYPE \(sqlType)")
+            }
+            if nullable != original.isNullable {
+                let action = nullable ? "DROP NOT NULL" : "SET NOT NULL"
+                statements.append("ALTER TABLE \(target) ALTER COLUMN \(currentName) \(action)")
+            }
+            if defaultMode != .keep {
+                let action = try postgresDefaultAction(
+                    mode: defaultMode,
+                    literal: defaultLiteral,
+                    type: sqlType,
+                    nullable: nullable
+                )
+                statements.append("ALTER TABLE \(target) ALTER COLUMN \(currentName) \(action)")
+            }
+            return statements
+        }
+    }
+
+    static func createIndex(
+        database: String,
+        table: String,
+        name: String,
+        columns: [String],
+        unique: Bool,
+        dialect: DatabaseDialect,
+        quoteCharacter: Character
+    ) throws -> String {
+        guard !columns.isEmpty else { throw TableSchemaEditError.invalidIdentifier("No columns selected") }
+        let quotedColumns = try columns.map { try identifier($0, quoteCharacter: quoteCharacter) }
+        let index = try identifier(name, quoteCharacter: quoteCharacter)
+        let target: String
+        let indexTarget: String
+        if dialect == .sqlite {
+            target = try identifier(table, quoteCharacter: quoteCharacter)
+            indexTarget = "\(try identifier(database, quoteCharacter: quoteCharacter)).\(index)"
+        } else {
+            target = try object(database, table, quoteCharacter: quoteCharacter)
+            indexTarget = index
+        }
+        let uniqueness = unique ? "UNIQUE " : ""
+        return "CREATE \(uniqueness)INDEX \(indexTarget) ON \(target) (\(quotedColumns.joined(separator: ", ")))"
+    }
+
+    static func dropIndex(
+        database: String,
+        table: String,
+        name: String,
+        dialect: DatabaseDialect,
+        quoteCharacter: Character
+    ) throws -> String {
+        let index = try identifier(name, quoteCharacter: quoteCharacter)
+        switch dialect {
+        case .mysql:
+            return "DROP INDEX \(index) ON \(try object(database, table, quoteCharacter: quoteCharacter))"
+        case .postgresql, .sqlite:
+            return "DROP INDEX \(try identifier(database, quoteCharacter: quoteCharacter)).\(index)"
+        }
+    }
+
+    static func addForeignKey(
+        database: String,
+        table: String,
+        name: String,
+        column: String,
+        referencedTable: String,
+        referencedColumn: String,
+        dialect: DatabaseDialect,
+        quoteCharacter: Character
+    ) throws -> String {
+        guard dialect != .sqlite else {
+            throw TableSchemaEditError.unsupported("SQLite requires a table-rebuild migration to add a foreign key.")
+        }
+        return "ALTER TABLE \(try object(database, table, quoteCharacter: quoteCharacter)) ADD CONSTRAINT \(try identifier(name, quoteCharacter: quoteCharacter)) FOREIGN KEY (\(try identifier(column, quoteCharacter: quoteCharacter))) REFERENCES \(try object(database, referencedTable, quoteCharacter: quoteCharacter)) (\(try identifier(referencedColumn, quoteCharacter: quoteCharacter)))"
+    }
+
+    static func dropForeignKey(
+        database: String,
+        table: String,
+        name: String,
+        dialect: DatabaseDialect,
+        quoteCharacter: Character
+    ) throws -> String {
+        guard dialect != .sqlite else {
+            throw TableSchemaEditError.unsupported("SQLite requires a table-rebuild migration to remove a foreign key.")
+        }
+        let action = dialect == .mysql ? "DROP FOREIGN KEY" : "DROP CONSTRAINT"
+        return "ALTER TABLE \(try object(database, table, quoteCharacter: quoteCharacter)) \(action) \(try identifier(name, quoteCharacter: quoteCharacter))"
+    }
+
+    private static func mysqlDefaultClause(
+        mode: TableColumnDefaultMode,
+        literal: String,
+        original: ColumnInfo,
+        newType: String,
+        nullable: Bool
+    ) throws -> String {
+        switch mode {
+        case .keep:
+            guard let existing = original.defaultValue else { return "" }
+            return " DEFAULT \(try existingDefaultExpression(existing, type: original.type))"
+        case .none:
+            return ""
+        case .null:
+            guard nullable else {
+                throw TableSchemaEditError.unsupported("A required column cannot use NULL as its default.")
+            }
+            return " DEFAULT NULL"
+        case .literal:
+            return " DEFAULT \(try literalExpression(literal, type: newType))"
+        case .currentTimestamp:
+            guard isTemporalType(newType) else {
+                throw TableSchemaEditError.unsupported("CURRENT_TIMESTAMP requires a temporal column type.")
+            }
+            return " DEFAULT CURRENT_TIMESTAMP"
+        }
+    }
+
+    private static func postgresDefaultAction(
+        mode: TableColumnDefaultMode,
+        literal: String,
+        type: String,
+        nullable: Bool
+    ) throws -> String {
+        switch mode {
+        case .keep:
+            return ""
+        case .none:
+            return "DROP DEFAULT"
+        case .null:
+            guard nullable else {
+                throw TableSchemaEditError.unsupported("A required column cannot use NULL as its default.")
+            }
+            return "SET DEFAULT NULL"
+        case .literal:
+            return "SET DEFAULT \(try literalExpression(literal, type: type))"
+        case .currentTimestamp:
+            guard isTemporalType(type) else {
+                throw TableSchemaEditError.unsupported("CURRENT_TIMESTAMP requires a temporal column type.")
+            }
+            return "SET DEFAULT CURRENT_TIMESTAMP"
+        }
+    }
+
+    private static func existingDefaultExpression(_ value: String, type: String) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let upper = trimmed.uppercased()
+        if upper == "NULL"
+            || (upper.hasPrefix("CURRENT_TIMESTAMP") && isTemporalType(type))
+            || (trimmed.hasPrefix("(") && trimmed.hasSuffix(")")) {
+            return trimmed
+        }
+        return try literalExpression(trimmed, type: type)
+    }
+
+    private static func literalExpression(_ value: String, type: String) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw TableSchemaEditError.unsupported("Enter a default literal before reviewing SQL.")
+        }
+        if isNumericType(type) {
+            guard Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX")) != nil else {
+                throw TableSchemaEditError.unsupported("The default must be a valid number for \(type).")
+            }
+            return trimmed
+        }
+        if isBooleanType(type) {
+            switch trimmed.lowercased() {
+            case "true", "1": return "TRUE"
+            case "false", "0": return "FALSE"
+            default:
+                throw TableSchemaEditError.unsupported("The default must be true, false, 1, or 0 for \(type).")
+            }
+        }
+        return "'\(trimmed.replacingOccurrences(of: "'", with: "''"))'"
+    }
+
+    private static func baseType(_ type: String) -> String {
+        type.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(maxSplits: 1, whereSeparator: { $0 == "(" || $0.isWhitespace })
+            .first
+            .map(String.init)?
+            .lowercased() ?? ""
+    }
+
+    private static func isNumericType(_ type: String) -> Bool {
+        ["tinyint", "smallint", "mediumint", "int", "integer", "bigint", "decimal", "numeric", "float", "double", "real"]
+            .contains(baseType(type))
+    }
+
+    private static func isBooleanType(_ type: String) -> Bool {
+        ["bool", "boolean"].contains(baseType(type))
+    }
+
+    private static func isTemporalType(_ type: String) -> Bool {
+        ["timestamp", "datetime", "date", "time"].contains(baseType(type))
+    }
+
+    private static func object(
+        _ database: String,
+        _ table: String,
+        quoteCharacter: Character
+    ) throws -> String {
+        "\(try identifier(database, quoteCharacter: quoteCharacter)).\(try identifier(table, quoteCharacter: quoteCharacter))"
+    }
+
+    private static func identifier(_ value: String, quoteCharacter: Character) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.utf8.count <= 256,
+              !trimmed.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw TableSchemaEditError.invalidIdentifier(value)
+        }
+        let quote = String(quoteCharacter)
+        return "\(quote)\(trimmed.replacingOccurrences(of: quote, with: quote + quote))\(quote)"
+    }
+
+    private static func validatedType(_ value: String) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.unicodeScalars.first,
+              CharacterSet.letters.contains(first) || first == "\"",
+              trimmed.utf8.count <= 2_048,
+              !trimmed.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw TableSchemaEditError.invalidType(value)
+        }
+
+        let characters = Array(trimmed)
+        var parenthesisDepth = 0
+        var bracketDepth = 0
+        var quote: Character?
+        var topLevel = ""
+        var index = 0
+
+        while index < characters.count {
+            let character = characters[index]
+            if let activeQuote = quote {
+                if character == "\\", activeQuote == "'", index + 1 < characters.count {
+                    index += 2
+                    continue
+                }
+                if character == activeQuote {
+                    if index + 1 < characters.count, characters[index + 1] == activeQuote {
+                        index += 2
+                        continue
+                    }
+                    quote = nil
+                }
+                index += 1
+                continue
+            }
+
+            if character == "'" {
+                guard parenthesisDepth > 0 else { throw TableSchemaEditError.invalidType(value) }
+                quote = character
+            } else if character == "\"" {
+                quote = character
+            } else if character == "(" {
+                parenthesisDepth += 1
+                if parenthesisDepth == 1 { topLevel.append(" ") }
+            } else if character == ")" {
+                parenthesisDepth -= 1
+                guard parenthesisDepth >= 0 else { throw TableSchemaEditError.invalidType(value) }
+            } else if character == "[" {
+                guard parenthesisDepth == 0 else { throw TableSchemaEditError.invalidType(value) }
+                bracketDepth += 1
+            } else if character == "]" {
+                bracketDepth -= 1
+                guard parenthesisDepth == 0, bracketDepth >= 0 else {
+                    throw TableSchemaEditError.invalidType(value)
+                }
+            } else if character == "," {
+                guard parenthesisDepth > 0 else { throw TableSchemaEditError.invalidType(value) }
+            } else {
+                let scalarIsAllowed = character.unicodeScalars.allSatisfy {
+                    CharacterSet.alphanumerics.contains($0)
+                        || CharacterSet.whitespaces.contains($0)
+                        || $0 == "_"
+                        || $0 == "."
+                }
+                guard scalarIsAllowed else { throw TableSchemaEditError.invalidType(value) }
+                if parenthesisDepth == 0 { topLevel.append(character) }
+            }
+            index += 1
+        }
+
+        guard quote == nil, parenthesisDepth == 0, bracketDepth == 0 else {
+            throw TableSchemaEditError.invalidType(value)
+        }
+
+        let constraintKeywords: Set<String> = [
+            "ADD", "ALTER", "AUTO_INCREMENT", "CHECK", "COLLATE", "COLUMN", "COMMENT",
+            "CONSTRAINT", "DEFAULT", "DROP", "GENERATED", "KEY", "NOT", "NULL",
+            "PRIMARY", "REFERENCES", "UNIQUE", "UNSIGNED"
+        ]
+        let topLevelWords = topLevel
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" })
+            .map { $0.uppercased() }
+        guard !topLevelWords.contains(where: constraintKeywords.contains) else {
+            throw TableSchemaEditError.invalidType(value)
+        }
+        return trimmed
+    }
+}
+
+private struct TableSchemaChange: Identifiable {
+    let id = UUID()
+    let title: String
+    let operation: String
+    let statements: [String]
+    let destructive: Bool
+
+    var sql: String { statements.joined(separator: ";\n") }
+
+    init(title: String, operation: String, sql: String, destructive: Bool) {
+        self.title = title
+        self.operation = operation
+        self.statements = [sql]
+        self.destructive = destructive
+    }
+
+    init(title: String, operation: String, statements: [String], destructive: Bool) {
+        self.title = title
+        self.operation = operation
+        self.statements = statements
+        self.destructive = destructive
+    }
+}
+
+private struct TableSchemaChangeFailure: Identifiable {
+    let id = UUID()
+    let error: String
+    let sql: String
+}
+
+private struct TableSchemaMutationFailure: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+private struct TableSchemaChangeSheet: View {
+    let change: TableSchemaChange
+    let engineName: String
+    let onApply: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                Label(
+                    change.destructive ? "This change can remove stored data." : "Review the generated SQL before applying it.",
+                    systemImage: change.destructive ? "exclamationmark.triangle.fill" : "checkmark.shield"
+                )
+                .foregroundStyle(change.destructive ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+
+                Text(change.sql)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+
+                Text("\(engineName) controls DDL transaction behavior. glassdb will refresh this tool after the server accepts the change.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+            .navigationTitle(change.title)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply", role: change.destructive ? .destructive : nil) {
+                        dismiss()
+                        onApply()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .frame(minWidth: 520, minHeight: 320)
+    }
+}
+
+@MainActor
+private func applyTableSchemaChange(
+    _ change: TableSchemaChange,
+    session: DatabaseSession,
+    database: String,
+    table: String
+) async throws {
+    guard let connection = session.connection else {
+        throw TableSchemaEditError.unsupported("The database session is disconnected.")
+    }
+    var transactionStarted = false
+    var outcome: MutationOutcome = .serverStateUnknown
+    do {
+        if change.statements.count > 1, connection.capabilities.contains(.transactions) {
+            try await connection.beginTransaction()
+            transactionStarted = true
+        }
+        var affectedRows: UInt64?
+        for statement in change.statements {
+            let result = try await connection.execute(statement, parameters: [])
+            if let serverError = result.error {
+                throw TableSchemaMutationFailure(message: serverError)
+            }
+            affectedRows = result.affectedRows ?? affectedRows
+        }
+        if transactionStarted {
+            try await connection.commitTransaction()
+        }
+        outcome = .committed
+        MutationAuditStore.append(MutationAuditRecord(
+            connectionID: session.connectionConfig.id,
+            database: database,
+            object: table,
+            normalizedOperation: change.operation,
+            source: "table-tools",
+            outcome: .committed,
+            affectedRows: affectedRows
+        ))
+    } catch {
+        if transactionStarted {
+            do {
+                try await connection.rollbackTransaction()
+                outcome = .rolledBack
+            } catch {
+                outcome = .serverStateUnknown
+            }
+        }
+        MutationAuditStore.append(MutationAuditRecord(
+            connectionID: session.connectionConfig.id,
+            database: database,
+            object: table,
+            normalizedOperation: change.operation,
+            source: "table-tools",
+            outcome: outcome,
+            affectedRows: nil
+        ))
+        throw error
+    }
+}
+
 // MARK: - Structure Tab
 
 struct StructureTabView: View {
     let sessionID: UUID
     let database: String
     let table: String
+    var onOpenSQL: (() -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
-    @Environment(SettingsManager.self) private var settingsManager
     @State private var columns: [ColumnInfo] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var showingAddColumn = false
+    @State private var newColumnName = ""
+    @State private var newColumnType = "VARCHAR(255)"
+    @State private var newColumnNullable = true
+    @State private var columnDraftError: String?
+    @State private var editingColumn: ColumnInfo?
+    @State private var editedColumnName = ""
+    @State private var editedColumnType = ""
+    @State private var editedColumnNullable = true
+    @State private var editedColumnUnsigned = false
+    @State private var editedDefaultMode: TableColumnDefaultMode = .keep
+    @State private var editedDefaultLiteral = ""
+    @State private var pendingChange: TableSchemaChange?
+    @State private var changeFailure: TableSchemaChangeFailure?
+    @State private var isApplyingChange = false
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
@@ -2290,72 +3879,251 @@ struct StructureTabView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if session?.connection?.capabilities.contains(.createTableDefinition) == false {
-                ContentUnavailableView(
-                    "DDL Unavailable",
-                    systemImage: "doc.text.magnifyingglass",
-                    description: Text("This database engine does not expose complete CREATE TABLE definitions.")
-                )
-            } else if isLoading {
+            toolHeader
+            Divider()
+
+            if isLoading {
                 ProgressView("Loading structure...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = errorMessage {
-                ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(error))
+                ContentUnavailableView("Structure Unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
             } else if columns.isEmpty {
                 ContentUnavailableView("No Columns", systemImage: "list.bullet.rectangle", description: Text("Table has no columns."))
             } else {
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
-                        Section {
-                            ForEach(columns) { col in
-                                HStack(spacing: 0) {
-                                    dataCell(col.name, monospaced: true)
-                                    dataCell(col.type)
-                                    dataCell(col.isNullable ? "YES" : "NO")
-                                    dataCell(col.isPrimaryKey ? "PRI" : "")
-                                    dataCell("\(col.ordinalPosition)")
-                                    Spacer(minLength: 0)
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(columns) { column in
+                            HStack(spacing: 14) {
+                                Image(systemName: column.isPrimaryKey ? "key.fill" : "rectangle.split.3x1")
+                                    .font(.title3)
+                                    .foregroundStyle(column.isPrimaryKey ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                                    .frame(width: 28)
+
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack(spacing: 8) {
+                                        Text(column.name)
+                                            .font(.system(.body, design: .monospaced, weight: .semibold))
+                                        if column.isPrimaryKey {
+                                            Text("PRIMARY KEY")
+                                                .font(.caption2.weight(.semibold))
+                                                .foregroundStyle(.orange)
+                                        }
+                                        if column.isGenerated {
+                                            Text("GENERATED")
+                                                .font(.caption2.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    HStack(spacing: 10) {
+                                        Text(column.type)
+                                            .font(.callout)
+                                        Text(column.isNullable ? "Nullable" : "Required")
+                                        if let defaultValue = column.defaultValue {
+                                            Text("Default \(defaultValue)")
+                                        }
+                                        Text("Position \(column.ordinalPosition)")
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                                 }
+
+                                Spacer(minLength: 12)
+
+                                Menu {
+                                    Button("Edit Column…", systemImage: "pencil") {
+                                        beginEditing(column)
+                                    }
+                                    Divider()
+                                    Button("Drop Column…", systemImage: "trash", role: .destructive) {
+                                        prepareDrop(column)
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                }
+                                .menuStyle(.borderlessButton)
+                                .help("Column actions for \(column.name)")
                             }
-                        } header: {
-                            HStack(spacing: 0) {
-                                headerCell("Name")
-                                headerCell("Type")
-                                headerCell("Nullable")
-                                headerCell("Key")
-                                headerCell("Position")
-                                Spacer(minLength: 0)
-                            }
-                            .background(.ultraThinMaterial)
+                            .padding(14)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                            .contentShape(Rectangle())
+                            .onTapGesture { beginEditing(column) }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityHint("Opens the column definition editor")
                         }
                     }
-                    .padding(16)
+                    .padding(20)
                 }
-                .scrollIndicators(.visible)
-                .scrollInputBehavior(.enabled, for: .look)
+                .databaseLookScrollEnabled()
+            }
+        }
+        .overlay {
+            if isApplyingChange {
+                ProgressView("Applying schema change…")
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
         .task(id: "\(database).\(table)") {
             await loadStructure()
         }
+        .sheet(isPresented: $showingAddColumn) { addColumnSheet }
+        .sheet(item: $editingColumn) { column in editColumnSheet(column) }
+        .sheet(item: $pendingChange) { change in
+            TableSchemaChangeSheet(change: change, engineName: session?.connection?.engineName ?? "Database") {
+                Task { await apply(change) }
+            }
+        }
+        .sheet(item: $changeFailure) { failure in
+            QueryErrorCard(
+                error: failure.error,
+                query: failure.sql,
+                schemaContext: schemaContext,
+                aiAssistant: session?.aiAssistant,
+                summary: "The database rejected this schema change.",
+                offersNotifications: false,
+                offersAISuggestion: true,
+                onUseSuggestedSQL: { suggestedSQL in
+                    NotificationCenter.default.post(
+                        name: .glassdbOpenSQLDraft,
+                        object: SQLDraftRequest(sessionID: sessionID, sql: suggestedSQL)
+                    )
+                    changeFailure = nil
+                    onOpenSQL?()
+                },
+                onDismiss: { changeFailure = nil }
+            )
+            .padding(24)
+            .frame(minWidth: 580, minHeight: 360)
+        }
     }
 
-    private func headerCell(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: settingsManager.dataGridFontSize, weight: .bold, design: .monospaced))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(minWidth: 100, alignment: .leading)
-            .background(.ultraThinMaterial)
-            .accessibilityAddTraits(.isHeader)
+    private var toolHeader: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Columns").font(.headline)
+                Text("\(columns.count) column\(columns.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Refresh", systemImage: "arrow.clockwise") { Task { await loadStructure() } }
+                .labelStyle(.iconOnly)
+                .help("Reload columns")
+            Button("Add Column", systemImage: "plus") {
+                newColumnName = ""
+                newColumnType = "VARCHAR(255)"
+                newColumnNullable = true
+                columnDraftError = nil
+                showingAddColumn = true
+            }
+            .buttonStyle(.borderedProminent)
+            .help("Add a column")
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
     }
 
-    private func dataCell(_ text: String, monospaced: Bool = false) -> some View {
-        Text(text)
-            .font(.system(size: settingsManager.dataGridFontSize, design: monospaced ? .monospaced : .default))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(minWidth: 100, alignment: .leading)
+    private var addColumnSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Column") {
+                    TextField("Name", text: $newColumnName)
+                    TextField("SQL type", text: $newColumnType)
+                        .font(.system(.body, design: .monospaced))
+                    Toggle("Allow NULL values", isOn: $newColumnNullable)
+                }
+                Section {
+                    Text("Types accept conservative SQL expressions such as VARCHAR(255), BIGINT, DECIMAL(10, 2), or TIMESTAMP WITH TIME ZONE.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let columnDraftError {
+                        Label(columnDraftError, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Add Column")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingAddColumn = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Review") { prepareAddColumn() }
+                        .disabled(newColumnName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newColumnType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .frame(minWidth: 480, minHeight: 300)
+    }
+
+    private func editColumnSheet(_ column: ColumnInfo) -> some View {
+        NavigationStack {
+            Form {
+                Section("Definition") {
+                    TextField("Name", text: $editedColumnName)
+                    TextField("SQL type", text: $editedColumnType)
+                        .font(.system(.body, design: .monospaced))
+                        .disabled(column.isGenerated)
+                        .onChange(of: editedColumnType) { _, _ in
+                            if !editedTypeSupportsUnsigned {
+                                editedColumnUnsigned = false
+                            }
+                        }
+                    Toggle("Allow NULL values", isOn: $editedColumnNullable)
+                        .disabled(column.isPrimaryKey || column.isGenerated)
+                    if session?.connection?.dialect == .mysql {
+                        Toggle("Unsigned numeric values", isOn: $editedColumnUnsigned)
+                            .disabled(column.isGenerated || !editedTypeSupportsUnsigned)
+                    }
+                }
+
+                Section("Default") {
+                    Picker("Behavior", selection: $editedDefaultMode) {
+                        ForEach(TableColumnDefaultMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .disabled(column.isGenerated)
+
+                    if editedDefaultMode == .literal {
+                        TextField("Literal value", text: $editedDefaultLiteral)
+                            .font(.system(.body, design: .monospaced))
+                    }
+
+                    LabeledContent("Current default", value: column.defaultValue ?? "None")
+                        .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    if column.isPrimaryKey {
+                        Label("Primary-key membership is managed in Indexes. Primary keys remain required here.", systemImage: "key")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if column.isGenerated {
+                        Label("Generated expressions are protected. Rename here, or open DDL in SQL for expression changes.", systemImage: "curlybraces")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let columnDraftError {
+                        Label(columnDraftError, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Edit \(column.name)")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { editingColumn = nil } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Review") { prepareColumnEdit(column) }
+                        .disabled(!columnDraftHasChanges || editedColumnName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || editedColumnType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .frame(minWidth: 520, minHeight: 470)
     }
 
     private func loadStructure() async {
@@ -2369,6 +4137,121 @@ struct StructureTabView: View {
         }
         isLoading = false
     }
+
+    private func prepareAddColumn() {
+        guard let connection = session?.connection else { return }
+        do {
+            let sql = try TableSchemaSQL.addColumn(
+                database: database,
+                table: table,
+                name: newColumnName,
+                type: newColumnType,
+                nullable: newColumnNullable,
+                quoteCharacter: connection.identifierQuoteCharacter
+            )
+            showingAddColumn = false
+            columnDraftError = nil
+            pendingChange = TableSchemaChange(title: "Add Column?", operation: "add-column", sql: sql, destructive: false)
+        } catch { columnDraftError = error.localizedDescription }
+    }
+
+    private func beginEditing(_ column: ColumnInfo) {
+        editedColumnName = column.name
+        editedColumnType = column.type
+        editedColumnNullable = column.isPrimaryKey ? false : column.isNullable
+        editedColumnUnsigned = column.isUnsigned
+        editedDefaultMode = .keep
+        editedDefaultLiteral = column.defaultValue ?? ""
+        columnDraftError = nil
+        editingColumn = column
+    }
+
+    private var columnDraftHasChanges: Bool {
+        guard let column = editingColumn else { return false }
+        return editedColumnName.trimmingCharacters(in: .whitespacesAndNewlines) != column.name
+            || editedColumnType.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(column.type) != .orderedSame
+            || editedColumnNullable != column.isNullable
+            || editedColumnUnsigned != column.isUnsigned
+            || editedDefaultMode != .keep
+    }
+
+    private var editedTypeSupportsUnsigned: Bool {
+        let base = editedColumnType
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0 == "(" || $0.isWhitespace })
+            .first?
+            .lowercased() ?? ""
+        return ["tinyint", "smallint", "mediumint", "int", "integer", "bigint", "decimal", "numeric", "float", "double", "real"].contains(base)
+    }
+
+    private var schemaContext: SchemaContext {
+        SchemaContext(
+            databaseName: database,
+            tables: [
+                SchemaContext.TableInfo(
+                    name: table,
+                    columns: columns.map { SchemaContext.ColumnInfo(name: $0.name, type: $0.type) }
+                )
+            ]
+        )
+    }
+
+    private func prepareColumnEdit(_ column: ColumnInfo) {
+        guard let connection = session?.connection else { return }
+        do {
+            let statements = try TableSchemaSQL.alterColumn(
+                database: database,
+                table: table,
+                original: column,
+                name: editedColumnName,
+                type: editedColumnType,
+                nullable: editedColumnNullable,
+                unsigned: editedColumnUnsigned,
+                defaultMode: editedDefaultMode,
+                defaultLiteral: editedDefaultLiteral,
+                dialect: connection.dialect,
+                quoteCharacter: connection.identifierQuoteCharacter
+            )
+            let canRemoveData = editedColumnType.caseInsensitiveCompare(column.type) != .orderedSame
+                || (column.isNullable && !editedColumnNullable)
+            editingColumn = nil
+            columnDraftError = nil
+            pendingChange = TableSchemaChange(
+                title: "Apply Column Changes?",
+                operation: "alter-column",
+                statements: statements,
+                destructive: canRemoveData
+            )
+        } catch { columnDraftError = error.localizedDescription }
+    }
+
+    private func prepareDrop(_ column: ColumnInfo) {
+        guard let connection = session?.connection else { return }
+        do {
+            pendingChange = TableSchemaChange(
+                title: "Drop ‘\(column.name)’?",
+                operation: "drop-column",
+                sql: try TableSchemaSQL.dropColumn(database: database, table: table, name: column.name, quoteCharacter: connection.identifierQuoteCharacter),
+                destructive: true
+            )
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func apply(_ change: TableSchemaChange) async {
+        guard let session else { return }
+        isApplyingChange = true
+        errorMessage = nil
+        do {
+            try await applyTableSchemaChange(change, session: session, database: database, table: table)
+            await loadStructure()
+        } catch {
+            changeFailure = TableSchemaChangeFailure(
+                error: "The server rejected the schema change. Refresh before retrying if its state may have changed. \(error.localizedDescription)",
+                sql: change.sql
+            )
+        }
+        isApplyingChange = false
+    }
 }
 
 // MARK: - DDL Tab
@@ -2377,8 +4260,10 @@ struct DDLTabView: View {
     let sessionID: UUID
     let database: String
     let table: String
+    var onOpenSQL: (() -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
+    @Environment(SettingsManager.self) private var settingsManager
     @State private var ddl: String?
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -2389,33 +4274,58 @@ struct DDLTabView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if isLoading {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Table Definition").font(.headline)
+                    Text("Server-generated CREATE TABLE SQL")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await loadDDL() } }
+                    .labelStyle(.iconOnly)
+                    .help("Reload the table definition")
+                if let ddl {
+                    Button("Copy", systemImage: "doc.on.doc") { PlatformClipboard.copy(ddl) }
+                        .help("Copy the table definition")
+                    Button("Open as SQL", systemImage: "arrow.up.doc") {
+                        NotificationCenter.default.post(
+                            name: .glassdbOpenSQLDraft,
+                            object: SQLDraftRequest(sessionID: sessionID, sql: ddl)
+                        )
+                        onOpenSQL?()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .help("Open this definition in a new SQL tab for review or reuse")
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            Divider()
+
+            if session?.connection?.capabilities.contains(.createTableDefinition) == false {
+                ContentUnavailableView(
+                    "Definition Unavailable",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("\(session?.connection?.engineName ?? "This engine") does not expose a complete CREATE TABLE definition through its metadata API. Use the Structure, Indexes, and Foreign Keys tools to inspect and modify the table.")
+                )
+            } else if isLoading {
                 ProgressView("Loading DDL...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = errorMessage {
                 ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(error))
             } else if let ddl {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack {
-                        Spacer()
-                        Button {
-                            UIPasteboard.general.string = ddl
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
-                                .font(.caption)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-
-                    ScrollView {
-                        Text(AttributedString(SQLHighlighter.highlight(ddl)))
-                            .textSelection(.enabled)
-                            .padding(16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .scrollInputBehavior(.enabled, for: .look)
+                ScrollView {
+                    Text(AttributedString(SQLHighlighter.highlight(ddl)))
+                        .font(.system(size: settingsManager.editorFontSize, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .databaseCanvasSurface(opacity: settingsManager.windowOpacity, strength: 0.045)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .padding(20)
                 }
+                .databaseLookScrollEnabled()
             }
         }
         .task(id: "\(database).\(table)") {
@@ -2439,83 +4349,184 @@ struct DDLTabView: View {
 
 // MARK: - Indexes Tab
 
+private struct TableIndexGroup: Identifiable {
+    let name: String
+    let columns: [String]
+    let isUnique: Bool
+    let isPrimary: Bool
+    let type: String
+    var id: String { name }
+}
+
 struct IndexesTabView: View {
     let sessionID: UUID
     let database: String
     let table: String
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
-    @Environment(SettingsManager.self) private var settingsManager
     @State private var indexes: [IndexInfo] = []
+    @State private var columns: [ColumnInfo] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var showingAddIndex = false
+    @State private var newIndexName = ""
+    @State private var newIndexUnique = false
+    @State private var selectedIndexColumns: Set<String> = []
+    @State private var pendingChange: TableSchemaChange?
+    @State private var isApplyingChange = false
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
     }
 
+    private var indexGroups: [TableIndexGroup] {
+        Dictionary(grouping: indexes, by: \.name)
+            .map { name, members in
+                let ordered = members.sorted { $0.sequenceInIndex < $1.sequenceInIndex }
+                return TableIndexGroup(
+                    name: name,
+                    columns: ordered.map(\.columnName),
+                    isUnique: ordered.first?.isUnique == true,
+                    isPrimary: ordered.first?.isPrimary == true,
+                    type: ordered.first?.type ?? ""
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Indexes").font(.headline)
+                    Text("\(indexGroups.count) index\(indexGroups.count == 1 ? "" : "es")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await loadIndexes() } }
+                    .labelStyle(.iconOnly)
+                    .help("Reload indexes")
+                Button("Add Index", systemImage: "plus") {
+                    newIndexName = ""
+                    newIndexUnique = false
+                    selectedIndexColumns = []
+                    showingAddIndex = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(columns.isEmpty)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            Divider()
+
             if isLoading {
                 ProgressView("Loading indexes...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = errorMessage {
                 ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(error))
             } else if indexes.isEmpty {
-                ContentUnavailableView("No Indexes", systemImage: "arrow.triangle.branch", description: Text("This table has no indexes."))
+                ContentUnavailableView("No Indexes", systemImage: "arrow.triangle.branch", description: Text("Add an index to accelerate common filters, joins, and sorts."))
             } else {
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
-                        Section {
-                            ForEach(indexes) { idx in
-                                HStack(spacing: 0) {
-                                    dataCell(idx.name, monospaced: true)
-                                    dataCell(idx.columnName, monospaced: true)
-                                    dataCell(idx.isUnique ? "YES" : "NO")
-                                    dataCell(idx.type)
-                                    dataCell("\(idx.sequenceInIndex)")
-                                    Spacer(minLength: 0)
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(indexGroups) { index in
+                            HStack(spacing: 14) {
+                                Image(systemName: index.isPrimary ? "key.fill" : (index.isUnique ? "checkmark.seal.fill" : "arrow.triangle.branch"))
+                                    .font(.title3)
+                                    .foregroundStyle(
+                                        index.isPrimary
+                                            ? AnyShapeStyle(.orange)
+                                            : (index.isUnique ? AnyShapeStyle(.green) : AnyShapeStyle(.tint))
+                                    )
+                                    .frame(width: 28)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack(spacing: 8) {
+                                        Text(index.name).font(.system(.body, design: .monospaced, weight: .semibold))
+                                        if index.isPrimary {
+                                            Text("PRIMARY").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                                        } else if index.isUnique {
+                                            Text("UNIQUE").font(.caption2.weight(.semibold)).foregroundStyle(.green)
+                                        }
+                                    }
+                                    Text(index.columns.joined(separator: "  →  "))
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(index.type).font(.caption).foregroundStyle(.secondary)
+                                if !index.isPrimary && !index.name.lowercased().hasPrefix("sqlite_autoindex_") {
+                                    Button(role: .destructive) { prepareDrop(index) } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Drop index \(index.name)")
                                 }
                             }
-                        } header: {
-                            HStack(spacing: 0) {
-                                headerCell("Name")
-                                headerCell("Column")
-                                headerCell("Unique")
-                                headerCell("Type")
-                                headerCell("Seq")
-                                Spacer(minLength: 0)
-                            }
-                            .background(.ultraThinMaterial)
+                            .padding(14)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
                         }
                     }
-                    .padding(16)
+                    .padding(20)
                 }
-                .scrollIndicators(.visible)
-                .scrollInputBehavior(.enabled, for: .look)
+                .databaseLookScrollEnabled()
+            }
+        }
+        .overlay {
+            if isApplyingChange {
+                ProgressView("Applying index change…")
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
         .task(id: "\(database).\(table)") {
             await loadIndexes()
         }
+        .sheet(isPresented: $showingAddIndex) { addIndexSheet }
+        .sheet(item: $pendingChange) { change in
+            TableSchemaChangeSheet(change: change, engineName: session?.connection?.engineName ?? "Database") {
+                Task { await apply(change) }
+            }
+        }
     }
 
-    private func headerCell(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: settingsManager.dataGridFontSize, weight: .bold, design: .monospaced))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(minWidth: 100, alignment: .leading)
-            .background(.ultraThinMaterial)
-            .accessibilityAddTraits(.isHeader)
-    }
-
-    private func dataCell(_ text: String, monospaced: Bool = false) -> some View {
-        Text(text)
-            .font(.system(size: settingsManager.dataGridFontSize, design: monospaced ? .monospaced : .default))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(minWidth: 100, alignment: .leading)
+    private var addIndexSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Index") {
+                    TextField("Name", text: $newIndexName)
+                    Toggle("Unique values only", isOn: $newIndexUnique)
+                }
+                Section("Columns") {
+                    ForEach(columns) { column in
+                        Button {
+                            if selectedIndexColumns.contains(column.name) {
+                                selectedIndexColumns.remove(column.name)
+                            } else {
+                                selectedIndexColumns.insert(column.name)
+                            }
+                        } label: {
+                            HStack {
+                                Text(column.name).font(.system(.body, design: .monospaced))
+                                Spacer()
+                                if selectedIndexColumns.contains(column.name) { Image(systemName: "checkmark") }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Add Index")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingAddIndex = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Review") { prepareCreate() }
+                        .disabled(newIndexName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedIndexColumns.isEmpty)
+                }
+            }
+        }
+        .frame(minWidth: 500, minHeight: 420)
     }
 
     private func loadIndexes() async {
@@ -2524,14 +4535,66 @@ struct IndexesTabView: View {
         errorMessage = nil
         do {
             indexes = try await connection.indexes(in: table, database: database)
+            columns = try await connection.columns(in: table, database: database)
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoading = false
     }
+
+    private func prepareCreate() {
+        guard let connection = session?.connection else { return }
+        do {
+            let orderedColumns = columns.map(\.name).filter(selectedIndexColumns.contains)
+            let sql = try TableSchemaSQL.createIndex(
+                database: database,
+                table: table,
+                name: newIndexName,
+                columns: orderedColumns,
+                unique: newIndexUnique,
+                dialect: connection.dialect,
+                quoteCharacter: connection.identifierQuoteCharacter
+            )
+            showingAddIndex = false
+            pendingChange = TableSchemaChange(title: "Create Index?", operation: "create-index", sql: sql, destructive: false)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func prepareDrop(_ index: TableIndexGroup) {
+        guard let connection = session?.connection else { return }
+        do {
+            pendingChange = TableSchemaChange(
+                title: "Drop ‘\(index.name)’?",
+                operation: "drop-index",
+                sql: try TableSchemaSQL.dropIndex(database: database, table: table, name: index.name, dialect: connection.dialect, quoteCharacter: connection.identifierQuoteCharacter),
+                destructive: true
+            )
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func apply(_ change: TableSchemaChange) async {
+        guard let session else { return }
+        isApplyingChange = true
+        errorMessage = nil
+        do {
+            try await applyTableSchemaChange(change, session: session, database: database, table: table)
+            await loadIndexes()
+        } catch {
+            errorMessage = "The server may have changed. Refresh before retrying. \(error.localizedDescription)"
+        }
+        isApplyingChange = false
+    }
 }
 
 // MARK: - Foreign Keys Tab
+
+private struct TableForeignKeyGroup: Identifiable {
+    let name: String
+    let columns: [String]
+    let referencedTable: String
+    let referencedColumns: [String]
+    var id: String { name }
+}
 
 struct ForeignKeysTabView: View {
     let sessionID: UUID
@@ -2539,75 +4602,162 @@ struct ForeignKeysTabView: View {
     let table: String
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
-    @Environment(SettingsManager.self) private var settingsManager
     @State private var foreignKeys: [ForeignKeyInfo] = []
+    @State private var columns: [ColumnInfo] = []
+    @State private var referencedTables: [String] = []
+    @State private var referencedColumns: [ColumnInfo] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var showingAddForeignKey = false
+    @State private var constraintName = ""
+    @State private var localColumn = ""
+    @State private var referencedTable = ""
+    @State private var referencedColumn = ""
+    @State private var pendingChange: TableSchemaChange?
+    @State private var isApplyingChange = false
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
     }
 
+    private var canAlterForeignKeys: Bool {
+        session?.connection?.dialect != .sqlite
+    }
+
+    private var foreignKeyGroups: [TableForeignKeyGroup] {
+        Dictionary(grouping: foreignKeys, by: \.constraintName)
+            .map { name, members in
+                let ordered = members.sorted { $0.ordinalPosition < $1.ordinalPosition }
+                return TableForeignKeyGroup(
+                    name: name,
+                    columns: ordered.map(\.columnName),
+                    referencedTable: ordered.first?.referencedTable ?? "",
+                    referencedColumns: ordered.map(\.referencedColumn)
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Foreign Keys").font(.headline)
+                    Text("\(foreignKeyGroups.count) relationship\(foreignKeyGroups.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await loadForeignKeys() } }
+                    .labelStyle(.iconOnly)
+                    .help("Reload foreign keys")
+                Button("Add Foreign Key", systemImage: "plus") { prepareAddSheet() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canAlterForeignKeys || columns.isEmpty || referencedTables.isEmpty)
+                    .help(canAlterForeignKeys ? "Add a foreign-key constraint" : "SQLite requires a table-rebuild migration for foreign-key changes")
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            Divider()
+
             if isLoading {
                 ProgressView("Loading foreign keys...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = errorMessage {
                 ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(error))
             } else if foreignKeys.isEmpty {
-                ContentUnavailableView("No Foreign Keys", systemImage: "arrow.triangle.turn.up.right.diamond", description: Text("This table has no foreign key constraints."))
+                ContentUnavailableView(
+                    "No Foreign Keys",
+                    systemImage: "arrow.triangle.turn.up.right.diamond",
+                    description: Text(canAlterForeignKeys ? "Add a relationship to enforce referential integrity." : "SQLite reports no foreign keys. Adding one requires rebuilding the table in a migration.")
+                )
             } else {
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
-                        Section {
-                            ForEach(foreignKeys) { fk in
-                                HStack(spacing: 0) {
-                                    dataCell(fk.constraintName, monospaced: true)
-                                    dataCell(fk.columnName, monospaced: true)
-                                    dataCell(fk.referencedTable)
-                                    dataCell(fk.referencedColumn, monospaced: true)
-                                    Spacer(minLength: 0)
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(foreignKeyGroups) { key in
+                            HStack(spacing: 14) {
+                                Image(systemName: "link")
+                                    .font(.title3)
+                                    .foregroundStyle(.tint)
+                                    .frame(width: 28)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(key.name).font(.system(.body, design: .monospaced, weight: .semibold))
+                                    HStack(spacing: 8) {
+                                        Text(key.columns.joined(separator: ", "))
+                                        Image(systemName: "arrow.right")
+                                        Text("\(key.referencedTable).\(key.referencedColumns.joined(separator: ", "))")
+                                    }
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if canAlterForeignKeys {
+                                    Button(role: .destructive) { prepareDrop(key) } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Drop foreign key \(key.name)")
                                 }
                             }
-                        } header: {
-                            HStack(spacing: 0) {
-                                headerCell("Constraint")
-                                headerCell("Column")
-                                headerCell("Referenced Table")
-                                headerCell("Referenced Column")
-                                Spacer(minLength: 0)
-                            }
-                            .background(.ultraThinMaterial)
+                            .padding(14)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
                         }
                     }
-                    .padding(16)
+                    .padding(20)
                 }
-                .scrollIndicators(.visible)
-                .scrollInputBehavior(.enabled, for: .look)
+                .databaseLookScrollEnabled()
+            }
+        }
+        .overlay {
+            if isApplyingChange {
+                ProgressView("Applying foreign-key change…")
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
         .task(id: "\(database).\(table)") {
             await loadForeignKeys()
         }
+        .sheet(isPresented: $showingAddForeignKey) { addForeignKeySheet }
+        .sheet(item: $pendingChange) { change in
+            TableSchemaChangeSheet(change: change, engineName: session?.connection?.engineName ?? "Database") {
+                Task { await apply(change) }
+            }
+        }
     }
 
-    private func headerCell(_ text: String) -> some View {
-        Text(text)
-            .font(.caption.bold())
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(minWidth: 120, alignment: .leading)
-            .background(.ultraThinMaterial)
-            .accessibilityAddTraits(.isHeader)
-    }
-
-    private func dataCell(_ text: String, monospaced: Bool = false) -> some View {
-        Text(text)
-            .font(monospaced ? .system(.caption, design: .monospaced) : .caption)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(minWidth: 120, alignment: .leading)
+    private var addForeignKeySheet: some View {
+        NavigationStack {
+            Form {
+                Section("Constraint") {
+                    TextField("Name", text: $constraintName)
+                    Picker("Local column", selection: $localColumn) {
+                        ForEach(columns, id: \.name) { Text($0.name).tag($0.name) }
+                    }
+                }
+                Section("References") {
+                    Picker("Table", selection: $referencedTable) {
+                        ForEach(referencedTables, id: \.self) { Text($0).tag($0) }
+                    }
+                    .onChange(of: referencedTable) { _, value in
+                        Task { await loadReferencedColumns(for: value) }
+                    }
+                    Picker("Column", selection: $referencedColumn) {
+                        ForEach(referencedColumns, id: \.name) { Text($0.name).tag($0.name) }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Add Foreign Key")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingAddForeignKey = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Review") { prepareCreate() }
+                        .disabled(constraintName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || localColumn.isEmpty || referencedTable.isEmpty || referencedColumn.isEmpty)
+                }
+            }
+        }
+        .frame(minWidth: 520, minHeight: 380)
     }
 
     private func loadForeignKeys() async {
@@ -2616,9 +4766,79 @@ struct ForeignKeysTabView: View {
         errorMessage = nil
         do {
             foreignKeys = try await connection.foreignKeys(in: table, database: database)
+            columns = try await connection.columns(in: table, database: database)
+            referencedTables = try await connection.tables(in: database)
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    private func prepareAddSheet() {
+        constraintName = "fk_\(table)_"
+        localColumn = columns.first?.name ?? ""
+        referencedTable = referencedTables.first ?? ""
+        referencedColumn = ""
+        showingAddForeignKey = true
+        Task { await loadReferencedColumns(for: referencedTable) }
+    }
+
+    private func loadReferencedColumns(for referencedTable: String) async {
+        guard let connection = session?.connection, !referencedTable.isEmpty else {
+            referencedColumns = []
+            referencedColumn = ""
+            return
+        }
+        do {
+            referencedColumns = try await connection.columns(in: referencedTable, database: database)
+            referencedColumn = referencedColumns.first?.name ?? ""
+        } catch {
+            referencedColumns = []
+            referencedColumn = ""
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func prepareCreate() {
+        guard let connection = session?.connection else { return }
+        do {
+            let sql = try TableSchemaSQL.addForeignKey(
+                database: database,
+                table: table,
+                name: constraintName,
+                column: localColumn,
+                referencedTable: referencedTable,
+                referencedColumn: referencedColumn,
+                dialect: connection.dialect,
+                quoteCharacter: connection.identifierQuoteCharacter
+            )
+            showingAddForeignKey = false
+            pendingChange = TableSchemaChange(title: "Add Foreign Key?", operation: "add-foreign-key", sql: sql, destructive: false)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func prepareDrop(_ key: TableForeignKeyGroup) {
+        guard let connection = session?.connection else { return }
+        do {
+            pendingChange = TableSchemaChange(
+                title: "Drop ‘\(key.name)’?",
+                operation: "drop-foreign-key",
+                sql: try TableSchemaSQL.dropForeignKey(database: database, table: table, name: key.name, dialect: connection.dialect, quoteCharacter: connection.identifierQuoteCharacter),
+                destructive: true
+            )
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func apply(_ change: TableSchemaChange) async {
+        guard let session else { return }
+        isApplyingChange = true
+        errorMessage = nil
+        do {
+            try await applyTableSchemaChange(change, session: session, database: database, table: table)
+            await loadForeignKeys()
+        } catch {
+            errorMessage = "The server may have changed. Refresh before retrying. \(error.localizedDescription)"
+        }
+        isApplyingChange = false
     }
 }

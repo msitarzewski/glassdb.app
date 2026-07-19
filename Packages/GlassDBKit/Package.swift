@@ -14,7 +14,10 @@ let package = Package(
         .library(name: "GlassDBKit", targets: ["GlassDBKit"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/vapor/mysql-nio.git", from: "1.0.0"),
+        .package(
+            url: "https://github.com/msitarzewski/mysql-nio.git",
+            revision: "3ad138f198cdaeb1e85f81955852e8bc8028c188"
+        ),
         .package(url: "https://github.com/vapor/postgres-nio.git", from: "1.33.0"),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.14.0"),
         .package(path: "../Citadel"),

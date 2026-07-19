@@ -1,6 +1,6 @@
 # Progress
 
-## Status: Codex Completions Release Validation
+## Status: Native visionOS/macOS Implementation Complete; External Release Gates Open
 
 ### Completed — Infrastructure
 - [x] Initial market scan completed; revalidate competitor claims before public use
@@ -9,7 +9,7 @@
 - [x] AGENTS.md adapted for glassdb.app
 - [x] Memory bank initialized
 - [x] Domain identified: glassdb.app (available)
-- [x] Xcode project initialized targeting visionOS 26.0+
+- [x] Xcode project targets native visionOS 26.0+ and native macOS 27.0+ application/test paths
 - [x] Vendored Citadel + swift-nio-ssh packages from glas.sh
 - [x] GlassDBKit package created with mysql-nio dependency
 - [x] GitHub repo created, initial commit pushed
@@ -17,6 +17,7 @@
 ### Completed — Core Engine
 - [x] DatabaseProtocol abstraction (`DatabaseEngine`, `DatabaseConnection` protocols)
 - [x] MySQLAdapter — mysql-nio connect, execute, and schema-introspection paths used by the app
+- [x] Passwordless `caching_sha2_password` compatibility — immutable mysql-nio fork pin at `3ad138f`, focused upstream regression coverage, passing gated GlassDBKit/MySQL 9.7.1 test, user-confirmed fresh Mac-app connection, and upstream draft PR #126
 - [x] Typed QueryResult, ColumnInfo, and DatabaseValue models in GlassDBKit
 - [x] SSHTunnelManager — verified-host Citadel DirectTCPIP forwarding
 - [x] Utility command routing — USE/SET/SHOW through simpleQuery (COM_QUERY)
@@ -97,6 +98,11 @@
 - [x] Pagination: page nav bar, rows-per-page input, total row count, LIMIT/OFFSET
 - [x] Pager syncs with query LIMIT (isAutoQuery flag)
 - [x] Font size setting (dataGridFontSize, default 13.0)
+- [x] Searchable staged Columns manager with visible/frozen switches, bulk show/hide/unfreeze, reset, and persisted per-table layout
+- [x] Native Mac row-number selection: plain, Shift range, Command toggle, Command-Shift range union, and double-click edit
+- [x] Selected-row Copy, Compare, and CSV/TSV/JSON/SQL export use one shared ordered selection model
+- [x] Typed Filter Rows sheet with bound server-query mode by default and an explicit loaded-page-only Display Only mode
+- [x] Pinned adaptive column headers and row-number gutter remain legible while scrolling across transparent/blurred database canvases
 
 ### Completed — Query Execution
 - [x] Auto-repeat: table-data Execute context menu offers a fixed 10-second interval
@@ -134,19 +140,40 @@
 - [x] visionOS 26.0 minimum and arm64-only app/test target settings
 - [x] Coordinated GlasSecretStore hardening published and merged as PR #2 (`b21c137`)
 
+### Completed — Native macOS 27+
+- [x] Native SwiftUI macOS application shell integrated into the existing target; this is not Catalyst
+- [x] Platform-native Mac scenes, commands, Settings scene, window behavior, editor/grid interactions, and Keychain handling
+- [x] Dedicated macOS Info.plist, entitlements, and Mac application icon assets
+- [x] macOS application and tests require macOS 27.0; the shipping Mac executable is arm64-only and Intel remains excluded
+- [x] Vision Pro database workspace retains the 0–100% opacity and continuous blur controls; general application windows continue to use Apple-recommended materials
+- [x] Native Mac form/input UX audit completed: tabbed grouped Settings, bounded steppers/sliders, inline validation and input gates, keyboard actions, adaptive editor/grid controls, and a 300-point minimum / 340-point default connection sidebar
+
+### Completed — Final Automated QA
+- [x] Native macOS 27 arm64 application suite passed 84/84, including finite/stable native Settings layout, JSON round-trip, workspace, schema tooling, filtering, and Mac row-selection coverage
+- [x] visionOS 26.4 arm64 simulator application suite passed 59/59; the prior visionOS 26.5 minimum-runtime checkpoint passed 44/44
+- [x] Both final app result bundles report zero errors, build/analyzer/runtime warnings, skips, and expected failures; final diff whitespace validation is clean
+- [x] Native macOS Release archive verified as arm64 with macOS 27.0 minimum and `macosx`/`MacOSX` platform metadata
+- [x] Native Settings crash regression passed ten fresh Debug launches plus the exact Release archive with Settings auto-opened; no new `.ips` or AppKit constraint-loop signature
+- [x] GlassDBKit aggregate coverage is 25/25: the current local run passed all 22 non-live tests, while the three environment-gated MySQL 8, PostgreSQL 17, and passwordless MySQL 9.7.1 tests retain their recorded live passes
+- [x] Citadel passed 31 executed tests with 5 environment-gated skips and 0 failures; swift-nio-ssh passed 320/320; GlasSecretStore passed 68/68
+- [x] Transport pending buffers are bounded; Citadel payload/SFTP/invalid-state paths use typed failure handling rather than process traps
+- [x] Latest development-signed macOS arm64 bundle and generic visionOS simulator arm64 build passed; strict Mac signature verification succeeded
+
 ### In Progress
-- [ ] C9 Debug/Release, minimum/latest runtime, scale, security, and documentation evidence
 - [ ] C3 cross-device Glass-family credential catalog and eligible-secret synchronization; shared access group/App Group behavior is currently same-device only
+- [ ] External distribution provisioning/signing and physical-device acceptance for Vision Pro and Mac, including device-only Keychain, user-presence, Secure Enclave, and supported Foundation Models behavior
+- [ ] Final residual-risk review and release documentation reconciliation
 
 ### Blocked
-- Nothing currently blocked
+- No implementation or automated-test blocker
+- Distribution signing/provisioning and device-only acceptance depend on external Apple account/profile and physical-device availability
 
 ### Release Approval Required
-- [ ] Review the C9 residual-risk register and known capability limits
+- [ ] Review the final residual-risk register, known capability limits, and external/device-gate evidence
 - [ ] Explicitly approve any TestFlight submission
 
-### Future Vision Pro Releases
-- [ ] Native macOS and iPad application targets (deferred; no non-visionOS app ships in this release)
+### Future Platform/Product Releases
+- [ ] Native iPad application target and a focused iOS experience; native macOS is complete in `codex-completions`
 - [ ] View support in sidebar
 - [ ] Table creation GUI
 - [ ] Stored procedure/function viewer
