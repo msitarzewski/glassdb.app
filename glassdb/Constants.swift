@@ -77,6 +77,13 @@ struct DatabaseGlassAppearance: Equatable, Sendable {
         sqrt(opacity)
     }
 
+    /// visionOS composites its database canvas with a SwiftUI material rather
+    /// than AppKit's behind-window effect. Strengthen that local material under
+    /// pinned grid chrome so scrolling values cannot visually merge with it.
+    var pinnedBlurAlpha: Double {
+        sqrt(blur)
+    }
+
     private static func unitValue(_ value: Double) -> Double {
         guard value.isFinite else { return 0 }
         return min(1, max(0, value))
@@ -198,11 +205,28 @@ extension View {
 
     /// Appearance-aware backing for headers that remain fixed while database
     /// rows scroll beneath them. This intentionally strengthens intermediate
-    /// opacity values but still disappears completely at 0%.
-    func databaseCanvasPinnedSurface(opacity: Double) -> some View {
-        let alpha = DatabaseGlassAppearance(opacity: opacity, blur: 0)
-            .pinnedSurfaceAlpha
-        return background(DatabaseCanvasPalette.background.opacity(alpha))
+    /// values while still disappearing when both workspace controls are 0%.
+    @ViewBuilder
+    func databaseCanvasPinnedSurface(opacity: Double, blur: Double) -> some View {
+        let appearance = DatabaseGlassAppearance(opacity: opacity, blur: blur)
+        #if os(visionOS)
+        background {
+            ZStack {
+                if appearance.compositesBlur {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .opacity(appearance.pinnedBlurAlpha)
+                }
+                Rectangle()
+                    .fill(DatabaseCanvasPalette.background)
+                    .opacity(appearance.pinnedSurfaceAlpha)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+        #else
+        background(DatabaseCanvasPalette.background.opacity(appearance.pinnedSurfaceAlpha))
+        #endif
     }
 }
 
@@ -329,6 +353,12 @@ extension ToolbarContent {
     func databaseHighVisibilityPriority() -> some ToolbarContent {
         #if os(macOS)
         visibilityPriority(.high)
+        #elseif os(iOS)
+        if #available(iOS 27.0, *) {
+            visibilityPriority(.high)
+        } else {
+            self
+        }
         #else
         self
         #endif
@@ -448,6 +478,12 @@ struct DatabaseCommands: Commands {
 @MainActor let databaseTransferToolbarPlacement: ToolbarItemPlacement = .automatic
 @MainActor let databaseContextToolbarPlacement: ToolbarItemPlacement = .automatic
 @MainActor let databaseSidebarToolbarPlacement: ToolbarItemPlacement = .navigation
+#elseif os(iOS)
+@MainActor let databaseToolbarPlacement: ToolbarItemPlacement = .bottomBar
+@MainActor let databaseExecutionToolbarPlacement: ToolbarItemPlacement = .primaryAction
+@MainActor let databaseTransferToolbarPlacement: ToolbarItemPlacement = .bottomBar
+@MainActor let databaseContextToolbarPlacement: ToolbarItemPlacement = .bottomBar
+@MainActor let databaseSidebarToolbarPlacement: ToolbarItemPlacement = .topBarLeading
 #else
 @MainActor let databaseToolbarPlacement: ToolbarItemPlacement = .bottomOrnament
 @MainActor let databaseExecutionToolbarPlacement: ToolbarItemPlacement = .primaryAction

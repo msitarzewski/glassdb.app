@@ -10,6 +10,9 @@ import SwiftUI
 import os
 import GlasSecretStore
 import GlassDBKit
+#if os(iOS)
+import UIKit
+#endif
 
 private struct PendingHostTrustAttempt {
     let connection: DatabaseConnectionConfig
@@ -23,6 +26,10 @@ struct ConnectionManagerView: View {
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
+    #if os(iOS)
+    @Environment(IOSAppRouter.self) private var iOSRouter
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
 
     @State private var selectedConnectionID: UUID?
     @State private var searchText = ""
@@ -33,14 +40,12 @@ struct ConnectionManagerView: View {
     @State private var connectionPendingDeletion: DatabaseConnectionConfig?
     @State private var pendingHostTrustAttempt: PendingHostTrustAttempt?
     @FocusState private var searchFieldFocused: Bool
+    #if os(iOS)
+    @State private var compactNavigationPath: [UUID] = []
+    #endif
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .databaseSidebarColumnWidth()
-        } detail: {
-            detailView
-        }
+        platformNavigation
         .sheet(isPresented: $showingAddConnection) {
             ConnectionFormView(mode: .add) { connection, password, sshPassword in
                 let credentialReceipt = try saveCredentials(
@@ -134,8 +139,169 @@ struct ConnectionManagerView: View {
             } else if selectedConnectionID == nil {
                 selectedConnectionID = ids.first
             }
+            #if os(iOS)
+            compactNavigationPath.removeAll { !ids.contains($0) }
+            #endif
         }
     }
+
+    @ViewBuilder
+    private var platformNavigation: some View {
+        #if os(iOS)
+        if horizontalSizeClass == .compact {
+            compactNavigation
+        } else {
+            regularNavigation
+        }
+        #else
+        regularNavigation
+        #endif
+    }
+
+    private var regularNavigation: some View {
+        NavigationSplitView {
+            sidebar
+                .databaseSidebarColumnWidth()
+        } detail: {
+            detailView
+        }
+    }
+
+    #if os(iOS)
+    private var compactNavigation: some View {
+        NavigationStack(path: $compactNavigationPath) {
+            compactConnectionList
+                .navigationDestination(for: UUID.self) { connectionID in
+                    if let connection = connectionManager.connection(for: connectionID) {
+                        compactConnectionDetail(connection)
+                    } else {
+                        ContentUnavailableView(
+                            "Connection Unavailable",
+                            systemImage: "cylinder.split.1x2",
+                            description: Text("This saved connection is no longer available.")
+                        )
+                    }
+                }
+        }
+    }
+
+    private var compactConnectionList: some View {
+        List {
+            if connectionManager.connections.isEmpty {
+                ContentUnavailableView {
+                    Label("No Connections", systemImage: "cylinder.split.1x2")
+                } description: {
+                    Text("Add a database connection to begin.")
+                } actions: {
+                    Button("Add Connection", systemImage: "plus") {
+                        showingAddConnection = true
+                    }
+                }
+                .listRowBackground(Color.clear)
+            } else if filteredConnections(connectionManager.connections).isEmpty {
+                ContentUnavailableView.search(text: searchText)
+                    .listRowBackground(Color.clear)
+            } else {
+                compactConnectionSections
+            }
+        }
+        .searchable(text: $searchText, prompt: "Search connections")
+        .searchFocused($searchFieldFocused)
+        .navigationTitle("Connections")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Add Connection", systemImage: "plus") {
+                    showingAddConnection = true
+                }
+                .managerNewConnectionShortcut()
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Settings", systemImage: "gear") {
+                    showSettings()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var compactConnectionSections: some View {
+        if !filteredConnections(connectionManager.favoriteConnections).isEmpty {
+            Section("Favorites") {
+                ForEach(filteredConnections(connectionManager.favoriteConnections)) { connection in
+                    compactConnectionRow(connection)
+                }
+            }
+        }
+        if !filteredConnections(connectionManager.recentConnections).isEmpty {
+            Section("Recent") {
+                ForEach(filteredConnections(connectionManager.recentConnections)) { connection in
+                    compactConnectionRow(connection)
+                }
+            }
+        }
+        Section("All Connections") {
+            ForEach(filteredConnections(connectionManager.connections)) { connection in
+                compactConnectionRow(connection)
+            }
+        }
+    }
+
+    private func compactConnectionRow(_ connection: DatabaseConnectionConfig) -> some View {
+        NavigationLink(value: connection.id) {
+            connectionRowLabel(connection)
+        }
+        .contextMenu {
+            connectionActions(for: connection)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                connectionManager.toggleFavorite(connection)
+            } label: {
+                Label(
+                    connection.isFavorite ? "Unfavorite" : "Favorite",
+                    systemImage: connection.isFavorite ? "star.slash" : "star"
+                )
+            }
+            .tint(.yellow)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                editingConnection = connection
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+            .tint(.blue)
+
+            Button(role: .destructive) {
+                connectionPendingDeletion = connection
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .disabled(activeSessionID(for: connection) != nil)
+        }
+        .accessibilityHint("Opens connection details. Swipe for favorite, edit, and delete actions.")
+    }
+
+    private func compactConnectionDetail(_ connection: DatabaseConnectionConfig) -> some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                connectionDetailHeader(connection)
+                connectionDetailActions(connection)
+            }
+            .padding()
+            .frame(maxWidth: .infinity)
+        }
+        .navigationTitle(connection.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Menu("Connection Actions", systemImage: "ellipsis.circle") {
+                    connectionActions(for: connection)
+                }
+            }
+        }
+    }
+    #endif
 
     // MARK: - Sidebar
 
@@ -201,7 +367,7 @@ struct ConnectionManagerView: View {
             #if !os(macOS)
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    openWindow(id: "settings")
+                    showSettings()
                 } label: {
                     Label("Settings", systemImage: "gear")
                 }
@@ -214,6 +380,23 @@ struct ConnectionManagerView: View {
     // MARK: - Connection Row
 
     private func connectionRow(_ connection: DatabaseConnectionConfig) -> some View {
+        connectionRowLabel(connection)
+            .contentShape(Rectangle())
+            .tag(connection.id)
+            .connectionRowDoubleClick {
+                if let sessionID = activeSessionID(for: connection) {
+                    openPrimaryWorkspace(sessionID: sessionID)
+                } else {
+                    initiateConnection(connection)
+                }
+            }
+            .contextMenu {
+                connectionActions(for: connection)
+            }
+            .help("Select \(connection.name); double-click to connect or open its workspace")
+    }
+
+    private func connectionRowLabel(_ connection: DatabaseConnectionConfig) -> some View {
         HStack(spacing: 12) {
             Circle()
                 .fill(connection.colorTag.color)
@@ -260,27 +443,25 @@ struct ConnectionManagerView: View {
             .help("Connection actions")
             #endif
         }
-        .contentShape(Rectangle())
-        .tag(connection.id)
-        .connectionRowDoubleClick {
-            if let sessionID = activeSessionID(for: connection) {
-                openWindow(id: "query-editor", value: sessionID)
-            } else {
-                initiateConnection(connection)
-            }
-        }
-        .contextMenu {
-            connectionActions(for: connection)
-        }
-        .help("Select \(connection.name); double-click to connect or open its workspace")
     }
 
     @ViewBuilder
     private func connectionActions(for connection: DatabaseConnectionConfig) -> some View {
         if let sessionID = activeSessionID(for: connection) {
             Button("Open Workspace", systemImage: "rectangle.split.2x1") {
-                openWindow(id: "query-editor", value: sessionID)
+                openPrimaryWorkspace(sessionID: sessionID)
             }
+            #if os(iOS)
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                Button("Open New Workspace Window", systemImage: "macwindow.badge.plus") {
+                    openAdditionalWorkspace(sessionID: sessionID)
+                }
+            }
+            #else
+            Button("Open New Workspace Window", systemImage: "macwindow.badge.plus") {
+                openAdditionalWorkspace(sessionID: sessionID)
+            }
+            #endif
             Button("Disconnect", systemImage: "xmark.circle") {
                 Task { await sessionManager.disconnect(sessionID: sessionID) }
             }
@@ -381,7 +562,7 @@ struct ConnectionManagerView: View {
     private func connectionDetailActionButtons(_ connection: DatabaseConnectionConfig) -> some View {
         if let sessionID = activeSessionID(for: connection) {
             Button {
-                openWindow(id: "query-editor", value: sessionID)
+                openPrimaryWorkspace(sessionID: sessionID)
             } label: {
                 Label("Open Workspace", systemImage: "rectangle.split.2x1")
             }
@@ -476,7 +657,7 @@ struct ConnectionManagerView: View {
                 sshPassword: sshPassword
             )
             connectionManager.updateLastConnected(connection.id)
-            openWindow(id: "query-editor", value: sessionID)
+            openPrimaryWorkspace(sessionID: sessionID)
         } catch let trustError as SSHHostKeyTrustRequiredError {
             pendingHostTrustAttempt = PendingHostTrustAttempt(
                 connection: connection,
@@ -488,6 +669,38 @@ struct ConnectionManagerView: View {
             connectionError = error.localizedDescription
         }
         connectingConnectionID = nil
+    }
+
+    private func openPrimaryWorkspace(sessionID: UUID) {
+        let request = DatabaseWorkspaceWindowRequest.primary(sessionID: sessionID)
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            iOSRouter.showWorkspace(request)
+            return
+        }
+        #endif
+        openWindow(
+            id: "query-editor",
+            value: sessionManager.registerWorkspace(request)
+        )
+    }
+
+    private func openAdditionalWorkspace(sessionID: UUID) {
+        let request = DatabaseWorkspaceWindowRequest.additional(sessionID: sessionID)
+        openWindow(
+            id: "query-editor",
+            value: sessionManager.registerWorkspace(request)
+        )
+    }
+
+    private func showSettings() {
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            iOSRouter.showSettings()
+            return
+        }
+        #endif
+        openWindow(id: "settings")
     }
 
     private func trustPendingHostAndRetry() {

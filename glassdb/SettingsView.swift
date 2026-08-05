@@ -24,6 +24,8 @@ struct SettingsView: View {
         Group {
             #if os(macOS)
             macSettings
+            #elseif os(iOS)
+            iOSSettings
             #else
             spatialSettings
             #endif
@@ -120,6 +122,31 @@ struct SettingsView: View {
             }
         }
         .accessibilityIdentifier("settings.tab-view")
+    }
+    #endif
+
+    #if os(iOS)
+    private var iOSSettings: some View {
+        Form {
+            querySection
+            editorSection
+            sshKeysSection
+            iOSWorkspaceSection
+            aboutSection
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Settings")
+    }
+
+    private var iOSWorkspaceSection: some View {
+        Section {
+            @Bindable var settings = settingsManager
+            Toggle("Show schema sidebar when space allows", isOn: $settings.showSidebarByDefault)
+        } header: {
+            Text("Workspace")
+        } footer: {
+            Text("On iPad, the schema browser starts beside the workspace when the window is wide enough. iPhone always uses compact navigation.")
+        }
     }
     #endif
 
@@ -271,7 +298,7 @@ struct SettingsView: View {
             Text("These controls affect only the live SQL and row-management canvas. Set both to 0% for a completely transparent canvas. The titlebar, sidebar, workspace tabs, Connections, Settings, and detached results retain Apple system materials.")
         }
 
-        #if !os(macOS)
+        #if os(visionOS)
         Section("Windows") {
             Toggle("Show sidebar when opening a workspace", isOn: $settings.showSidebarByDefault)
         }
@@ -332,6 +359,18 @@ struct SettingsView: View {
                         .fixedSize()
                         #endif
                     }
+                    #if os(iOS)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button("Rename", systemImage: "pencil") {
+                            renameText = key.name
+                            renamingKey = key
+                        }
+                        .tint(.blue)
+                        Button("Delete", systemImage: "trash", role: .destructive) {
+                            deletingKey = key
+                        }
+                    }
+                    #endif
                     .contextMenu {
                         Button("Rename…") {
                             renameText = key.name

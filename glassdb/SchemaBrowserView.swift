@@ -26,11 +26,22 @@ private struct SchemaMutationFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+#if os(iOS)
+private struct CompactSchemaDatabaseDestination: Hashable {
+    let name: String
+}
+#endif
+
 struct SchemaBrowserView: View {
     let sessionID: UUID
+    let selection: WorkspaceSelection
     var onSelectionChanged: ((WorkspaceSelection) -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
+    @Environment(\.openWindow) private var openWindow
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
 
     @State private var databases: [String] = []
     @State private var expandedDatabases: Set<String> = []
@@ -49,6 +60,16 @@ struct SchemaBrowserView: View {
         sessionManager.session(for: sessionID)
     }
 
+    private var schemaSelection: Binding<WorkspaceSelection?> {
+        Binding(
+            get: { selection },
+            set: { newSelection in
+                guard let newSelection else { return }
+                onSelectionChanged?(newSelection)
+            }
+        )
+    }
+
     var body: some View {
         Group {
             if session != nil {
@@ -63,7 +84,7 @@ struct SchemaBrowserView: View {
                             description: Text(error)
                         )
                     } else {
-                        schemaTree
+                        platformSchemaTree
                     }
                 }
             } else {
@@ -75,7 +96,7 @@ struct SchemaBrowserView: View {
             }
         }
         .navigationTitle(session?.connection?.dialect == .postgresql ? "Schemas" : "Databases")
-        .searchable(text: $filterText, placement: .sidebar, prompt: "Filter")
+        .schemaSearchable(text: $filterText)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -88,6 +109,13 @@ struct SchemaBrowserView: View {
         }
         .task {
             await loadDatabases()
+        }
+        .onChange(of: session?.state) {
+            guard session?.state.isConnected == true else { return }
+            tablesCache.removeAll()
+            rowCountCache.removeAll()
+            loadErrors.removeAll()
+            Task { await loadDatabases() }
         }
         .overlay {
             if let destructiveOperation {
@@ -155,8 +183,107 @@ struct SchemaBrowserView: View {
 
     // MARK: - Schema Tree
 
+    @ViewBuilder
+    private var platformSchemaTree: some View {
+        #if os(iOS)
+        if horizontalSizeClass == .compact {
+            compactDatabaseList
+        } else {
+            schemaTree
+        }
+        #else
+        schemaTree
+        #endif
+    }
+
+    #if os(iOS)
+    private var compactDatabaseList: some View {
+        List(filteredDatabases, id: \.self) { database in
+            NavigationLink(value: CompactSchemaDatabaseDestination(name: database)) {
+                Label(database, systemImage: "cylinder")
+            }
+            .contextMenu {
+                Button("Open Database Overview", systemImage: "info.circle") {
+                    onSelectionChanged?(.database(database))
+                }
+                Button("Open SQL Editor", systemImage: "text.page") {
+                    onSelectionChanged?(.query)
+                }
+                Button("Refresh Tables", systemImage: "arrow.clockwise") {
+                    tablesCache.removeValue(forKey: database)
+                    Task { await loadTables(for: database) }
+                }
+            }
+        }
+        .navigationDestination(for: CompactSchemaDatabaseDestination.self) { destination in
+            compactTableList(for: destination.name)
+        }
+    }
+
+    private func compactTableList(for database: String) -> some View {
+        Group {
+            if let error = loadErrors[database] {
+                ContentUnavailableView(
+                    "Tables Unavailable",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(error)
+                )
+            } else if let tables = filteredTables(for: database) {
+                List(tables, id: \.self) { table in
+                    compactTableRow(table, database: database)
+                }
+            } else {
+                ProgressView("Loading tables…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .navigationTitle(database)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await loadTables(for: database) }
+        .toolbar {
+            ToolbarItemGroup(placement: .secondaryAction) {
+                Button("Database Overview", systemImage: "info.circle") {
+                    onSelectionChanged?(.database(database))
+                }
+                Button("Refresh Tables", systemImage: "arrow.clockwise") {
+                    tablesCache.removeValue(forKey: database)
+                    Task { await loadTables(for: database) }
+                }
+            }
+        }
+    }
+
+    private func compactTableRow(_ table: String, database: String) -> some View {
+        let cacheKey = "\(database).\(table)"
+        return HStack(spacing: 8) {
+            Button {
+                onSelectionChanged?(.table(database: database, table: table))
+            } label: {
+                HStack {
+                    Label(table, systemImage: "tablecells")
+                    Spacer()
+                    if let count = rowCountCache[cacheKey] {
+                        Text(count.formatted())
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Menu("Table Actions", systemImage: "ellipsis.circle") {
+                tableActionMenu(table, database: database)
+            }
+            .labelStyle(.iconOnly)
+        }
+        .task { await loadRowCount(for: table, database: database) }
+        .accessibilityElement(children: .contain)
+    }
+    #endif
+
     private var schemaTree: some View {
-        List {
+        List(selection: schemaSelection) {
             ForEach(filteredDatabases, id: \.self) { database in
                 DisclosureGroup(
                     isExpanded: Binding(
@@ -184,49 +311,17 @@ struct SchemaBrowserView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
                 } label: {
-                    Button {
-                        onSelectionChanged?(.database(database))
-                    } label: {
-                        HStack {
-                            Label(database, systemImage: "cylinder")
-                                .font(.headline)
-                            Spacer(minLength: 8)
-                        }
-                        .contentShape(Rectangle())
+                    HStack {
+                        Label(database, systemImage: "cylinder")
+                            .font(.headline)
+                        Spacer(minLength: 8)
                     }
-                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     .contextMenu {
-                        if session?.connection?.dialect == .mysql {
-                            Button {
-                                Task {
-                                    do {
-                                        guard let connection = session?.connection else { return }
-                                        let result = try await sessionManager.executeQuery(
-                                            "USE \(connection.quotedIdentifier(database))", sessionID: sessionID
-                                        )
-                                        if let serverError = result.error { operationError = serverError }
-                                    } catch {
-                                        operationError = "Could not select ‘\(database)’: \(error.localizedDescription)"
-                                    }
-                                }
-                            } label: {
-                                Label("Set as Active Database", systemImage: "checkmark.circle")
-                            }
-                        }
-                        Button {
-                            onSelectionChanged?(.query)
-                        } label: {
-                            Label("Open SQL Editor", systemImage: "text.page")
-                        }
-                        Divider()
-                        Button {
-                            tablesCache.removeValue(forKey: database)
-                            Task { await loadTables(for: database) }
-                        } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
-                        }
+                        databaseActionMenu(database)
                     }
                 }
+                .tag(WorkspaceSelection.database(database))
             }
         }
         .databaseLookScrollEnabled()
@@ -234,63 +329,95 @@ struct SchemaBrowserView: View {
 
     private func tableRow(_ table: String, database: String) -> some View {
         let cacheKey = "\(database).\(table)"
-        return Button {
-            onSelectionChanged?(.table(database: database, table: table))
-        } label: {
-            HStack {
-                Label(table, systemImage: "tablecells")
-                Spacer()
-                if let count = rowCountCache[cacheKey] {
-                    Text(count.formatted())
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+        return HStack {
+            Label(table, systemImage: "tablecells")
+            Spacer()
+            if let count = rowCountCache[cacheKey] {
+                Text(count.formatted())
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .tag(WorkspaceSelection.table(database: database, table: table))
         .contextMenu {
-            Button {
-                onSelectionChanged?(.table(database: database, table: table))
-            } label: {
-                Label("Browse Data", systemImage: "tablecells")
-            }
-            Button {
-                guard let connection = session?.connection else { return }
-                PlatformClipboard.copy("\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))")
-            } label: {
-                Label("Copy Table Name", systemImage: "doc.on.doc")
-            }
-            Button {
-                guard let connection = session?.connection else { return }
-                let object = "\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))"
-                PlatformClipboard.copy("SELECT * FROM \(object) LIMIT 100;")
-            } label: {
-                Label("Copy SELECT Statement", systemImage: "text.page")
-            }
-            Divider()
-            Button {
-                tablesCache.removeValue(forKey: database)
-                Task { await loadTables(for: database) }
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-            Divider()
-            if session?.connection?.capabilities.contains(.truncateTable) == true {
-                Button(role: .destructive) {
-                    confirmingTruncate = SchemaMutationTarget(database: database, table: table)
-                } label: {
-                    Label("Truncate Table...", systemImage: "trash")
-                }
-            }
-            Button(role: .destructive) {
-                confirmingDrop = SchemaMutationTarget(database: database, table: table)
-            } label: {
-                Label("Drop Table...", systemImage: "xmark.bin")
-            }
+            tableActionMenu(table, database: database)
         }
         .task {
             await loadRowCount(for: table, database: database)
+        }
+    }
+
+    @ViewBuilder
+    private func databaseActionMenu(_ database: String) -> some View {
+        if session?.connection?.dialect == .mysql {
+            Button("Set as Active Database", systemImage: "checkmark.circle") {
+                Task {
+                    do {
+                        guard let connection = session?.connection else { return }
+                        let result = try await sessionManager.executeQuery(
+                            "USE \(connection.quotedIdentifier(database))",
+                            sessionID: sessionID
+                        )
+                        if let serverError = result.error {
+                            operationError = serverError
+                        }
+                    } catch {
+                        operationError = "Could not select ‘\(database)’: \(error.localizedDescription)"
+                    }
+                }
+            }
+        }
+        Button("Open SQL Editor", systemImage: "text.page") {
+            onSelectionChanged?(.query)
+        }
+        Button("Open in New Window", systemImage: "macwindow.badge.plus") {
+            let request = DatabaseWorkspaceWindowRequest.additional(
+                sessionID: sessionID,
+                initialSelection: .database(database)
+            )
+            openWindow(
+                id: "query-editor",
+                value: sessionManager.registerWorkspace(request)
+            )
+        }
+        .help("Open \(database) in another window on this connection")
+        Divider()
+        Button("Refresh", systemImage: "arrow.clockwise") {
+            tablesCache.removeValue(forKey: database)
+            Task { await loadTables(for: database) }
+        }
+    }
+
+    @ViewBuilder
+    private func tableActionMenu(_ table: String, database: String) -> some View {
+        Button("Browse Data", systemImage: "tablecells") {
+            onSelectionChanged?(.table(database: database, table: table))
+        }
+        Button("Copy Table Name", systemImage: "doc.on.doc") {
+            guard let connection = session?.connection else { return }
+            PlatformClipboard.copy(
+                "\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))"
+            )
+        }
+        Button("Copy SELECT Statement", systemImage: "text.page") {
+            guard let connection = session?.connection else { return }
+            let object = "\(connection.quotedIdentifier(database)).\(connection.quotedIdentifier(table))"
+            PlatformClipboard.copy("SELECT * FROM \(object) LIMIT 100;")
+        }
+        Divider()
+        Button("Refresh", systemImage: "arrow.clockwise") {
+            tablesCache.removeValue(forKey: database)
+            Task { await loadTables(for: database) }
+        }
+        Divider()
+        if session?.connection?.capabilities.contains(.truncateTable) == true {
+            Button("Truncate Table…", systemImage: "trash", role: .destructive) {
+                confirmingTruncate = SchemaMutationTarget(database: database, table: table)
+            }
+        }
+        Button("Drop Table…", systemImage: "xmark.bin", role: .destructive) {
+            confirmingDrop = SchemaMutationTarget(database: database, table: table)
         }
     }
 
@@ -355,6 +482,7 @@ struct SchemaBrowserView: View {
         do {
             databases = try await connection.databases()
         } catch {
+            await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
             errorMessage = error.localizedDescription
         }
         isLoading = false
@@ -367,6 +495,7 @@ struct SchemaBrowserView: View {
         do {
             tablesCache[database] = try await connection.tables(in: database)
         } catch {
+            await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
             loadErrors[database] = error.localizedDescription
             Logger.database.error("Failed to load tables for \(database): \(error)")
         }
@@ -379,7 +508,19 @@ struct SchemaBrowserView: View {
         do {
             rowCountCache[cacheKey] = try await connection.rowCount(table: table, database: database)
         } catch {
+            await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
             Logger.database.error("Failed to load row count for \(database).\(table): \(error)")
         }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func schemaSearchable(text: Binding<String>) -> some View {
+        #if os(iOS)
+        searchable(text: text, placement: .automatic, prompt: "Filter databases and tables")
+        #else
+        searchable(text: text, placement: .sidebar, prompt: "Filter")
+        #endif
     }
 }

@@ -248,10 +248,23 @@ enum KeychainManager {
     // MARK: - SSH Password (separate from DB password)
 
     static func saveSSHPassword(_ password: String, for connection: DatabaseConnectionConfig) throws {
-        try save(password, account: sshAccount(for: connection.id), descriptor: descriptor(
-            for: connection.sshCredentialPolicy,
-            kind: .sshPassword
-        ))
+        let storage = descriptor(for: connection.sshCredentialPolicy, kind: .sshPassword)
+        var writes = [CredentialWrite(
+            value: password,
+            account: sshAccount(for: connection.id),
+            destination: storage,
+            source: nil
+        )]
+        if connection.sshCredentialPolicy == .sharedWithGlas,
+           let compatibilityAccount = sharedSSHCompatibilityAccount(for: connection) {
+            writes.append(CredentialWrite(
+                value: password,
+                account: compatibilityAccount,
+                destination: storage,
+                source: nil
+            ))
+        }
+        _ = try applyCredentialMutation(writes: writes, deletions: [], store: .live)
     }
 
     static func retrieveSSHPassword(for connection: DatabaseConnectionConfig) throws -> String {
@@ -305,14 +318,27 @@ enum KeychainManager {
         }
         if let sshPassword, !sshPassword.isEmpty,
            connection.useSSHTunnel, connection.sshAuthMethod != .sshKey {
+            let sshDestination = descriptor(
+                for: connection.sshCredentialPolicy,
+                kind: .sshPassword
+            )
             writes.append(CredentialWrite(
                 value: sshPassword,
                 account: sshAccount(for: connection.id),
-                destination: descriptor(for: connection.sshCredentialPolicy, kind: .sshPassword),
+                destination: sshDestination,
                 source: previousConnection.map {
                     descriptor(for: $0.sshCredentialPolicy, kind: .sshPassword)
                 }
             ))
+            if connection.sshCredentialPolicy == .sharedWithGlas,
+               let compatibilityAccount = sharedSSHCompatibilityAccount(for: connection) {
+                writes.append(CredentialWrite(
+                    value: sshPassword,
+                    account: compatibilityAccount,
+                    destination: sshDestination,
+                    source: nil
+                ))
+            }
         }
 
         var deletions: [CredentialLocation] = []
@@ -342,31 +368,11 @@ enum KeychainManager {
             ))
         }
 
-        let locations = writes.map {
-            CredentialLocation(account: $0.account, descriptor: $0.destination)
-        } + deletions
-        let snapshots = try snapshotCredentials(at: locations, store: store)
-        do {
-            for write in writes {
-                try store.save(write.value, write.account, write.destination)
-                let verified = try store.retrieve(write.account, write.destination)
-                guard verified == write.value else { throw CredentialPolicyError.verificationFailed }
-            }
-            for deletion in uniqueLocations(deletions) {
-                guard try store.retrieve(deletion.account, deletion.descriptor) != nil else { continue }
-                try store.delete(deletion.account, deletion.descriptor)
-                guard try store.retrieve(deletion.account, deletion.descriptor) == nil else {
-                    throw CredentialPolicyError.verificationFailed
-                }
-            }
-        } catch {
-            do {
-                try restoreCredentialSnapshots(snapshots, store: store)
-            } catch {
-                throw CredentialPolicyError.mutationRollbackFailed
-            }
-            throw error
-        }
+        let snapshots = try applyCredentialMutation(
+            writes: writes,
+            deletions: deletions,
+            store: store
+        )
         return CredentialPersistenceReport(
             cleanupWarnings: [],
             rollbackReceipt: CredentialDeletionReceipt(snapshots: snapshots)
@@ -521,11 +527,11 @@ enum KeychainManager {
     }
 
     static func databaseAccount(for connectionID: UUID) -> String {
-        "database:\(connectionID.uuidString.lowercased())"
+        GlassFamilyCredentialAccount.databasePassword(profileID: connectionID)
     }
 
     static func sshAccount(for connectionID: UUID) -> String {
-        "ssh:\(connectionID.uuidString.lowercased())"
+        GlassFamilyCredentialAccount.sshPassword(profileID: connectionID)
     }
 
     static func legacyDatabaseAccount(for connection: DatabaseConnectionConfig) -> String {
@@ -534,6 +540,23 @@ enum KeychainManager {
 
     static func legacySSHAccount(for connection: DatabaseConnectionConfig) -> String {
         "ssh:\(connection.sshUsername ?? "")@\(connection.sshHost ?? ""):\(connection.sshPort ?? 22)"
+    }
+
+    /// Compatibility identity published only for an explicitly shared SSH
+    /// password. glas.sh uses this endpoint-scoped alias while glassdb retains
+    /// its UUID primary record, so either app can import the same shared value.
+    static func sharedSSHCompatibilityAccount(
+        for connection: DatabaseConnectionConfig
+    ) -> String? {
+        guard connection.useSSHTunnel,
+              connection.sshAuthMethod != .sshKey,
+              let username = connection.sshUsername?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !username.isEmpty,
+              let host = connection.sshHost?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !host.isEmpty else {
+            return nil
+        }
+        return "ssh:\(username)@\(host):\(connection.sshPort ?? 22)"
     }
 
     static func descriptor(
@@ -669,6 +692,39 @@ enum KeychainManager {
                 value: try store.retrieve(location.account, location.descriptor)
             )
         }
+    }
+
+    private static func applyCredentialMutation(
+        writes: [CredentialWrite],
+        deletions: [CredentialLocation],
+        store: CredentialMutationStore
+    ) throws -> [CredentialSnapshot] {
+        let locations = writes.map {
+            CredentialLocation(account: $0.account, descriptor: $0.destination)
+        } + deletions
+        let snapshots = try snapshotCredentials(at: locations, store: store)
+        do {
+            for write in writes {
+                try store.save(write.value, write.account, write.destination)
+                let verified = try store.retrieve(write.account, write.destination)
+                guard verified == write.value else { throw CredentialPolicyError.verificationFailed }
+            }
+            for deletion in uniqueLocations(deletions) {
+                guard try store.retrieve(deletion.account, deletion.descriptor) != nil else { continue }
+                try store.delete(deletion.account, deletion.descriptor)
+                guard try store.retrieve(deletion.account, deletion.descriptor) == nil else {
+                    throw CredentialPolicyError.verificationFailed
+                }
+            }
+        } catch {
+            do {
+                try restoreCredentialSnapshots(snapshots, store: store)
+            } catch {
+                throw CredentialPolicyError.mutationRollbackFailed
+            }
+            throw error
+        }
+        return snapshots
     }
 
     private static func restoreCredentialSnapshots(

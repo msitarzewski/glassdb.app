@@ -26,7 +26,7 @@ struct TableDetailView: View {
 
     @State private var selectedTab: TableTab = .data
     @State private var actionScope = UUID()
-    #if os(macOS)
+    #if os(macOS) || os(iOS)
     @State private var visitedTabs: Set<TableTab> = [.data]
     #endif
 
@@ -38,6 +38,8 @@ struct TableDetailView: View {
         Group {
             #if os(macOS)
             macOSContent
+            #elseif os(iOS)
+            iOSContent
             #else
             spatialContent
             #endif
@@ -84,6 +86,21 @@ struct TableDetailView: View {
                 DatabasePersistentToolbar {
                     onOpenSQLEditor?()
                 }
+                #elseif os(iOS)
+                ToolbarItem(placement: databaseContextToolbarPlacement) {
+                    Menu {
+                        Picker("Table View", selection: $selectedTab) {
+                            ForEach(TableTab.allCases) { tab in
+                                Label(tab.title, systemImage: tab.systemImage)
+                                    .tag(tab)
+                            }
+                        }
+                    } label: {
+                        Label(selectedTab.title, systemImage: selectedTab.systemImage)
+                    }
+                    .help("Choose table data, structure, DDL, indexes, or foreign keys")
+                    .accessibilityLabel("Table view: \(selectedTab.title)")
+                }
                 #endif
 
                 ToolbarItemGroup(placement: databaseExecutionToolbarPlacement) {
@@ -111,6 +128,7 @@ struct TableDetailView: View {
                         }
                     }
                 }
+                .databaseHighVisibilityPriority()
 
                 ToolbarItemGroup(placement: databaseToolbarPlacement) {
                     if selectedTab == .data {
@@ -161,6 +179,24 @@ struct TableDetailView: View {
 
     #if os(macOS)
     private var macOSContent: some View {
+        ZStack {
+            ForEach(TableTab.allCases.filter(visitedTabs.contains)) { tab in
+                let isActive = selectedTab == tab
+                tableContent(for: tab, isActive: isWorkspaceActive && isActive)
+                    .opacity(isActive ? 1 : 0)
+                    .allowsHitTesting(isActive)
+                    .accessibilityHidden(!isActive)
+                    .zIndex(isActive ? 1 : 0)
+            }
+        }
+        .onChange(of: selectedTab) { _, newTab in
+            visitedTabs.insert(newTab)
+        }
+    }
+    #endif
+
+    #if os(iOS)
+    private var iOSContent: some View {
         ZStack {
             ForEach(TableTab.allCases.filter(visitedTabs.contains)) { tab in
                 let isActive = selectedTab == tab
@@ -1071,6 +1107,10 @@ struct DataTabView: View {
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.editMode) private var editMode
+    #endif
 
     @State private var queryText = ""
     @State private var result: QueryResult?
@@ -1185,6 +1225,14 @@ struct DataTabView: View {
         columnMeta.lazy.filter { !stagedColumnLayout.hidden.contains($0.name) }.count
     }
 
+    private var usesCompactRecordList: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // SQL editor area remains subordinate to the user-controlled canvas.
@@ -1263,7 +1311,11 @@ struct DataTabView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let result {
-                dataGrid(result)
+                if usesCompactRecordList {
+                    compactRecordList(result)
+                } else {
+                    dataGrid(result)
+                }
             } else {
                 ContentUnavailableView(
                     "No Results",
@@ -1275,72 +1327,11 @@ struct DataTabView: View {
             // Pager bar at bottom
             if let result {
                 Divider()
-                HStack(spacing: 12) {
-                    let visibleRowCount = displayedRowIndices(in: result).count
-                    Text(displayFilters.isEmpty
-                        ? "\(result.rowCount) rows"
-                        : "\(visibleRowCount) of \(result.rowCount) loaded rows")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let totalRowCount {
-                        Text(displayFilters.isEmpty
-                            ? "\(totalRowCount) matching total"
-                            : "\(totalRowCount) server-matched total")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("total unavailable")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                    Text("in \(String(format: "%.3f", result.executionTime))s")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if isAutoRepeating {
-                        Label("Repeating \(Int(autoRepeatInterval))s", systemImage: "repeat")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-
-                    Spacer()
-
-                    Button {
-                        currentPage = max(1, currentPage - 1)
-                    } label: {
-                        Image(systemName: "chevron.left")
-                    }
-                    .disabled(currentPage <= 1)
-                    .accessibilityLabel("Previous page")
-                    .help("Show the previous page")
-
-                    Text("Page \(currentPage) of \(totalPages)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Button {
-                        currentPage = min(totalPages, currentPage + 1)
-                    } label: {
-                        Image(systemName: "chevron.right")
-                    }
-                    .disabled(currentPage >= totalPages)
-                    .accessibilityLabel("Next page")
-                    .help("Show the next page")
-
-                    Text("Per page:")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField("Rows per page", text: $pageSizeDraft)
-                        .frame(width: 60)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.caption)
-                        .focused($pageSizeFocused)
-                        .onSubmit { commitPageSizeDraft() }
-                        .accessibilityLabel("Rows per page")
-                        .help("Enter a value from 1 through 10,000")
+                if usesCompactRecordList {
+                    compactPager(result)
+                } else {
+                    fullPager(result)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
             }
         }
         .sheet(isPresented: $showEditor, onDismiss: presentQueuedRecordMutation) {
@@ -1486,7 +1477,8 @@ struct DataTabView: View {
             addingNewRow = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .glassdbRefreshData)) { notification in
-            guard notification.object as? UUID == actionScope else { return }
+            guard let scope = notification.object as? UUID,
+                  scope == actionScope || scope == sessionID else { return }
             queryText = ""
             Task { await loadData() }
         }
@@ -1574,6 +1566,146 @@ struct DataTabView: View {
         }
     }
 
+    @ViewBuilder
+    private func fullPager(_ result: QueryResult) -> some View {
+        HStack(spacing: 12) {
+            let visibleRowCount = displayedRowIndices(in: result).count
+            Text(displayFilters.isEmpty
+                ? "\(result.rowCount) rows"
+                : "\(visibleRowCount) of \(result.rowCount) loaded rows")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let totalRowCount {
+                Text(displayFilters.isEmpty
+                    ? "\(totalRowCount) matching total"
+                    : "\(totalRowCount) server-matched total")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("total unavailable")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            Text("in \(String(format: "%.3f", result.executionTime))s")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if isAutoRepeating {
+                Label("Repeating \(Int(autoRepeatInterval))s", systemImage: "repeat")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
+            Spacer()
+            pageButtons
+            Text("Per page:")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Rows per page", text: $pageSizeDraft)
+                .frame(width: 60)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .focused($pageSizeFocused)
+                .onSubmit { commitPageSizeDraft() }
+                .accessibilityLabel("Rows per page")
+                .help("Enter a value from 1 through 10,000")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private func compactPager(_ result: QueryResult) -> some View {
+        HStack(spacing: 10) {
+            Text("\(displayedRowIndices(in: result).count) rows")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            pageButtons
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private var pageButtons: some View {
+        ControlGroup {
+            Button {
+                currentPage = max(1, currentPage - 1)
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .disabled(currentPage <= 1)
+            .accessibilityLabel("Previous page")
+
+            Text("\(currentPage) of \(totalPages)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            Button {
+                currentPage = min(totalPages, currentPage + 1)
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(currentPage >= totalPages)
+            .accessibilityLabel("Next page")
+        }
+    }
+
+    @ViewBuilder
+    private func compactRecordList(_ result: QueryResult) -> some View {
+        #if os(iOS)
+        let visibleColumns = Array(gridVisibleColumnIndices(for: result).prefix(4))
+        List(selection: $selectedRowIndices) {
+            ForEach(displayedRowIndices(in: result), id: \.self) { rowIndex in
+                let row = result.rows[rowIndex]
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Row \((currentPage - 1) * pageSize + rowIndex + 1)")
+                            .font(.headline.monospacedDigit())
+                        Spacer()
+                        if selectedRowIndices.contains(rowIndex) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.tint)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    ForEach(visibleColumns, id: \.self) { columnIndex in
+                        let value = columnIndex < row.count ? row[columnIndex] : .null
+                        LabeledContent(result.columns[columnIndex].name) {
+                            Text(value.displayString)
+                                .font(.system(.subheadline, design: .monospaced))
+                                .foregroundStyle(value.isNull ? .tertiary : .primary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .tag(rowIndex)
+                .onTapGesture {
+                    if editMode?.wrappedValue != .active {
+                        openEditor(for: rowIndex)
+                    }
+                }
+                .contextMenu {
+                    Button("Edit Row", systemImage: "pencil") {
+                        openEditor(for: rowIndex)
+                    }
+                    Button("Copy Row", systemImage: "doc.on.doc") {
+                        selectedRowIndices = [rowIndex]
+                        copySelectedRange()
+                    }
+                }
+                .accessibilityHint("Tap to edit. Use Edit mode to select rows for export.")
+            }
+        }
+        .listStyle(.insetGrouped)
+        #else
+        dataGrid(result)
+        #endif
+    }
+
     // MARK: - Data Grid
 
     @ViewBuilder
@@ -1584,10 +1716,57 @@ struct DataTabView: View {
         }
         .scrollIndicators(.automatic)
         .accessibilityLabel("Table data controls")
+        #elseif os(iOS)
+        if usesCompactRecordList {
+            compactGridControls
+        } else {
+            ScrollView(.horizontal) {
+                gridControls
+            }
+            .scrollIndicators(.automatic)
+            .accessibilityLabel("Table data controls")
+        }
         #else
         gridControls
         #endif
     }
+
+    #if os(iOS)
+    private var compactGridControls: some View {
+        HStack {
+            EditButton()
+            Spacer()
+            Button {
+                beginFilterEditing()
+            } label: {
+                Label(activeFilterCount == 0 ? "Filter" : "Filter \(activeFilterCount)", systemImage: "line.3.horizontal.decrease.circle")
+            }
+            Menu("More", systemImage: "ellipsis.circle") {
+                Button("Choose Columns", systemImage: "rectangle.split.3x1") {
+                    beginColumnManagement()
+                }
+                Button("Copy Selected Rows", systemImage: "doc.on.doc") {
+                    copySelectedRange()
+                }
+                .disabled(selectedRowIndices.isEmpty)
+                Button("Import TSV", systemImage: "square.and.arrow.down") {
+                    showTSVImporter = true
+                }
+                Divider()
+                Button("Count All Rows", systemImage: "function") {
+                    addAggregate(.countAll, columnName: nil)
+                }
+                if !groupColumns.isEmpty || !aggregates.isEmpty {
+                    Button("Clear Analysis", systemImage: "xmark.circle") {
+                        clearAnalysis()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+    #endif
 
     private var gridControls: some View {
         HStack(spacing: 8) {
@@ -2107,7 +2286,10 @@ struct DataTabView: View {
                                                 ? Color.accentColor.opacity(0.22)
                                                 : Color.clear
                                         )
-                                        .databaseCanvasPinnedSurface(opacity: settingsManager.windowOpacity)
+                                        .databaseCanvasPinnedSurface(
+                                            opacity: settingsManager.windowOpacity,
+                                            blur: settingsManager.blurBackground
+                                        )
                                         .visualEffect { content, proxy in
                                             content.offset(x: max(0, -proxy.frame(in: .scrollView(axis: .horizontal)).minX))
                                         }
@@ -2169,7 +2351,10 @@ struct DataTabView: View {
                                 HStack(spacing: 0) {
                                     Color.clear
                                         .frame(width: rowNumWidth, height: rowHeight)
-                                        .databaseCanvasPinnedSurface(opacity: settingsManager.windowOpacity)
+                                        .databaseCanvasPinnedSurface(
+                                            opacity: settingsManager.windowOpacity,
+                                            blur: settingsManager.blurBackground
+                                        )
                                         .visualEffect { content, proxy in
                                             content.offset(x: max(0, -proxy.frame(in: .scrollView(axis: .horizontal)).minX))
                                         }
@@ -2197,7 +2382,10 @@ struct DataTabView: View {
                                 Text("#")
                                     .font(.system(size: fontSize, weight: .bold, design: .monospaced))
                                     .frame(width: rowNumWidth, alignment: .center)
-                                    .databaseCanvasPinnedSurface(opacity: settingsManager.windowOpacity)
+                                    .databaseCanvasPinnedSurface(
+                                        opacity: settingsManager.windowOpacity,
+                                        blur: settingsManager.blurBackground
+                                    )
                                     .visualEffect { content, proxy in
                                         content.offset(x: max(0, -proxy.frame(in: .scrollView(axis: .horizontal)).minX))
                                     }
@@ -2276,7 +2464,10 @@ struct DataTabView: View {
                                 }
                             }
                             .frame(height: headerHeight)
-                            .databaseCanvasPinnedSurface(opacity: settingsManager.windowOpacity)
+                            .databaseCanvasPinnedSurface(
+                                opacity: settingsManager.windowOpacity,
+                                blur: settingsManager.blurBackground
+                            )
                         }
                     }
                 }
@@ -2851,6 +3042,7 @@ struct DataTabView: View {
             }
             restoreSelection(identity: preservedIdentity, in: loadedResult)
         } catch {
+            await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
             errorMessage = error.localizedDescription
             errorIsQueryFailure = true
         }

@@ -8,16 +8,21 @@
 
 import SwiftUI
 import GlassDBKit
+#if os(iOS)
+import UIKit
+#endif
 
 // MARK: - Selection Model
 
-enum WorkspaceSelection: Hashable {
+enum WorkspaceSelection: Hashable, Codable {
+    case connection
     case database(String)
     case table(database: String, table: String)
     case query
 
     var title: String {
         switch self {
+        case .connection: "Overview"
         case .database(let database): database
         case .table(_, let table): table
         case .query: "SQL"
@@ -26,6 +31,7 @@ enum WorkspaceSelection: Hashable {
 
     var systemImage: String {
         switch self {
+        case .connection: "externaldrive.connected.to.line.below"
         case .database: "cylinder"
         case .table: "tablecells"
         case .query: "text.page"
@@ -34,18 +40,59 @@ enum WorkspaceSelection: Hashable {
 
     var helpText: String {
         switch self {
+        case .connection: "Connection overview"
         case .database(let database): "Database inspector for \(database)"
         case .table(let database, let table): "Table editor for \(database).\(table)"
         case .query: "SQL editor"
         }
     }
 
-    var isClosable: Bool { self != .query }
+    var isClosable: Bool {
+        switch self {
+        case .connection, .query: false
+        case .database, .table: true
+        }
+    }
+
+    var usesOverviewRefreshAction: Bool {
+        switch self {
+        case .connection, .database: true
+        case .table, .query: false
+        }
+    }
+}
+
+/// Scene value for a database workspace. The session identifies the shared
+/// live connection while `id` identifies one independent window over it.
+struct DatabaseWorkspaceWindowRequest: Hashable, Codable, Identifiable {
+    let id: UUID
+    let sessionID: UUID
+    let initialSelection: WorkspaceSelection
+
+    static func primary(sessionID: UUID) -> Self {
+        Self(id: sessionID, sessionID: sessionID, initialSelection: .connection)
+    }
+
+    static func additional(
+        sessionID: UUID,
+        initialSelection: WorkspaceSelection = .connection,
+        id: UUID = UUID()
+    ) -> Self {
+        Self(id: id, sessionID: sessionID, initialSelection: initialSelection)
+    }
 }
 
 struct WorkspaceTabState: Equatable {
-    private(set) var tabs: [WorkspaceSelection] = [.query]
-    private(set) var selected: WorkspaceSelection = .query
+    private(set) var tabs: [WorkspaceSelection]
+    private(set) var selected: WorkspaceSelection
+
+    init(initialSelection: WorkspaceSelection = .connection) {
+        let permanentTabs: [WorkspaceSelection] = [.connection, .query]
+        tabs = permanentTabs.contains(initialSelection)
+            ? permanentTabs
+            : permanentTabs + [initialSelection]
+        selected = initialSelection
+    }
 
     mutating func open(_ destination: WorkspaceSelection) {
         if case .database = destination {
@@ -81,18 +128,31 @@ struct DatabaseWorkspaceView: View {
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var scenePhase
+    #if os(iOS)
+    @Environment(IOSAppRouter.self) private var iOSRouter
+    #endif
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
-    @State private var tabState = WorkspaceTabState()
+    @State private var tabState: WorkspaceTabState
     @State private var databases: [String] = []
+    @State private var overviewRefreshTrigger = 0
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
     }
 
+    init(sessionID: UUID, initialSelection: WorkspaceSelection = .connection) {
+        self.sessionID = sessionID
+        _tabState = State(initialValue: WorkspaceTabState(initialSelection: initialSelection))
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SchemaBrowserView(sessionID: sessionID) { newSelection in
-                tabState.open(newSelection)
+            SchemaBrowserView(
+                sessionID: sessionID,
+                selection: tabState.selected
+            ) { newSelection in
+                openWorkspace(newSelection)
             }
             .databaseSidebarColumnWidth()
             .databaseWorkspaceSidebarMaterial()
@@ -102,6 +162,9 @@ struct DatabaseWorkspaceView: View {
         }
         .databaseWorkspaceWindowBackground()
         .databaseWorkspaceWindowChrome()
+        .overlay {
+            connectionRecoveryOverlay
+        }
         .navigationTitle(detailTitle)
         #if os(macOS)
         .toolbar(removing: .title)
@@ -136,28 +199,249 @@ struct DatabaseWorkspaceView: View {
             #if !os(macOS)
             ToolbarItemGroup(placement: databaseToolbarPlacement) {
                 Button {
-                    tabState.open(.query)
+                    openWorkspace(.query)
                 } label: {
-                    Label("SQL Editor", systemImage: "text.page")
+                    Label("SQL Editor", systemImage: "chevron.left.forwardslash.chevron.right")
                 }
                 .help("Show the SQL editor")
+                .accessibilityLabel("SQL Editor")
+                .accessibilityHint("Opens the connected SQL query editor")
+
+                if tabState.selected.usesOverviewRefreshAction {
+                    Button {
+                        overviewRefreshTrigger &+= 1
+                    } label: {
+                        Label("Refresh Overview", systemImage: "arrow.clockwise")
+                    }
+                    .help("Reload the active overview")
+                    .accessibilityLabel("Refresh Overview")
+                    .accessibilityHint("Reloads the active connection or database overview")
+                }
 
                 Button {
+                    #if os(iOS)
+                    if UIDevice.current.userInterfaceIdiom == .phone {
+                        iOSRouter.showSettings()
+                    } else {
+                        openWindow(id: "settings")
+                    }
+                    #else
                     openWindow(id: "settings")
+                    #endif
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
                 .help("Open Settings")
+                .accessibilityLabel("Settings")
+                .accessibilityHint("Opens glassdb settings")
             }
             #endif
         }
-        .task {
-            await loadDatabases()
+        .task(id: sessionID) {
+            await monitorConnectionState()
         }
         .onAppear {
             if !settingsManager.showSidebarByDefault {
                 columnVisibility = .detailOnly
             }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                Task {
+                    _ = await sessionManager.validateSessionAfterForeground(
+                        sessionID: sessionID
+                    )
+                }
+            } else {
+                sessionManager.noteSessionSuspended(sessionID: sessionID)
+            }
+        }
+    }
+
+    // MARK: - Connection Recovery
+
+    @ViewBuilder
+    private var connectionRecoveryOverlay: some View {
+        if let session, !session.state.isConnected {
+            ZStack {
+                Rectangle()
+                    .fill(.black.opacity(0.22))
+                    .background(.ultraThinMaterial)
+                    .ignoresSafeArea()
+
+                connectionRecoveryCard(for: session)
+                    .padding(24)
+            }
+            .transition(.opacity)
+            .zIndex(100)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Database connection unavailable")
+        } else if session == nil {
+            ZStack {
+                Rectangle()
+                    .fill(.black.opacity(0.22))
+                    .background(.ultraThinMaterial)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 16) {
+                    Image(systemName: "cable.connector.slash")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text("Connection Closed")
+                        .font(.title2.bold())
+                    Text("This workspace's database session has ended.")
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Show Connections") {
+                        openWindow(id: "main")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(28)
+                .frame(maxWidth: 440)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.18), radius: 30, y: 12)
+                .padding(24)
+            }
+            .transition(.opacity)
+            .zIndex(100)
+        }
+    }
+
+    private func connectionRecoveryCard(for session: DatabaseSession) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: recoveryIcon(for: session.state))
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(recoveryTint(for: session.state))
+                    .symbolEffect(.pulse, isActive: session.state.isConnecting)
+                    .frame(width: 34)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(recoveryTitle(for: session.state))
+                        .font(.title2.bold())
+                    Text(recoveryMessage(for: session.state))
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if let detail = session.lastConnectionError,
+               !detail.isEmpty {
+                Divider()
+                Text(detail)
+                    .font(.callout.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 10) {
+                if session.state.isConnecting {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Restoring the saved connection…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button {
+                        Task {
+                            try? await sessionManager.reconnect(sessionID: sessionID)
+                        }
+                    } label: {
+                        Label("Reconnect", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .help("Reconnect with the credentials already saved for this connection")
+
+                    Button("Show Connections") {
+                        openWindow(id: "main")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(26)
+        .frame(maxWidth: 520, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(recoveryTint(for: session.state).opacity(0.38), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 32, y: 14)
+    }
+
+    private func recoveryTitle(for state: SessionState) -> String {
+        switch state {
+        case .disconnected: "Disconnected"
+        case .connecting: "Reconnecting…"
+        case .error: "Couldn't Reconnect"
+        case .connected: "Connected"
+        }
+    }
+
+    private func recoveryMessage(for state: SessionState) -> String {
+        switch state {
+        case .disconnected:
+            "The database connection timed out or was closed. Reconnect to continue without losing this workspace."
+        case .connecting(let stage):
+            stage.rawValue
+        case .error:
+            "glassdb couldn't restore the saved connection. Review the detail below, then try again."
+        case .connected:
+            "The database connection is ready."
+        }
+    }
+
+    private func recoveryIcon(for state: SessionState) -> String {
+        switch state {
+        case .disconnected: "cable.connector.slash"
+        case .connecting: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .error: "exclamationmark.triangle.fill"
+        case .connected: "checkmark.circle.fill"
+        }
+    }
+
+    private func recoveryTint(for state: SessionState) -> Color {
+        switch state {
+        case .disconnected: .orange
+        case .connecting: .accentColor
+        case .error: .red
+        case .connected: .green
+        }
+    }
+
+    private func monitorConnectionState() async {
+        var wasConnected = false
+        var isInitialCheck = true
+        while !Task.isCancelled {
+            if scenePhase == .active {
+                let validation = await sessionManager.validateSessionAfterForeground(
+                    sessionID: sessionID
+                )
+                let isConnected = validation == .connected
+                if isConnected && !wasConnected {
+                    await loadDatabases()
+                    if !isInitialCheck {
+                        NotificationCenter.default.post(
+                            name: .glassdbRefreshData,
+                            object: sessionID
+                        )
+                    }
+                }
+                wasConnected = isConnected
+                isInitialCheck = false
+            } else {
+                sessionManager.noteSessionSuspended(sessionID: sessionID)
+            }
+            try? await Task.sleep(for: .seconds(5))
         }
     }
 
@@ -202,7 +486,7 @@ struct DatabaseWorkspaceView: View {
                     let isSelected = destination == tabState.selected
                     HStack(spacing: 2) {
                         Button {
-                            tabState.open(destination)
+                            openWorkspace(destination)
                         } label: {
                             Label(destination.title, systemImage: destination.systemImage)
                                 .lineLimit(1)
@@ -260,36 +544,51 @@ struct DatabaseWorkspaceView: View {
         isActive: Bool
     ) -> some View {
         switch destination {
+        case .connection:
+            ConnectionOverviewView(
+                sessionID: sessionID,
+                isWorkspaceActive: isActive,
+                refreshTrigger: overviewRefreshTrigger,
+                onOpenDatabase: { database in
+                    openWorkspace(.database(database))
+                },
+                onOpenSQLEditor: {
+                    openWorkspace(.query)
+                }
+            )
         case .table(let database, let table):
             TableDetailView(
                 sessionID: sessionID,
                 database: database,
                 table: table,
                 isWorkspaceActive: isActive,
-                onOpenSQLEditor: { tabState.open(.query) }
+                onOpenSQLEditor: { openWorkspace(.query) }
             )
         case .database(let database):
             DatabaseDetailView(
                 sessionID: sessionID,
                 database: database,
                 isWorkspaceActive: isActive,
+                refreshTrigger: overviewRefreshTrigger,
                 onOpenTable: { table in
-                    tabState.open(.table(database: database, table: table))
+                    openWorkspace(.table(database: database, table: table))
                 }
             ) {
-                tabState.open(.query)
+                openWorkspace(.query)
             }
         case .query:
             QueryEditorView(
                 sessionID: sessionID,
                 isWorkspaceActive: isActive,
-                onOpenSQLEditor: { tabState.open(.query) }
+                onOpenSQLEditor: { openWorkspace(.query) }
             )
         }
     }
 
     private var detailTitle: String {
         switch tabState.selected {
+        case .connection:
+            return session?.connectionConfig.name ?? "Overview"
         case .table(let database, let table):
             return "\(database) · \(table)"
         case .database(let database):
@@ -308,7 +607,20 @@ struct DatabaseWorkspaceView: View {
 
     private func closeWorkspace(_ destination: WorkspaceSelection) {
         withAnimation(.snappy) {
-            _ = tabState.close(destination)
+            var updatedState = tabState
+            guard updatedState.close(destination) else { return }
+            tabState = updatedState
+        }
+    }
+
+    /// Assign a new state value instead of mutating a nested `@State` value in
+    /// an escaping sidebar/menu callback. This gives every SwiftUI scene an
+    /// explicit invalidation, including regular-width iPad workspaces.
+    private func openWorkspace(_ destination: WorkspaceSelection) {
+        var updatedState = tabState
+        updatedState.open(destination)
+        withAnimation(.snappy) {
+            tabState = updatedState
         }
     }
 
@@ -317,7 +629,7 @@ struct DatabaseWorkspaceView: View {
         do {
             databases = try await connection.databases()
         } catch {
-            // Non-critical — sidebar also loads databases independently
+            await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
         }
     }
 }
