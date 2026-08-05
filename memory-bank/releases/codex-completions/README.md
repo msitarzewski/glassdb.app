@@ -45,6 +45,22 @@ The passwordless `caching_sha2_password` regression was additionally reproduced 
 - Secure Enclave keys and user-presence-protected secrets are intentionally device-bound and require per-device provisioning. App-only credentials are neither family-shared nor downgrade-shadowed.
 - The final UX must distinguish app-family sharing, device synchronization, and authentication requirements, including the cross-device effect of deleting a synchronized credential.
 
+## Approved next product program — 2026-08-05
+
+- C3 and glas.sh Phase 08 jointly own the *Magic / First Class* **My
+  Connections** experience: define an SSH connection once, find it in glas.sh and
+  glassdb on supported Apple devices, and use it as a terminal destination or
+  database tunnel with minimal intervention.
+- glassdb owns the database overlay and tunnel picker; a neutral endpoint model
+  owns reusable SSH facts; GlasSecretStore owns credential identity,
+  availability, material, policy, and host trust.
+- Canonical acceptance path: define an eligible connection in glas.sh on iPhone,
+  then select and use it in glassdb on Vision Pro as a database SSH tunnel without
+  re-entering endpoint or credential data.
+- This is approved direction, not implementation evidence. Current records remain
+  `WhenUnlockedThisDeviceOnly`, the compatibility bridge is same-device, and no
+  public cross-device claim is authorized.
+
 ## Migration and Rollback
 
 - Existing endpoint-keyed credentials are copied to UUID-keyed records; their legacy Keychain records are retained for immediate rollback.
@@ -74,7 +90,7 @@ Allowed statuses: `not started`, `in progress`, `blocked`, `done`.
 | C0 | [Baseline & Truthful Status](C0-baseline-truth.md) | in progress | — | Claims match operational behavior; reproducible baseline |
 | C1 | [Transport Security & Host Trust](C1-transport-trust.md) | in progress | C0 | Verified TLS and SSH host identity |
 | C2 | [Query Core & Value Fidelity](C2-query-core.md) | in progress | C0 | Typed, precise, cancellable, parser-backed execution |
-| C3 | [Credentials & Secret Integration](C3-credentials-secrets.md) | in progress | C0, C1 | Collision-free migrated credentials and explicit policies |
+| C3 | [Credentials & Secret Integration](C3-credentials-secrets.md) | in progress | C0, C1 | My Connections endpoint/credential references, collision-free migration, honest availability, and explicit policies |
 | C4 | [Safe Mutations](C4-safe-mutations.md) | in progress | C1-C3 | Previewed, bound, transactional, auditable changes |
 | C5 | [Professional Query Environment](C5-query-environment.md) | in progress | C2, C4 | Documents, completion, history, diagnostics, limits |
 | C6 | [Desktop-Class Data Grid](C6-data-grid.md) | in progress | C2, C4 | Server-aware grid and transactional batch editing |
@@ -131,7 +147,7 @@ IDs make the external audit stable and checkable even if implementation files mo
 - [x] SQL scripts are parser-backed; bounded/paged reads, timeout, transactions, and local/abortive cancellation outcomes are tested. Automatic reconnect and incremental streaming remain explicit non-capabilities.
 - [ ] Every mutation has deterministic classification, preview/confirmation, error propagation, and affected-row verification.
 - [x] Credentials use stable connection IDs, migrations are exercised, same-device policies are visible, and persistence failures reach the user.
-- [ ] GlasSecretStore owns a stable family credential catalog and synchronizes eligible secrets across supported devices; Secure Enclave/user-presence exceptions are explicit and tested.
+- [ ] GlasSecretStore owns a stable family credential catalog and synchronizes eligible secrets across supported devices; glassdb consumes neutral SSH endpoints as database tunnels; Secure Enclave/user-presence exceptions and outcome-oriented availability states are explicit and tested.
 - [x] AI generation writes to the editor, never directly executes, and uses deterministic safety gates with explicit privacy controls.
 - [x] All settings shown to users have operational consumers or are removed.
 - [ ] Appearance controls are operational in the Vision Pro `query-editor` workspace: opacity includes 0% (fully transparent), blur is continuously adjustable, and both persist without compromising usable controls or text legibility; general app windows retain system materials.

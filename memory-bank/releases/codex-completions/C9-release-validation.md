@@ -40,6 +40,12 @@ Prove the completed native Vision Pro and Apple-silicon Mac release is secure, c
 - [x] Update the release tracker and C7/C9 platform/validation records from verified evidence; public/App Store copy remains gated on signed/device acceptance.
 - [ ] Publish known limitations, supported server/OS matrix, migration/rollback plan, and incident-response path.
 - [ ] Obtain explicit release approval after reviewing residual risks; TestFlight is not an automatic consequence of a green build.
+- [ ] If C3 is included, run fresh-install and upgrade pairs across supported
+  platforms plus the canonical glas.sh/iPhone -> glassdb/Vision Pro SSH-tunnel
+  journey, reverse direction, delayed-secret recovery, iCloud account change,
+  deletion/rotation, and Secure Enclave enrollment.
+- [ ] Keep public **My Connections** claims absent until that signed-device matrix
+  passes.
 
 ## Exit Criteria
 
@@ -47,6 +53,8 @@ Prove the completed native Vision Pro and Apple-silicon Mac release is secure, c
 - [ ] Every gate in [the Codex Completions release tracker](README.md#release-exit-gates) passes or has an explicit residual-risk disposition.
 - [ ] There are no unexplained warnings, skipped blocker tests, silent failures, or overstated claims.
 - [ ] The release has a signed-off compatibility matrix, rollback plan, and residual-risk register.
+- [ ] If C3 is included, **My Connections** onboarding and cross-app/device tunnel
+  use pass with honest credential availability and no secret in endpoint metadata.
 
 ## Residual-Risk Register
 
@@ -55,6 +63,9 @@ Prove the completed native Vision Pro and Apple-silicon Mac release is secure, c
 - **Foundation Models**: framework linkage and availability gating work, but direct generation returned model-manager error 1008 in the unsigned/direct context. Successful on-device generation is not claimed.
 - **Physical Vision Pro**: simulator/build tests do not complete the required opacity/blur, legibility, restoration, eye-and-hand, VoiceOver, or multiwindow acceptance on hardware. The live database workspace must retain 0% opacity and continuous opacity/blur adjustment; general windows must retain system materials.
 - **Credential synchronization**: cross-device synchronization is not implemented. Current eligible sharing is designed for the same signed app family/device; Secure Enclave and user-presence secrets remain device-bound.
+- **Magic / First Class experience**: the product/architecture direction is
+  approved, but neutral endpoint sync, eligible credential mobility, onboarding,
+  and the canonical cross-app tunnel journey remain unimplemented and unclaimed.
 - **Citadel environment skips**: the suite reports 31 tests, 5 environment-gated skips, and 0 failures. Those skips are recorded and may not be treated as signed App Group/Keychain or external SSH acceptance evidence.
 - **Temporary mysql-nio fork**: GlassDBKit and Xcode are pinned to reviewed commit `3ad138f`. Vapor mysql-nio PR #126 is draft and cleanly mergeable, but upstream CI is still `action_required` pending maintainer approval; replace the pin with an upstream release only after that release contains the fix.
 

@@ -90,6 +90,40 @@
 - Passwords stored in Keychain via GlasSecretStore, connection configs in UserDefaults. The shared access group/App Group is a same-device bridge; eligible-secret cross-device sync and its stable family catalog remain C3 work.
 - SSH key auth: Ed25519, RSA, and Secure Enclave-wrapped P256 material.
 
+## Glass-Family Connection and Tunnel Contract
+
+- The product invariant is *define once, find everywhere, connect with minimal
+  intervention*. glassdb presents shared SSH endpoints under **My Connections**
+  and lets a database configuration select one as its tunnel.
+- A neutral, versioned `EndpointProfile` owns reusable non-secret SSH facts and a
+  stable `EndpointID`: display name, host, port, username, jump-chain references,
+  tags, timestamps, deletion state, and schema version.
+- The glassdb overlay owns database-only facts—engine, database host/port,
+  database username, TLS policy, selected database, color/favorite state, and a
+  `tunnelEndpointID`. It must not duplicate or reinterpret glas.sh terminal or
+  workspace behavior.
+- An endpoint references a stable Glass-family `CredentialID`. GlasSecretStore
+  owns credential identity, kind, availability, Keychain policy, secret material,
+  and host trust; glassdb resolves those states but does not create a second
+  credential catalog.
+- App sharing, device mobility, and authentication kind are independent policy
+  axes. Endpoint metadata can arrive before its credential, and a visible
+  connection is not presented as usable until the local availability state is
+  honest.
+- Outcome-oriented states are **Ready**, **Still Syncing**, **Sign In to iCloud**,
+  **Set Up This Key**, and **Review Fingerprint**. Never silently replace a
+  device-bound Secure Enclave identity with a password or exportable key.
+- Preserve explicit host-fingerprint review, user presence, local-network access,
+  and optional-network authorization. These are security boundaries, not sync
+  failures.
+- Current `DatabaseConnectionConfig` SSH fields and endpoint-derived compatibility
+  aliases are migration sources, not the final family identity. Migration must be
+  versioned, collision-safe, rollback-aware, and retain app-specific database
+  configuration while adopting `EndpointID`/`CredentialID` references.
+- Extend the existing `ConnectionManager`, Keychain integration, App Group bridge,
+  GlasSecretStore, and iCloud integration. Do not introduce another endpoint or
+  credential authority inside `GlassDBKit`, Citadel, or the UI layer.
+
 ## Glass Material Pattern (visionOS 26)
 - Only the `query-editor` database workspace uses `.windowStyle(.plain)` and user-controlled 0...1 opacity/blur.
 - Connections, Settings, detached results, alerts, and sheets keep system-provided materials.
