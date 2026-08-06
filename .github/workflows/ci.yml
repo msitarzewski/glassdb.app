@@ -17,10 +17,22 @@ jobs:
     name: Application and package tests
     runs-on: xcode-27
     timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: glassdb.app
 
     steps:
-      - name: Check out repository
+      - name: Check out glassdb
         uses: actions/checkout@v6
+        with:
+          path: glassdb.app
+
+      - name: Check out GlasSecretStore dependency
+        uses: actions/checkout@v6
+        with:
+          repository: msitarzewski/GlasSecretStore
+          ref: 838e052680ff746f77188e72d58dd213f224ca8b
+          path: GlasSecretStore
 
       - name: Report toolchain
         run: |
