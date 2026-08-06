@@ -392,7 +392,11 @@ struct QueryEditorView: View {
                     } label: {
                         Label("Execute Statement", systemImage: "play.fill")
                     }
-                    .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
+                    .disabled(
+                        session?.state.isConnected != true
+                            || queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || isExecuting
+                    )
                     .keyboardShortcut(.return, modifiers: .command)
                 }
                 .databaseHighVisibilityPriority()
@@ -403,7 +407,11 @@ struct QueryEditorView: View {
                     } label: {
                         Label("Execute Script", systemImage: "play.square.stack")
                     }
-                    .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
+                    .disabled(
+                        session?.state.isConnected != true
+                            || queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || isExecuting
+                    )
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
 
                     Button {
@@ -411,7 +419,11 @@ struct QueryEditorView: View {
                     } label: {
                         Label("Explain Plan", systemImage: "point.3.connected.trianglepath.dotted")
                     }
-                    .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isExecuting)
+                    .disabled(
+                        session?.state.isConnected != true
+                            || queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || isExecuting
+                    )
                     .keyboardShortcut("e", modifiers: [.command, .shift])
 
                     if isExecuting,
@@ -506,6 +518,14 @@ struct QueryEditorView: View {
         }
         .task(id: session?.currentDatabase) {
             await loadCompletionIdentifiers()
+        }
+        .onChange(of: session?.state) {
+            guard session?.state.isConnected == true else { return }
+            if let error = currentResult?.error,
+               DatabaseSessionManager.isTerminalConnectionError(error) {
+                currentResult = nil
+                saveActiveTab()
+            }
         }
         .fileImporter(
             isPresented: $showingSQLImporter,
@@ -1034,7 +1054,8 @@ struct QueryEditorView: View {
     }
 
     private func prepareExplainExecution() {
-        guard let statement = SQLHighlighter.statementsToExecute(
+        guard session?.state.isConnected == true,
+              let statement = SQLHighlighter.statementsToExecute(
             in: queryText,
             selectedRange: selectedRange
         ).first else { return }
@@ -1042,7 +1063,7 @@ struct QueryEditorView: View {
     }
 
     private func prepareExecution(_ statements: [SQLStatement]) {
-        guard !statements.isEmpty else { return }
+        guard session?.state.isConnected == true, !statements.isEmpty else { return }
         if statements.contains(where: { $0.safety.requiresConfirmation }) {
             statementsAwaitingConfirmation = statements
             showingExecutionConfirmation = true

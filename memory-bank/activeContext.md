@@ -1,12 +1,23 @@
 # Active Context
 
 ## Current Phase
-`codex-completions` final release validation. The application now has native arm64 shells for Vision Pro (visionOS 26.0+) and Apple silicon Mac (macOS 27.0+); Intel and Mac Catalyst remain excluded. GlassDBKit provides MySQL, PostgreSQL, and managed-copy SQLite adapters, and GlasSecretStore remains the shared credential package.
+`platforms-plus-plus` external release acceptance. The shared native arm64 target now builds focused iPhone, desktop-class iPad, Apple silicon Mac, and Vision Pro applications. iOS/iPadOS and visionOS require 26.0+, macOS requires 27.0+, and Intel plus Mac Catalyst remain excluded. GlassDBKit provides MySQL, PostgreSQL, and managed-copy SQLite adapters, while GlasSecretStore remains the canonical Glass-family credential package.
 
 ## Current Focus
-The native macOS implementation and automated platform/package QA are complete. MySQL passwordless `caching_sha2_password` authentication is corrected by an immutable temporary pin to `msitarzewski/mysql-nio` commit `3ad138f`; the upstream draft is Vapor mysql-nio PR #126 and its first-time-contributor workflow still requires maintainer approval. Remaining release work is explicitly separated into: (1) external provisioning/distribution signing and physical-device acceptance, including Vision Pro/Mac Keychain, user-presence, Secure Enclave, and supported Foundation Models checks; (2) C3 cross-device credential synchronization for eligible secrets; and (3) human review of residual risks and release approval. The coordinated GlasSecretStore hardening dependency is published in PR #2 (`b21c137`). Secure Enclave and user-presence-protected secrets remain intentionally device-bound and require per-device provisioning. TestFlight submission is not automatic.
+The four-platform implementation and automated simulator/package QA are complete. The final matrix passed 101 application tests on macOS 27, iPhone iOS 27, iPad iOS 27, Vision Pro visionOS 26.5, and Vision Pro visionOS 27. A dependency penetration scan found and repaired three swift-nio 2.96.0 advisories by locking Apple swift-nio 2.100.0; the post-fix OSV scan, Xcode Analyze, GlassDBKit, Citadel, Mac, iPhone, and Vision suites pass. Remaining release work is external: correctly signed physical-device acceptance, live MySQL/PostgreSQL/TLS/SSH/Tailscale/path-loss testing, assistive-technology and Instruments review, an iOS 26 runtime fallback pass, and explicit human release approval. GlasSecretStore defines canonical UUID accounts; glassdb atomically publishes the glas.sh SSH compatibility record for explicitly shared credentials and rolls both records back on partial failure. User-presence and Secure Enclave secrets remain intentionally device-bound. The approved next cross-repository program is the *Magic / First Class* **My Connections** contract: neutral endpoint identity, glassdb database/tunnel overlays, GlasSecretStore credential availability, outcome-oriented onboarding, and cross-device acceptance. It is not implemented and no public sync claim is authorized. No TestFlight submission is automatic.
 
 ## Recent Changes
+
+### Platforms Plus Plus (2026-07-21) — Native iPhone/iPad and Four-Platform Validation
+- Extended the existing shared SwiftUI target to native iPhone and iPad (iOS/iPadOS 26.0+, families 1/2) without Catalyst or a second engine/state implementation; all app and test products remain arm64-only
+- Added a compact iPhone router and native connection/list/table-summary flows while retaining `NavigationSplitView`, multiwindow workspaces, and the professional regular-width data plane for iPad, Mac, and Vision Pro
+- Removed implicit connection submission from host/user field editing; explicit Test and Save & Connect actions now own connection attempts
+- Preserved the product-defining Vision/Mac live database content opacity and blur controls while keeping ordinary app chrome on Apple system materials
+- Centralized Glass-family UUID credential account names in GlasSecretStore and made shared SSH password publishing compatible with glas.sh through an atomic dual-write/rollback contract; private and user-presence policies remain isolated
+- Added local-network permission metadata and actionable classification, foreground transport validation, explicit reconnect recovery, bounded ownership across multiple windows, and direct IPv4/IPv6/localhost/Tailscale host preservation
+- Completed five 101-test destination runs (Mac, iPhone, iPad, visionOS 26.5, visionOS 27), generic unsigned iOS/visionOS device builds, 69 GlasSecretStore tests, 25 GlassDBKit tests, and 31 Citadel tests
+- Repaired swift-nio security advisories by moving the shipping lock from 2.96.0 to 2.100.0; OSV now reports no issues and post-remediation Mac/iPhone/Vision regressions plus Xcode Analyze pass
+- Authored application/GlassDBKit scan found no in-scope TODO/FIXME/stub/fatalError/preconditionFailure/empty-catch implementation; remaining markers are vendored upstream state-machine invariants, protocol terms, examples, or tests
 
 ### Codex Completions (2026-07-19) — Shared Workspace and Data-Management UX
 - Completed the shared Mac/visionOS database workspace: native material chrome remains separate from the user-controlled live database canvas, multiple SQL/database/table tabs remain connected until individually closed, and table/database clicks now open data and operational database dashboards respectively
@@ -157,5 +168,11 @@ The rounds below are a historical development log; current capability truth is r
 
 ## Next Steps (Release Decision)
 1. Complete the external provisioning/signing and physical-device acceptance matrix; record those results separately from the already-complete implementation and automated QA.
-2. Implement and test the open C3 cross-device Glass-family credential catalog and synchronization for eligible secrets without weakening device-bound Secure Enclave/user-presence policies.
-3. Review residual capability limits, including incremental streaming, abortive/disconnecting network cancellation, and unsupported PostgreSQL metadata operations, then obtain explicit human approval before TestFlight or production use.
+2. Implement the approved C3/glas.sh Phase 08 **My Connections** contract: migrate
+   embedded SSH tunnel fields toward neutral endpoint references, add the
+   GlasSecretStore credential catalog and eligible-secret mobility, and preserve
+   device-bound Secure Enclave/user-presence policy.
+3. Prove the canonical glas.sh/iPhone -> glassdb/Vision Pro tunnel journey,
+   reverse direction, delayed-secret recovery, account change, deletion/rotation,
+   and local Secure Enclave enrollment from correctly signed builds.
+4. Review residual capability limits, including incremental streaming, abortive/disconnecting network cancellation, and unsupported PostgreSQL metadata operations, then obtain explicit human approval before TestFlight or production use.

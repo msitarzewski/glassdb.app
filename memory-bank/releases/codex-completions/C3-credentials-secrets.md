@@ -6,7 +6,9 @@
 
 ## Goal
 
-Keep and extend GlasSecretStore while making credential identity, migration, sharing, authentication, and user-visible failure behavior correct.
+Keep and extend GlasSecretStore while making credential identity, migration,
+sharing, authentication, user-visible availability, and the cross-app **My
+Connections** tunnel experience correct.
 
 ## Implementation Plan
 
@@ -24,7 +26,10 @@ Keep and extend GlasSecretStore while making credential identity, migration, sha
 - [x] Select and document the current `WhenUnlockedThisDeviceOnly` accessibility and access-control behavior for each secret class.
 - [x] Add LocalAuthentication/Security access-control behavior for user-presence-protected credentials, including cancellation and unavailable-biometry paths.
 - [x] Move shared SSH-key metadata from standard defaults into the configured App Group suite with migration and rollback-window dual writes.
-- [ ] Add iOS to GlasSecretStore's declared platforms and run its full suite on every declared platform supported by CI.
+- [x] Add iOS/iPadOS 26 to GlasSecretStore's declared platforms; glassdb's native
+  iPhone/iPad consumers compile against the package.
+- [ ] Run the full GlasSecretStore suite on every declared platform supported by
+  CI and retain physical-device gates for Security-framework-only behavior.
 
 ### Glass-family sharing and device synchronization
 
@@ -34,6 +39,21 @@ Keep and extend GlasSecretStore while making credential identity, migration, sha
 - [ ] Separate “shared with Glass apps,” “syncs across devices,” and “requires authentication” in storage policy and UX.
 - [ ] Keep Secure Enclave and user-presence-protected material device-bound, with explicit per-device provisioning copy.
 - [ ] Warn that deletion of synchronized credentials propagates across devices and cover propagation/conflict/recovery behavior with tests.
+
+### Magic / First Class endpoint integration
+
+- [ ] Adopt a neutral, versioned `EndpointProfile`/`EndpointID` for reusable SSH
+  facts and reference a stable GlasSecretStore `CredentialID` without embedding
+  secret material.
+- [ ] Move glassdb-specific database and tunnel-use fields into an app overlay
+  keyed by endpoint identity; preserve current embedded SSH fields as a
+  collision-safe, rollback-aware migration source.
+- [ ] Present shared endpoints as **My Connections** and select one directly as a
+  database SSH tunnel.
+- [ ] Surface **Ready**, **Still Syncing**, **Sign In to iCloud**, **Set Up This
+  Key**, and **Review Fingerprint** without exposing package/storage vocabulary.
+- [ ] Keep host trust, local-network access, user presence, and Secure Enclave
+  enrollment explicit; never substitute a weaker credential.
 
 ### SSH keys and Secure Enclave language
 
@@ -51,6 +71,13 @@ Keep and extend GlasSecretStore while making credential identity, migration, sha
 - [x] Secure Enclave wording matches the implemented key lifecycle.
 - [ ] Eligible credentials and their stable catalog synchronize across supported Glass-family devices.
 - [ ] Cross-device UX and tests clearly preserve the Secure Enclave/user-presence device boundary.
+- [ ] An eligible connection defined in glas.sh on iPhone is selectable and
+  usable as a glassdb SSH tunnel on Vision Pro without re-entering endpoint or
+  credential data; reverse direction and Mac/iPad combinations follow the same
+  contract.
+- [ ] Fresh install, upgrade, delayed-secret arrival, offline use, iCloud account
+  change, deletion/rotation, and local-key enrollment converge without stale
+  resurrection, data loss, or phantom readiness.
 
 ## Evidence Log
 

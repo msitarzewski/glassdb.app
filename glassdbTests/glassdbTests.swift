@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import GlassDBKit
 import GlasSecretStore
+import Security
 @testable import glassdb
 #if os(macOS)
 import AppKit
@@ -120,6 +121,7 @@ struct glassdbTests {
         #expect(!transparent.compositesBlur)
         #expect(transparent.surfaceAlpha() == 0)
         #expect(transparent.pinnedSurfaceAlpha == 0)
+        #expect(transparent.pinnedBlurAlpha == 0)
 
         let frosted = DatabaseGlassAppearance(opacity: 0, blur: 1)
         #expect(!frosted.paintsCanvas)
@@ -135,10 +137,15 @@ struct glassdbTests {
         let combined = DatabaseGlassAppearance(opacity: 1, blur: 1)
         #expect(combined.paintsCanvas)
         #expect(combined.compositesBlur)
+        #expect(combined.pinnedBlurAlpha == 1)
 
         let intermediate = DatabaseGlassAppearance(opacity: 0.25, blur: 0)
         #expect(intermediate.pinnedSurfaceAlpha == 0.5)
         #expect(intermediate.pinnedSurfaceAlpha > intermediate.opacity)
+
+        let intermediateBlur = DatabaseGlassAppearance(opacity: 0, blur: 0.25)
+        #expect(intermediateBlur.pinnedBlurAlpha == 0.5)
+        #expect(intermediateBlur.pinnedBlurAlpha > intermediateBlur.blur)
     }
 
     @Test func databaseGlassAppearanceClampsInvalidInputs() {
@@ -148,19 +155,84 @@ struct glassdbTests {
         #expect(appearance.surfaceAlpha(strength: 2) == 1)
     }
 
-    @Test func workspaceTabsStartWithPermanentQueryAndDeduplicateTables() {
+    @Test func workspaceTabsStartWithPermanentOverviewAndQueryAndDeduplicateTables() {
         var state = WorkspaceTabState()
         let table = WorkspaceSelection.table(database: "analytics", table: "events")
 
-        #expect(state.tabs == [WorkspaceSelection.query])
-        #expect(state.selected == .query)
+        #expect(state.tabs == [.connection, .query])
+        #expect(state.selected == .connection)
 
         state.open(table)
         state.open(.query)
         state.open(table)
 
-        #expect(state.tabs == [WorkspaceSelection.query, table])
+        #expect(state.tabs == [.connection, .query, table])
         #expect(state.selected == table)
+    }
+
+    @Test func workspaceWindowRequestsKeepPrimaryStableAndAdditionalWindowsUnique() throws {
+        let sessionID = UUID()
+        let primary = DatabaseWorkspaceWindowRequest.primary(sessionID: sessionID)
+        let samePrimary = DatabaseWorkspaceWindowRequest.primary(sessionID: sessionID)
+        let databaseWindow = DatabaseWorkspaceWindowRequest.additional(
+            sessionID: sessionID,
+            initialSelection: .database("analytics")
+        )
+        let secondDatabaseWindow = DatabaseWorkspaceWindowRequest.additional(
+            sessionID: sessionID,
+            initialSelection: .database("analytics")
+        )
+        let overviewWindow = DatabaseWorkspaceWindowRequest.additional(sessionID: sessionID)
+
+        #expect(primary == samePrimary)
+        #expect(primary.initialSelection == .connection)
+        #expect(overviewWindow.initialSelection == .connection)
+        #expect(primary.sessionID == databaseWindow.sessionID)
+        #expect(databaseWindow != secondDatabaseWindow)
+
+        let decoded = try JSONDecoder().decode(
+            DatabaseWorkspaceWindowRequest.self,
+            from: JSONEncoder().encode(databaseWindow)
+        )
+        #expect(decoded == databaseWindow)
+    }
+
+    @MainActor
+    @Test func workspaceRegistryKeepsUUIDSceneValuesAndRichLaunchContext() {
+        let manager = DatabaseSessionManager(loadImmediately: false)
+        let sessionID = UUID()
+        let request = DatabaseWorkspaceWindowRequest.additional(
+            sessionID: sessionID,
+            initialSelection: .database("analytics")
+        )
+
+        let sceneValue = manager.registerWorkspace(request)
+        #expect(sceneValue == request.id)
+        #expect(manager.workspaceRequest(for: sceneValue) == request)
+
+        manager.releaseWorkspace(sceneValue)
+        #expect(manager.workspaceRequests[sceneValue] == nil)
+
+        let legacySessionID = UUID()
+        let fallback = manager.workspaceRequest(for: legacySessionID)
+        #expect(fallback.id == legacySessionID)
+        #expect(fallback.sessionID == legacySessionID)
+        #expect(fallback.initialSelection == .connection)
+    }
+
+    @Test func workspaceTabsStartAtRequestedDatabaseWithoutLosingPermanentTabs() {
+        let database = WorkspaceSelection.database("analytics")
+        let state = WorkspaceTabState(initialSelection: database)
+
+        #expect(state.tabs == [.connection, .query, database])
+        #expect(state.selected == database)
+    }
+
+    @Test func overviewRefreshActionOnlyAppearsForOverviewDestinations() {
+        #expect(WorkspaceSelection.connection.usesOverviewRefreshAction)
+        #expect(WorkspaceSelection.database("analytics").usesOverviewRefreshAction)
+        #expect(!WorkspaceSelection.table(database: "analytics", table: "events").usesOverviewRefreshAction)
+        #expect(!WorkspaceSelection.query.usesOverviewRefreshAction)
     }
 
     @Test func workspaceTabsUseFullDatabaseAndTableIdentity() {
@@ -174,7 +246,7 @@ struct glassdbTests {
         state.open(sameNameOtherDatabase)
 
         #expect(first != second)
-        #expect(state.tabs == [WorkspaceSelection.query, first, second, sameNameOtherDatabase])
+        #expect(state.tabs == [.connection, .query, first, second, sameNameOtherDatabase])
         #expect(state.selected == sameNameOtherDatabase)
     }
 
@@ -185,7 +257,7 @@ struct glassdbTests {
         state.open(.database("analytics"))
         state.open(.database("archive"))
 
-        #expect(state.tabs == [WorkspaceSelection.query, table, .database("archive")])
+        #expect(state.tabs == [.connection, .query, table, .database("archive")])
         #expect(state.selected == .database("archive"))
     }
 
@@ -201,17 +273,17 @@ struct glassdbTests {
 
         let closedMiddle = state.close(middle)
         #expect(closedMiddle)
-        #expect(state.tabs == [WorkspaceSelection.query, first, last])
+        #expect(state.tabs == [.connection, .query, first, last])
         #expect(state.selected == last)
 
         let closedLast = state.close(last)
         #expect(closedLast)
-        #expect(state.tabs == [WorkspaceSelection.query, first])
+        #expect(state.tabs == [.connection, .query, first])
         #expect(state.selected == first)
 
         let closedFirst = state.close(first)
         #expect(closedFirst)
-        #expect(state.tabs == [WorkspaceSelection.query])
+        #expect(state.tabs == [.connection, .query])
         #expect(state.selected == .query)
     }
 
@@ -225,15 +297,37 @@ struct glassdbTests {
 
         let closedInactive = state.close(first)
         #expect(closedInactive)
-        #expect(state.tabs == [WorkspaceSelection.query, selected])
+        #expect(state.tabs == [.connection, .query, selected])
         #expect(state.selected == selected)
 
         let beforeRejectedCloses = state
+        let closedOverview = state.close(.connection)
         let closedQuery = state.close(.query)
         let closedMissing = state.close(missing)
+        #expect(!closedOverview)
         #expect(!closedQuery)
         #expect(!closedMissing)
         #expect(state == beforeRejectedCloses)
+    }
+
+    @Test func connectionOverviewSummarizesOnlyLiveTableStatusValues() {
+        let summary = ConnectionDatabaseSummary(
+            name: "analytics",
+            statuses: [
+                TableStatus(name: "events", engine: "InnoDB", rowCount: 120, dataLength: 2_048, collation: nil),
+                TableStatus(name: "users", engine: "InnoDB", rowCount: 30, dataLength: 1_024, collation: nil)
+            ]
+        )
+
+        #expect(summary.name == "analytics")
+        #expect(summary.tableCount == 2)
+        #expect(summary.estimatedRows == 150)
+        #expect(summary.storageBytes == 3_072)
+
+        let unavailable = ConnectionDatabaseSummary(name: "restricted")
+        #expect(unavailable.tableCount == nil)
+        #expect(unavailable.estimatedRows == nil)
+        #expect(unavailable.storageBytes == nil)
     }
 
     #if os(macOS)
@@ -471,6 +565,17 @@ struct glassdbTests {
             sshKeyIsUsable: false
         )
         #expect(Set(ConnectionFormView.validationIssues(for: missingSQLite).keys) == Set([.host]))
+    }
+
+    @Test @MainActor func connectionFormSubmissionOnlyAdvancesOrDismissesFocus() {
+        let fields: [ConnectionFormView.FormField] = [
+            .name, .host, .port, .username, .password
+        ]
+
+        #expect(ConnectionFormView.nextField(after: .name, in: fields) == .host)
+        #expect(ConnectionFormView.nextField(after: .port, in: fields) == .username)
+        #expect(ConnectionFormView.nextField(after: .password, in: fields) == nil)
+        #expect(ConnectionFormView.nextField(after: .sshHost, in: fields) == nil)
     }
 
     @Test func sqlParserPreservesQuotedAndCommentSemicolons() {
@@ -1507,6 +1612,112 @@ struct glassdbTests {
             == KeychainManager.legacyDatabaseAccount(for: second))
     }
 
+    @Test func sharedCredentialIdentityUsesTheGlasSecretStoreContract() {
+        let profileID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+
+        #expect(KeychainManager.databaseAccount(for: profileID)
+            == GlassFamilyCredentialAccount.databasePassword(profileID: profileID))
+        #expect(KeychainManager.sshAccount(for: profileID)
+            == GlassFamilyCredentialAccount.sshPassword(profileID: profileID))
+    }
+
+    @Test func sharedSSHCredentialPublishesTheGlasCompatibilityRecordAtomically() throws {
+        let connection = DatabaseConnectionConfig(
+            id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+            name: "Shared bastion",
+            host: "db.example.com",
+            username: "database-user",
+            useSSHTunnel: true,
+            sshHost: "bastion.example.com",
+            sshPort: 2222,
+            sshUsername: "operator",
+            sshAuthMethod: .password,
+            databaseCredentialPolicy: .sharedWithGlas,
+            sshCredentialPolicy: .sharedWithGlas
+        )
+        let mutation = CredentialMutationTestState()
+        let sharedDescriptor = KeychainManager.descriptor(
+            for: .sharedWithGlas,
+            kind: .sshPassword
+        )
+        let compatibilityAccount = try #require(
+            KeychainManager.sharedSSHCompatibilityAccount(for: connection)
+        )
+
+        _ = try KeychainManager.saveCredentials(
+            databasePassword: "database-secret",
+            sshPassword: "ssh-secret",
+            for: connection,
+            replacing: nil,
+            store: mutation.store
+        )
+
+        #expect(compatibilityAccount == "ssh:operator@bastion.example.com:2222")
+        #expect(sharedDescriptor.service == "sh.glas.sshpasswords")
+        #expect(mutation.values[mutation.key(
+            account: KeychainManager.sshAccount(for: connection.id),
+            descriptor: sharedDescriptor
+        )] == "ssh-secret")
+        #expect(mutation.values[mutation.key(
+            account: compatibilityAccount,
+            descriptor: sharedDescriptor
+        )] == "ssh-secret")
+    }
+
+    @Test func sharedSSHCompatibilityWriteFailureRestoresEveryCredentialRecord() throws {
+        let connection = DatabaseConnectionConfig(
+            name: "Atomic shared bastion",
+            host: "db.example.com",
+            useSSHTunnel: true,
+            sshHost: "bastion.example.com",
+            sshUsername: "operator",
+            sshAuthMethod: .password,
+            databaseCredentialPolicy: .sharedWithGlas,
+            sshCredentialPolicy: .sharedWithGlas
+        )
+        let mutation = CredentialMutationTestState()
+        let databaseDescriptor = KeychainManager.descriptor(
+            for: .sharedWithGlas,
+            kind: .databasePassword
+        )
+        let sshDescriptor = KeychainManager.descriptor(
+            for: .sharedWithGlas,
+            kind: .sshPassword
+        )
+        let databaseKey = mutation.key(
+            account: KeychainManager.databaseAccount(for: connection.id),
+            descriptor: databaseDescriptor
+        )
+        let sshKey = mutation.key(
+            account: KeychainManager.sshAccount(for: connection.id),
+            descriptor: sshDescriptor
+        )
+        let compatibilityAccount = try #require(
+            KeychainManager.sharedSSHCompatibilityAccount(for: connection)
+        )
+        let compatibilityKey = mutation.key(
+            account: compatibilityAccount,
+            descriptor: sshDescriptor
+        )
+        mutation.values[databaseKey] = "old-database"
+        mutation.values[sshKey] = "old-ssh"
+        mutation.values[compatibilityKey] = "old-shared-ssh"
+        mutation.failNextSaveAccount = compatibilityAccount
+
+        #expect(throws: IntegrityTestError.credentialSaveFailed) {
+            _ = try KeychainManager.saveCredentials(
+                databasePassword: "new-database",
+                sshPassword: "new-ssh",
+                for: connection,
+                replacing: connection,
+                store: mutation.store
+            )
+        }
+        #expect(mutation.values[databaseKey] == "old-database")
+        #expect(mutation.values[sshKey] == "old-ssh")
+        #expect(mutation.values[compatibilityKey] == "old-shared-ssh")
+    }
+
     @Test func credentialMigrationIdentifiersAreStableAndPure() {
         let connection = DatabaseConnectionConfig(
             name: "Legacy",
@@ -1742,6 +1953,8 @@ struct glassdbTests {
         #expect(sharedSSH.service == "sh.glas.sshpasswords")
         #expect(sharedDB.isSharedWithGlas == KeychainManager.sharedCredentialAccessAvailable)
         #expect((sharedDB.config.accessGroup != nil) == KeychainManager.sharedCredentialAccessAvailable)
+        #expect(sharedDB.config.accessibility == kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
+        #expect(sharedDB.accessPolicy == .standard)
 
         #expect(privateDB.service == "app.glassdb.private.passwords")
         #expect(privateSSH.service == "app.glassdb.private.sshpasswords")
@@ -1751,6 +1964,7 @@ struct glassdbTests {
         #expect(protectedDB.service == "app.glassdb.protected.passwords")
         #expect(protectedSSH.service == "app.glassdb.protected.sshpasswords")
         #expect(protectedDB.config.accessGroup == nil)
+        #expect(protectedDB.config.accessibility == kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
         #expect(protectedDB.accessPolicy.rawValue == "userPresence")
         #expect(protectedDB.authenticationPrompt?.contains("database password") == true)
         #expect(protectedSSH.authenticationPrompt?.contains("SSH password") == true)
@@ -2273,6 +2487,222 @@ struct glassdbTests {
         #expect(postgres.capabilities.contains(.cancellation))
         #expect(sqlite.capabilities.contains(.cancellation))
         #expect(!sqlite.capabilities.contains(.transportTLS))
+    }
+
+    @Test func terminalConnectionErrorsAreSeparatedFromOrdinaryQueryErrors() {
+        let terminalMessages = [
+            "MySQL error: Connection closed.",
+            "server has gone away",
+            "The channel is closed",
+            "write failed: broken pipe",
+            "Lost connection to MySQL server during query",
+        ]
+        for message in terminalMessages {
+            #expect(DatabaseSessionManager.isTerminalConnectionError(message))
+        }
+
+        #expect(!DatabaseSessionManager.isTerminalConnectionError(
+            "MySQL error: You have an error in your SQL syntax"
+        ))
+        #expect(!DatabaseSessionManager.isTerminalConnectionError(
+            "Access denied for user 'root'@'localhost'"
+        ))
+    }
+
+    @Test func directTransportPreservesIPv4IPv6LocalhostAndTailscaleHosts() throws {
+        let hosts = [
+            "192.168.1.20",
+            "fd7a:115c:a1e0::53",
+            "localhost",
+            "100.64.0.12",
+            "database.tailnet-name.ts.net",
+        ]
+
+        for host in hosts {
+            let config = DatabaseConnectionConfig(
+                name: host,
+                host: host,
+                port: 3307,
+                useTLS: true
+            )
+            let plan = try DatabaseSessionManager.transportPlan(for: config)
+            #expect(plan.databaseHost == host)
+            #expect(plan.databasePort == 3307)
+            #expect(plan.tunnelRemoteHost == nil)
+            #expect(plan.tlsPolicy == .requiredSystemTrust)
+        }
+    }
+
+    @Test func sshTransportPreservesRemoteHostAndTLSIdentity() throws {
+        let config = DatabaseConnectionConfig(
+            name: "Tunnel",
+            host: "database.tailnet-name.ts.net",
+            port: 5432,
+            useSSHTunnel: true,
+            sshHost: "bastion.example.com",
+            sshUsername: "operator",
+            sshAuthMethod: .password,
+            useTLS: true
+        )
+        let plan = try DatabaseSessionManager.transportPlan(
+            for: config,
+            tunnelLocalPort: 49_152
+        )
+
+        #expect(plan.databaseHost == "127.0.0.1")
+        #expect(plan.databasePort == 49_152)
+        #expect(plan.tunnelRemoteHost == "database.tailnet-name.ts.net")
+        #expect(plan.tunnelRemotePort == 5432)
+        #expect(plan.tlsPolicy == .requiredSystemTrustForHost("database.tailnet-name.ts.net"))
+    }
+
+    @Test func localNetworkPermissionFailuresHaveAnActionableClassification() {
+        #expect(DatabaseSessionManager.isLocalNetworkPermissionDenied(
+            domain: "kDNSServiceErrDomain",
+            code: -65_570,
+            message: "PolicyDenied"
+        ))
+        #expect(DatabaseSessionManager.isLocalNetworkPermissionDenied(
+            domain: NSPOSIXErrorDomain,
+            code: 13,
+            message: "Permission denied"
+        ))
+        #expect(!DatabaseSessionManager.isLocalNetworkPermissionDenied(
+            domain: NSPOSIXErrorDomain,
+            code: 61,
+            message: "Connection refused"
+        ))
+    }
+
+    @MainActor
+    @Test func suspensionRequiresForegroundValidationWithoutClosingSharedTransport() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        defer { Task { try? await connection.close() } }
+        let manager = DatabaseSessionManager(loadImmediately: false)
+        let sessionID = UUID()
+        let session = DatabaseSession(connectionConfig: DatabaseConnectionConfig(
+            name: "Suspended workspace",
+            engine: .sqlite,
+            host: ":memory:",
+            port: 0,
+            username: ""
+        ))
+        session.connection = connection
+        session.engine = SQLiteEngine()
+        session.state = .connected
+        manager.sessions[sessionID] = session
+
+        // Multiple windows may observe the same scene transition. Repeated
+        // suspension notices are idempotent and never close shared ownership.
+        manager.noteSessionSuspended(sessionID: sessionID)
+        manager.noteSessionSuspended(sessionID: sessionID)
+        #expect(session.requiresTransportValidation)
+        #expect(await connection.isConnected)
+
+        let result = await manager.validateSessionAfterForeground(sessionID: sessionID)
+        #expect(result == .connected)
+        #expect(!session.requiresTransportValidation)
+        #expect(session.state == .connected)
+    }
+
+    @MainActor
+    @Test func foregroundAndQueryPathsRejectATransportLostDuringSuspension() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        let manager = DatabaseSessionManager(loadImmediately: false)
+        let sessionID = UUID()
+        let session = DatabaseSession(connectionConfig: DatabaseConnectionConfig(
+            name: "Lost while suspended",
+            engine: .sqlite,
+            host: ":memory:",
+            port: 0,
+            username: ""
+        ))
+        session.connection = connection
+        session.engine = SQLiteEngine()
+        session.state = .connected
+        manager.sessions[sessionID] = session
+
+        manager.noteSessionSuspended(sessionID: sessionID)
+        try await connection.close()
+        let result = await manager.validateSessionAfterForeground(sessionID: sessionID)
+        #expect(result == .disconnected)
+        #expect(session.state == .disconnected)
+        #expect(session.connection == nil)
+
+        do {
+            _ = try await manager.executeQuery("SELECT 1", sessionID: sessionID)
+            Issue.record("A known-disconnected session must reject query execution.")
+        } catch DatabaseSessionManager.SessionError.connectionLost {
+            #expect(session.queryHistory.isEmpty)
+        } catch {
+            Issue.record("Unexpected disconnected-session error: \(error)")
+        }
+    }
+
+    @MainActor
+    @Test func explicitReconnectRetainsTheLogicalSessionAndWorkspaceHistory() async throws {
+        let fileManager = FileManager.default
+        let managedDirectory = try SQLiteFileImporter.managedDirectory(create: true)
+        let databaseURL = managedDirectory
+            .appendingPathComponent("reconnect-\(UUID().uuidString)")
+            .appendingPathExtension("sqlite")
+        defer { try? fileManager.removeItem(at: databaseURL) }
+        let connection = try await SQLiteEngine().connect(path: databaseURL.path)
+        let manager = DatabaseSessionManager(loadImmediately: false)
+        let sessionID = UUID()
+        let session = DatabaseSession(connectionConfig: DatabaseConnectionConfig(
+            name: "Reconnectable SQLite",
+            engine: .sqlite,
+            host: databaseURL.path,
+            port: 0,
+            username: ""
+        ))
+        session.connection = connection
+        session.engine = SQLiteEngine()
+        session.state = .connected
+        session.queryHistory = [QueryResult(query: "SELECT 42", executionTime: 0)]
+        manager.sessions[sessionID] = session
+
+        try await connection.close()
+        #expect(await manager.validateSessionAfterForeground(sessionID: sessionID) == .disconnected)
+        try await manager.reconnect(sessionID: sessionID)
+
+        #expect(manager.session(for: sessionID) === session)
+        #expect(session.state == .connected)
+        #expect(session.connection != nil)
+        #expect(session.queryHistory.map(\.query) == ["SELECT 42"])
+        let result = try await manager.executeQuery("SELECT 1", sessionID: sessionID)
+        #expect(result.rows == [[.int(1)]])
+        await manager.disconnect(sessionID: sessionID)
+    }
+
+    @MainActor
+    @Test func closedTransportInvalidatesButRetainsTheLogicalWorkspaceSession() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        let manager = DatabaseSessionManager(loadImmediately: false)
+        let sessionID = UUID()
+        let session = DatabaseSession(connectionConfig: DatabaseConnectionConfig(
+            name: "Recoverable workspace",
+            engine: .sqlite,
+            host: ":memory:",
+            port: 0,
+            username: ""
+        ))
+        session.connection = connection
+        session.engine = SQLiteEngine()
+        session.state = .connected
+        session.queryHistory = [QueryResult(query: "SELECT 1", executionTime: 0)]
+        manager.sessions[sessionID] = session
+
+        try await connection.close()
+        let isConnected = await manager.refreshConnectionState(sessionID: sessionID)
+
+        #expect(!isConnected)
+        #expect(manager.session(for: sessionID) === session)
+        #expect(session.state == .disconnected)
+        #expect(session.connection == nil)
+        #expect(session.queryHistory.map(\.query) == ["SELECT 1"])
+        #expect(session.lastConnectionError?.contains("timed out") == true)
     }
 
     @MainActor

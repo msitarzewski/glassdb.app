@@ -54,6 +54,43 @@
   - Deleting a synchronized credential must warn about and test cross-device propagation. App-only credentials remain outside the shared/synchronized catalog.
 - Consequences: Same-device sharing already works; cross-device catalog and eligible-secret synchronization are an open C3 release requirement. Secure Enclave non-sync is a stated platform property, not a failure of the Glass-family sharing model. The future native macOS shell must consume the same GlasSecretStore identities and policies.
 
+## 2026-08-05: My Connections is the shared Glass-family user model
+
+- Status: Approved product and architecture direction; implementation not started
+- Context:
+  - The 2026-07-17 decision defines credential mobility correctly, but glassdb
+    still embeds SSH tunnel fields in each database connection and publishes an
+    endpoint-derived compatibility alias for glas.sh.
+  - Users moving between glas.sh and glassdb should not have to understand or
+    rebuild repository, endpoint-schema, Keychain, CloudKit, or migration state.
+- Decision:
+  - Present one **My Connections** model across glas.sh and glassdb: define an SSH
+    connection once, find it on supported Apple devices, and use it as a terminal
+    destination or glassdb database tunnel.
+  - Separate neutral `EndpointProfile` metadata, the glassdb database overlay,
+    and GlasSecretStore credential identity/material through stable references.
+  - Require no proprietary Glass account. Use Apple iCloud/Keychain services and
+    explicit consent for eligible cross-device credential mobility.
+  - Treat app sharing, device mobility, and authentication kind as independent
+    policies. Metadata visibility never implies that a credential is ready.
+  - Keep Secure Enclave identities device-bound and require local enrollment on a
+    new device; never silently substitute weaker authentication.
+  - Keep host trust, user presence, local-network access, and account recovery
+    explicit while hiding implementation vocabulary from normal onboarding.
+- Consequences:
+  - Canonical acceptance path: define an eligible SSH connection in glas.sh on
+    iPhone, select it in glassdb on Vision Pro as a database tunnel, complete any
+    required local trust action, and connect without re-entering endpoint or
+    credential data.
+  - Reverse direction, fresh install, upgrade, delayed-secret arrival, offline
+    use, account change, deletion/rotation, and Secure Enclave enrollment require
+    cross-app/device evidence before public claims.
+  - C3 owns glassdb integration; the glas.sh Phase 08 plan owns cross-repository
+    coordination; GlasSecretStore owns credential identity and availability.
+  - Existing same-device UUID/compatibility behavior remains the migration
+    baseline and must not be described as cross-device completion.
+- References: `memory-bank/releases/codex-completions/C3-credentials-secrets.md`, `memory-bank/releases/platforms-plus-plus/P6-network-credentials-lifecycle.md`, `../glas.sh/memory-bank/releases/codex-completions/08-glassdb-metadata-sync.md`
+
 ## 2026-03-15: DBeaver-style unified workspace over separate windows
 - Status: Approved
 - Context: Original architecture had separate windows for query editor, schema browser, and results grid. User wanted a traditional IDE layout with sidebar + context-sensitive detail surface, inspired by DBeaver's interaction model.

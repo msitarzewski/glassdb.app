@@ -1,6 +1,18 @@
 # Progress
 
-## Status: Native visionOS/macOS Implementation Complete; External Release Gates Open
+## Status: Native iPhone/iPad/macOS/visionOS Automated Release Candidate Complete; External Release Gates Open
+
+### Completed — Platforms Plus Plus
+- [x] One shared native SwiftUI application target builds arm64 iPhone, iPad, Mac, and Vision Pro products; iOS/iPadOS and visionOS require 26.0+, macOS requires 27.0+, and Catalyst/Intel remain excluded
+- [x] iPhone uses compact `NavigationStack`/native lists and record summaries; iPad retains adaptive `NavigationSplitView`, multiple workspace windows, native forms/toolbars, and the documented regular-width professional-grid exception
+- [x] Connection forms use explicit Test and Save & Connect actions; field submission only advances or dismisses focus and cannot initiate a connection
+- [x] GlasSecretStore owns canonical UUID credential accounts; explicitly shared SSH passwords atomically publish both glassdb and glas.sh-compatible records with rollback on partial failure
+- [x] Lifecycle recovery validates foreground transports, intercepts known-disconnected requests, preserves workspace/session history on explicit reconnect, and avoids premature shared-session closure across windows
+- [x] Full application suite passed 101/101 on macOS 27, iPhone 17 Pro iOS 27, iPad Pro 13-inch iOS 27, Vision Pro visionOS 26.5, and Vision Pro visionOS 27
+- [x] Generic unsigned iOS and visionOS device builds passed; produced Mac/iOS/visionOS executables are arm64-only and generated iOS metadata declares minimum 26.0, families 1/2, all orientations, icon, and local-network purpose
+- [x] GlasSecretStore passed 69 tests/13 suites, GlassDBKit passed 25 tests/3 suites, and Citadel passed 31 tests with only explicitly environment-gated live SSH/server cases skipped
+- [x] OSV-discovered swift-nio 2.96.0 advisories repaired by locking 2.100.0; post-fix OSV scan reports no issues, Xcode Analyze succeeds, and post-fix Mac/iPhone/Vision application regressions pass
+- [x] Final authored-code scan found no in-scope TODO/FIXME/stub/fatalError/preconditionFailure/empty-catch implementation; vendored upstream markers are classified in the release tracker
 
 ### Completed — Infrastructure
 - [x] Initial market scan completed; revalidate competitor claims before public use
@@ -161,7 +173,12 @@
 
 ### In Progress
 - [ ] C3 cross-device Glass-family credential catalog and eligible-secret synchronization; shared access group/App Group behavior is currently same-device only
+- [ ] Magic / First Class **My Connections** contract: neutral endpoint identity,
+  glassdb database/tunnel overlay, outcome-oriented onboarding, and canonical
+  glas.sh/iPhone -> glassdb/Vision Pro tunnel acceptance; approved direction,
+  implementation not started
 - [ ] External distribution provisioning/signing and physical-device acceptance for Vision Pro and Mac, including device-only Keychain, user-presence, Secure Enclave, and supported Foundation Models behavior
+- [ ] Physical iPhone/iPad acceptance, signed glassdb/glas.sh cross-app Keychain read, live database/TLS/SSH/Tailscale failure matrix, accessibility/input review, Instruments, and iOS 26 runtime fallback validation for `platforms-plus-plus`
 - [ ] Final residual-risk review and release documentation reconciliation
 
 ### Blocked
@@ -173,7 +190,6 @@
 - [ ] Explicitly approve any TestFlight submission
 
 ### Future Platform/Product Releases
-- [ ] Native iPad application target and a focused iOS experience; native macOS is complete in `codex-completions`
 - [ ] View support in sidebar
 - [ ] Table creation GUI
 - [ ] Stored procedure/function viewer

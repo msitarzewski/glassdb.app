@@ -11,6 +11,9 @@ import UniformTypeIdentifiers
 import os
 import GlasSecretStore
 import GlassDBKit
+#if os(iOS)
+import UIKit
+#endif
 
 enum SQLiteFileImporter {
     enum ImportError: LocalizedError {
@@ -142,6 +145,9 @@ struct ConnectionFormView: View {
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
+    #if os(iOS)
+    @Environment(IOSAppRouter.self) private var iOSRouter
+    #endif
 
     // MARK: - Form Fields
 
@@ -210,6 +216,7 @@ struct ConnectionFormView: View {
     @State private var connectionError: String?
     @State private var databaseCredentialLoadFailed = false
     @State private var sshCredentialLoadFailed = false
+    @State private var didLoadStoredCredentials = false
 
     // MARK: - Computed
 
@@ -263,6 +270,14 @@ struct ConnectionFormView: View {
             issues[.sshKey] = "Choose an SSH key that is available to glassdb."
         }
         return issues
+    }
+
+    /// Submitting a field only advances focus. It never implies Save, Test, or
+    /// Save & Connect, which are deliberately separate explicit actions.
+    static func nextField(after field: FormField, in order: [FormField]) -> FormField? {
+        guard let index = order.firstIndex(of: field),
+              order.indices.contains(index + 1) else { return nil }
+        return order[index + 1]
     }
 
     private var validationInput: ValidationInput {
@@ -337,24 +352,10 @@ struct ConnectionFormView: View {
                             .connectionFormCancelShortcut()
                     }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") { save() }
+                        Button(isEditing ? "Save Changes" : "Save Connection") { save() }
                             .disabled(!isFormValid || isSavingAndConnecting)
                             .connectionFormDefaultShortcut()
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button {
-                            saveAndConnect()
-                        } label: {
-                            if isSavingAndConnecting {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .accessibilityLabel("Saving and connecting")
-                            } else {
-                                Text("Save & Connect")
-                            }
-                        }
-                        .disabled(!isFormValid || isSavingAndConnecting)
-                        .connectionFormConnectShortcut()
+                            .accessibilityIdentifier("connection-form.save")
                     }
                 }
         }
@@ -635,9 +636,11 @@ struct ConnectionFormView: View {
     private var macTestSection: some View {
         Section {
             testDBButton
-            Text("Tests the current values without saving the connection.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            saveAndConnectButton
+        } header: {
+            Text("Connection Actions")
+        } footer: {
+            Text("Test checks the current values without saving. Save & Connect stores the connection, then opens a session only when you choose it explicitly.")
         }
     }
 
@@ -716,7 +719,9 @@ struct ConnectionFormView: View {
                 TextField("Display Name", text: $name)
                     .multilineTextAlignment(.leading)
                     .autocorrectionDisabled()
-                    .databaseNoAutocapitalization()
+                    .focused($focusedField, equals: .name)
+                    .submitLabel(.next)
+                    .onSubmit { advanceFocus(after: .name) }
             }
             Picker("Engine", selection: $engine) {
                 ForEach(DatabaseEngineType.allCases) { eng in
@@ -740,12 +745,21 @@ struct ConnectionFormView: View {
                         .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
                         .databaseNoAutocapitalization()
+                        .databaseASCIICapableKeyboard()
+                        .textContentType(.URL)
+                        .focused($focusedField, equals: .host)
+                        .submitLabel(.next)
+                        .onSubmit { advanceFocus(after: .host) }
                 }
                 LabeledContent("Port") {
                     TextField("\(engine.defaultPort)", text: $port)
                         .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
                         .databaseNoAutocapitalization()
+                        .connectionPortKeyboard()
+                        .focused($focusedField, equals: .port)
+                        .submitLabel(.next)
+                        .onSubmit { advanceFocus(after: .port) }
                 }
             }
         }
@@ -790,6 +804,11 @@ struct ConnectionFormView: View {
                     .multilineTextAlignment(.leading)
                     .autocorrectionDisabled()
                     .databaseNoAutocapitalization()
+                    .databaseASCIICapableKeyboard()
+                    .textContentType(.username)
+                    .focused($focusedField, equals: .username)
+                    .submitLabel(.next)
+                    .onSubmit { advanceFocus(after: .username) }
             }
             passwordField(
                 label: "Password",
@@ -805,6 +824,10 @@ struct ConnectionFormView: View {
                     .multilineTextAlignment(.leading)
                     .autocorrectionDisabled()
                     .databaseNoAutocapitalization()
+                    .databaseASCIICapableKeyboard()
+                    .focused($focusedField, equals: .defaultDatabase)
+                    .submitLabel(.done)
+                    .onSubmit { advanceFocus(after: .defaultDatabase) }
             }
             Toggle("Use TLS", isOn: $useTLS)
             }
@@ -834,18 +857,32 @@ struct ConnectionFormView: View {
                         .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
                         .databaseNoAutocapitalization()
+                        .databaseASCIICapableKeyboard()
+                        .textContentType(.URL)
+                        .focused($focusedField, equals: .sshHost)
+                        .submitLabel(.next)
+                        .onSubmit { advanceFocus(after: .sshHost) }
                 }
                 LabeledContent("Port") {
                     TextField("22", text: $sshPort)
                         .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
                         .databaseNoAutocapitalization()
+                        .connectionPortKeyboard()
+                        .focused($focusedField, equals: .sshPort)
+                        .submitLabel(.next)
+                        .onSubmit { advanceFocus(after: .sshPort) }
                 }
                 LabeledContent("Username") {
                     TextField("username", text: $sshUsername)
                         .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
                         .databaseNoAutocapitalization()
+                        .databaseASCIICapableKeyboard()
+                        .textContentType(.username)
+                        .focused($focusedField, equals: .sshUsername)
+                        .submitLabel(.next)
+                        .onSubmit { advanceFocus(after: .sshUsername) }
                 }
             }
 
@@ -895,6 +932,11 @@ struct ConnectionFormView: View {
     private var testSection: some View {
         Section {
             testDBButton
+            saveAndConnectButton
+        } header: {
+            Text("Connection Actions")
+        } footer: {
+            Text("Test checks the current values without saving. Save & Connect stores the connection, then opens a session only when you choose it explicitly.")
         }
     }
 
@@ -924,17 +966,20 @@ struct ConnectionFormView: View {
         let field: FormField = label.localizedCaseInsensitiveContains("SSH")
             ? .sshPassword
             : .password
+        let prompt = isEditing ? "Leave blank to keep saved password" : label
         return HStack(spacing: 8) {
             if showPlaintext.wrappedValue {
-                TextField(label, text: text, prompt: Text(label))
+                TextField(label, text: text, prompt: Text(prompt))
                     .connectionPasswordFieldPresentation()
                     .autocorrectionDisabled()
                     .databaseNoAutocapitalization()
+                    .textContentType(.password)
                     .focused($focusedField, equals: field)
                     .onSubmit { advanceFocus(after: field) }
             } else {
-                SecureField(label, text: text, prompt: Text(label))
+                SecureField(label, text: text, prompt: Text(prompt))
                     .connectionPasswordFieldPresentation()
+                    .textContentType(.password)
                     .focused($focusedField, equals: field)
                     .onSubmit { advanceFocus(after: field) }
             }
@@ -1084,11 +1129,29 @@ struct ConnectionFormView: View {
             }
             .disabled(!isFormValid || isTestingConnection)
             .help("Verify the complete database connection without saving.")
+            .accessibilityIdentifier("connection-form.test")
 
             Spacer()
 
             testResultIndicator(dbTestResult, accessibilityName: "Database connection")
         }
+    }
+
+    private var saveAndConnectButton: some View {
+        Button {
+            saveAndConnect()
+        } label: {
+            if isSavingAndConnecting {
+                Label("Saving & Connecting…", systemImage: "bolt.horizontal.circle")
+            } else {
+                Label("Save & Connect", systemImage: "bolt")
+            }
+        }
+        .disabled(!isFormValid || isTestingConnection || isSavingAndConnecting)
+        .connectionFormConnectShortcut()
+        .help("Save this connection, then connect using the current credentials.")
+        .accessibilityHint("This is the only form action that saves and starts a database connection.")
+        .accessibilityIdentifier("connection-form.save-and-connect")
     }
 
     @ViewBuilder
@@ -1122,32 +1185,35 @@ struct ConnectionFormView: View {
         }
     }
 
-    // MARK: - Keychain Load (glas.sh EditServerView:428-434 pattern)
+    // MARK: - Keychain Load (glas.sh EditServerView pattern)
 
     private func loadKeychainCredentials() {
-        guard let connection = editingConnection else { return }
+        guard !didLoadStoredCredentials, let connection = editingConnection else { return }
+        didLoadStoredCredentials = true
+
         if connection.engine.supportsCredentials {
             do {
-                let saved = try KeychainManager.retrievePassword(for: connection)
-                password = saved
+                password = try KeychainManager.retrievePassword(for: connection)
                 databaseCredentialLoadFailed = false
             } catch SecretStoreError.notFound {
                 password = ""
+                databaseCredentialLoadFailed = false
             } catch {
                 databaseCredentialLoadFailed = true
-                connectionError = "The saved database password could not be loaded. You can enter and save a replacement. \(error.localizedDescription)"
+                connectionError = "The saved database password could not be loaded. Enter and save a replacement password. \(error.localizedDescription)"
             }
         }
-        if connection.useSSHTunnel, connection.sshAuthMethod != .sshKey {
+
+        if connection.useSSHTunnel, connection.sshAuthMethod == .password {
             do {
-                let saved = try KeychainManager.retrieveSSHPassword(for: connection)
-                sshPassword = saved
+                sshPassword = try KeychainManager.retrieveSSHPassword(for: connection)
                 sshCredentialLoadFailed = false
             } catch SecretStoreError.notFound {
                 sshPassword = ""
+                sshCredentialLoadFailed = false
             } catch {
                 sshCredentialLoadFailed = true
-                connectionError = "The saved SSH password could not be loaded. You can enter and save a replacement. \(error.localizedDescription)"
+                connectionError = "The saved SSH password could not be loaded. Enter and save a replacement password. \(error.localizedDescription)"
             }
         }
     }
@@ -1200,9 +1266,17 @@ struct ConnectionFormView: View {
         guard validateForAction() else { return }
         guard credentialMaterialIsReadyForSave else { return }
         let config = buildConnection()
-        let sshPw: String? = useSSHTunnel && sshAuthMethod == .password ? sshPassword : nil
+        let connectionPassword: String
+        let sshPw: String?
         do {
-            try onSave(config, engine.supportsCredentials ? password : "", sshPw)
+            connectionPassword = try passwordForExplicitConnection(using: config)
+            sshPw = try sshPasswordForExplicitConnection(using: config)
+        } catch {
+            connectionError = "Saved credentials are unavailable. Enter replacement credentials before connecting. \(error.localizedDescription)"
+            return
+        }
+        do {
+            try onSave(config, engine.supportsCredentials ? password : "", useSSHTunnel && sshAuthMethod == .password ? sshPassword : nil)
             stagedSQLiteURL = nil
         } catch {
             connectionError = "The connection was not saved safely. \(error.localizedDescription)"
@@ -1214,7 +1288,7 @@ struct ConnectionFormView: View {
             do {
                 let sessionID = try await sessionManager.connect(
                     config: config,
-                    password: engine.supportsCredentials ? password : "",
+                    password: connectionPassword,
                     sshPassword: sshPw
                 )
                 if Task.isCancelled {
@@ -1225,7 +1299,17 @@ struct ConnectionFormView: View {
                 isSavingAndConnecting = false
                 saveAndConnectTask = nil
                 dismiss()
-                openWindow(id: "query-editor", value: sessionID)
+                let request = DatabaseWorkspaceWindowRequest.primary(sessionID: sessionID)
+                #if os(iOS)
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    iOSRouter.showWorkspace(request)
+                    return
+                }
+                #endif
+                openWindow(
+                    id: "query-editor",
+                    value: sessionManager.registerWorkspace(request)
+                )
             } catch {
                 guard !Task.isCancelled else { return }
                 isSavingAndConnecting = false
@@ -1264,16 +1348,13 @@ struct ConnectionFormView: View {
     }
 
     private func advanceFocus(after field: FormField) {
-        guard let index = orderedFormFields.firstIndex(of: field),
-              orderedFormFields.indices.contains(index + 1) else {
-            if isFormValid {
-                save()
-            } else {
-                _ = validateForAction()
-            }
+        guard let nextField = Self.nextField(after: field, in: orderedFormFields) else {
+            // Return/Next only advances or dismisses field editing. Saving,
+            // testing, and connecting always require an explicit button.
+            focusedField = nil
             return
         }
-        focusedField = orderedFormFields[index + 1]
+        focusedField = nextField
     }
 
     private func markTouched(_ field: FormField, resetsSSHTest: Bool = false) {
@@ -1299,7 +1380,7 @@ struct ConnectionFormView: View {
     }
 
     private var credentialMaterialIsReadyForSave: Bool {
-        if engine.supportsCredentials && databaseCredentialLoadFailed && password.isEmpty {
+        if engine.supportsCredentials, databaseCredentialLoadFailed, password.isEmpty {
             connectionError = "Authenticate again or enter a replacement database password before changing this connection."
             return false
         }
@@ -1311,6 +1392,32 @@ struct ConnectionFormView: View {
         return true
     }
 
+    private func passwordForExplicitConnection(
+        using connection: DatabaseConnectionConfig
+    ) throws -> String {
+        guard connection.engine.supportsCredentials else { return "" }
+        if !password.isEmpty || !isEditing { return password }
+        do {
+            return try KeychainManager.retrievePassword(for: connection)
+        } catch SecretStoreError.notFound {
+            return ""
+        }
+    }
+
+    private func sshPasswordForExplicitConnection(
+        using connection: DatabaseConnectionConfig
+    ) throws -> String? {
+        guard connection.useSSHTunnel, connection.sshAuthMethod == .password else {
+            return nil
+        }
+        if !sshPassword.isEmpty || !isEditing { return sshPassword }
+        do {
+            return try KeychainManager.retrieveSSHPassword(for: connection)
+        } catch SecretStoreError.notFound {
+            return ""
+        }
+    }
+
     // MARK: - Test Actions
 
     private func testSSH() {
@@ -1319,9 +1426,15 @@ struct ConnectionFormView: View {
             return
         }
         connectionError = nil
-        sshTestResult = .testing
         let config = buildConnection()
-        let sshPw: String? = useSSHTunnel && sshAuthMethod == .password ? sshPassword : nil
+        let sshPw: String?
+        do {
+            sshPw = try sshPasswordForExplicitConnection(using: config)
+        } catch {
+            connectionError = "Saved SSH credentials are unavailable. Enter a replacement password before testing. \(error.localizedDescription)"
+            return
+        }
+        sshTestResult = .testing
         Task {
             do {
                 try await sessionManager.testSSHConnection(config: config, sshPassword: sshPw)
@@ -1336,14 +1449,22 @@ struct ConnectionFormView: View {
     private func testDB() {
         guard validateForAction() else { return }
         connectionError = nil
-        dbTestResult = .testing
         let config = buildConnection()
-        let sshPw: String? = useSSHTunnel && sshAuthMethod == .password ? sshPassword : nil
+        let connectionPassword: String
+        let sshPw: String?
+        do {
+            connectionPassword = try passwordForExplicitConnection(using: config)
+            sshPw = try sshPasswordForExplicitConnection(using: config)
+        } catch {
+            connectionError = "Saved credentials are unavailable. Enter replacement credentials before testing. \(error.localizedDescription)"
+            return
+        }
+        dbTestResult = .testing
         Task {
             do {
                 try await sessionManager.testConnection(
                     config: config,
-                    password: engine.supportsCredentials ? password : "",
+                    password: connectionPassword,
                     sshPassword: sshPw
                 )
                 dbTestResult = .success
@@ -1366,6 +1487,15 @@ struct ConnectionFormView: View {
 }
 
 private extension View {
+    @ViewBuilder
+    func connectionPortKeyboard() -> some View {
+        #if os(iOS)
+        self.keyboardType(.numberPad)
+        #else
+        self
+        #endif
+    }
+
     @ViewBuilder
     func connectionPasswordFieldPresentation() -> some View {
         #if os(macOS)

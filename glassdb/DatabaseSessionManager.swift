@@ -15,10 +15,25 @@ import GlassDBKit
 @Observable
 class DatabaseSessionManager {
     var sessions: [UUID: DatabaseSession] = [:]
+    private(set) var workspaceRequests: [UUID: DatabaseWorkspaceWindowRequest] = [:]
     private(set) var persistentQueryHistory: [QueryHistoryEntry] = []
 
     private var hasLoaded = false
     private let defaults: UserDefaults
+
+    struct TransportPlan: Equatable, Sendable {
+        let databaseHost: String
+        let databasePort: Int
+        let tunnelRemoteHost: String?
+        let tunnelRemotePort: Int?
+        let tlsPolicy: DatabaseTLSPolicy
+    }
+
+    enum ForegroundValidationResult: Equatable, Sendable {
+        case connected
+        case disconnected
+        case missingSession
+    }
 
     init(loadImmediately: Bool = true, defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -33,6 +48,25 @@ class DatabaseSessionManager {
         loadQueryHistory()
     }
 
+    /// Registers the richer workspace launch context while keeping the scene's
+    /// external value a plain UUID. UUID-valued WindowGroups are the proven
+    /// spatial-window contract used by the Vision Pro terminal sibling app.
+    @discardableResult
+    func registerWorkspace(_ request: DatabaseWorkspaceWindowRequest) -> UUID {
+        workspaceRequests[request.id] = request
+        return request.id
+    }
+
+    /// Supports windows opened by older builds, where the scene UUID was the
+    /// database session UUID and the workspace always used its default tab.
+    func workspaceRequest(for windowID: UUID) -> DatabaseWorkspaceWindowRequest {
+        workspaceRequests[windowID] ?? .primary(sessionID: windowID)
+    }
+
+    func releaseWorkspace(_ windowID: UUID) {
+        workspaceRequests.removeValue(forKey: windowID)
+    }
+
     func connect(
         config: DatabaseConnectionConfig,
         password: String,
@@ -44,8 +78,7 @@ class DatabaseSessionManager {
 
         do {
             let engine = Self.makeEngine(for: config.engine)
-            var dbHost = config.host
-            var dbPort = config.port
+            var tunnelLocalPort: Int?
 
             if config.engine == .sqlite {
                 guard !config.useSSHTunnel, !config.useTLS else {
@@ -118,29 +151,24 @@ class DatabaseSessionManager {
                 session.tunnel = tunnel
                 session.tunnelManager = tunnelManager
 
-                dbHost = "127.0.0.1"
-                dbPort = tunnel.localPort
+                tunnelLocalPort = tunnel.localPort
                 Logger.database.info("SSH tunnel established on local port \(tunnel.localPort)")
             }
 
             // Connect to the selected network engine (directly or through tunnel)
+            let transportPlan = try Self.transportPlan(
+                for: config,
+                tunnelLocalPort: tunnelLocalPort
+            )
             session.state = .connecting(stage: .authenticating)
-            Logger.database.info("Connecting to \(config.engine.displayName, privacy: .public) at \(dbHost):\(dbPort) as \(config.username) (config host: \(config.host):\(config.port))")
-
-            let tlsPolicy: DatabaseTLSPolicy = if config.useTLS {
-                config.useSSHTunnel
-                    ? .requiredSystemTrustForHost(config.host)
-                    : .requiredSystemTrust
-            } else {
-                .disabled
-            }
+            Logger.database.info("Connecting to \(config.engine.displayName, privacy: .public) at \(transportPlan.databaseHost):\(transportPlan.databasePort) as \(config.username) (config host: \(config.host):\(config.port))")
             let connection = try await engine.connect(
-                host: dbHost,
-                port: dbPort,
+                host: transportPlan.databaseHost,
+                port: transportPlan.databasePort,
                 username: config.username,
                 password: password,
                 database: config.defaultDatabase,
-                tlsPolicy: tlsPolicy
+                tlsPolicy: transportPlan.tlsPolicy
             )
             session.engine = engine
             session.connection = connection
@@ -154,10 +182,11 @@ class DatabaseSessionManager {
             session.tunnel = nil
             session.tunnelManager = nil
             session.engine = nil
-            session.state = .error(error.localizedDescription)
+            let propagatedError = Self.actionableConnectionError(error, config: config)
+            session.state = .error(propagatedError.localizedDescription)
             sessions.removeValue(forKey: sessionID)
-            Logger.database.error("Connection failed: \(error)")
-            throw error
+            Logger.database.error("Connection failed: \(propagatedError)")
+            throw propagatedError
         }
 
         return sessionID
@@ -169,6 +198,57 @@ class DatabaseSessionManager {
         case .postgresql: PostgreSQLEngine()
         case .sqlite: SQLiteEngine()
         }
+    }
+
+    nonisolated static func transportPlan(
+        for config: DatabaseConnectionConfig,
+        tunnelLocalPort: Int? = nil
+    ) throws -> TransportPlan {
+        if config.engine == .sqlite {
+            guard !config.useSSHTunnel, !config.useTLS else {
+                throw SessionError.invalidConfiguration(
+                    "SQLite is a local file database and cannot use TLS or an SSH tunnel."
+                )
+            }
+            return TransportPlan(
+                databaseHost: config.host,
+                databasePort: 0,
+                tunnelRemoteHost: nil,
+                tunnelRemotePort: nil,
+                tlsPolicy: .disabled
+            )
+        }
+
+        let tlsPolicy: DatabaseTLSPolicy = if config.useTLS {
+            config.useSSHTunnel
+                ? .requiredSystemTrustForHost(config.host)
+                : .requiredSystemTrust
+        } else {
+            .disabled
+        }
+
+        if config.useSSHTunnel {
+            guard let tunnelLocalPort, tunnelLocalPort > 0 else {
+                throw SessionError.invalidConfiguration(
+                    "The SSH tunnel did not provide a valid local database port."
+                )
+            }
+            return TransportPlan(
+                databaseHost: "127.0.0.1",
+                databasePort: tunnelLocalPort,
+                tunnelRemoteHost: config.host,
+                tunnelRemotePort: config.port,
+                tlsPolicy: tlsPolicy
+            )
+        }
+
+        return TransportPlan(
+            databaseHost: config.host,
+            databasePort: config.port,
+            tunnelRemoteHost: nil,
+            tunnelRemotePort: nil,
+            tlsPolicy: tlsPolicy
+        )
     }
 
     func testConnection(config: DatabaseConnectionConfig, password: String, sshPassword: String? = nil) async throws {
@@ -213,6 +293,130 @@ class DatabaseSessionManager {
         try? await tunnel.close()
     }
 
+    /// Re-establishes the transport behind an existing logical session. Keeping
+    /// the `DatabaseSession` instance intact means every workspace window over
+    /// that session recovers together without losing tabs, history, or AI context.
+    func reconnect(sessionID: UUID) async throws {
+        guard let session = sessions[sessionID] else {
+            throw SessionError.notConnected
+        }
+        guard !session.state.isConnecting else { return }
+
+        let config = session.connectionConfig
+        let selectedDatabase = session.currentDatabase
+        session.lastConnectionError = nil
+        session.state = .connecting(stage: .resolvingHost)
+
+        do {
+            let credentials = try Self.storedCredentials(for: config)
+            let replacementID = try await connect(
+                config: config,
+                password: credentials.database,
+                sshPassword: credentials.ssh
+            )
+            guard let replacement = sessions.removeValue(forKey: replacementID),
+                  let connection = replacement.connection else {
+                throw SessionError.notConnected
+            }
+
+            do {
+                // MySQL can change its active database within one connection. Put a
+                // reconnected editor back where the user left it before publishing
+                // the recovered transport to any sibling workspace windows.
+                if config.engine == .mysql,
+                   let selectedDatabase,
+                   !selectedDatabase.isEmpty,
+                   selectedDatabase != config.defaultDatabase {
+                    let result = try await connection.execute(
+                        "USE \(connection.quotedIdentifier(selectedDatabase))",
+                        parameters: []
+                    )
+                    if let error = result.error {
+                        throw DatabaseError.unexpectedResult(error)
+                    }
+                }
+            } catch {
+                try? await connection.close()
+                try? await replacement.tunnel?.close()
+                replacement.connection = nil
+                replacement.engine = nil
+                replacement.tunnel = nil
+                replacement.tunnelManager = nil
+                throw error
+            }
+
+            session.connection = connection
+            session.engine = replacement.engine
+            session.tunnel = replacement.tunnel
+            session.tunnelManager = replacement.tunnelManager
+            session.currentDatabase = config.engine == .sqlite
+                ? "main"
+                : (selectedDatabase ?? replacement.currentDatabase)
+            session.requiresTransportValidation = false
+            session.state = .connected
+
+            // Ownership moved to the retained session above.
+            replacement.connection = nil
+            replacement.engine = nil
+            replacement.tunnel = nil
+            replacement.tunnelManager = nil
+            Logger.database.info("Reconnected session \(sessionID)")
+        } catch {
+            let message = error.localizedDescription
+            session.lastConnectionError = message
+            session.state = .error(message)
+            Logger.database.error("Reconnect failed for session \(sessionID): \(message, privacy: .public)")
+            throw error
+        }
+    }
+
+    /// Records that the owning scene may be suspended. The transport is not
+    /// closed here because another iPad window can still own the same logical
+    /// session; every subsequent request performs validation before use.
+    func noteSessionSuspended(sessionID: UUID) {
+        guard let session = sessions[sessionID], session.state.isConnected else { return }
+        session.requiresTransportValidation = true
+    }
+
+    /// Revalidates a possibly suspended transport without issuing a query or
+    /// silently reconnecting. Reconnect remains one explicit, bounded user action.
+    func validateSessionAfterForeground(sessionID: UUID) async -> ForegroundValidationResult {
+        guard sessions[sessionID] != nil else { return .missingSession }
+        guard await refreshConnectionState(sessionID: sessionID) else { return .disconnected }
+        return .connected
+    }
+
+    /// Checks the local transport state without issuing a keepalive query. This
+    /// catches sockets the driver already knows are closed while respecting the
+    /// server's configured idle-timeout policy.
+    @discardableResult
+    func refreshConnectionState(sessionID: UUID) async -> Bool {
+        guard let session = sessions[sessionID],
+              session.state.isConnected,
+              let connection = session.connection else {
+            return false
+        }
+        guard await connection.isConnected else {
+            await invalidateTransport(
+                for: session,
+                reason: "The database connection timed out or was closed."
+            )
+            return false
+        }
+        session.requiresTransportValidation = false
+        return true
+    }
+
+    /// Lets metadata surfaces that call the driver directly report a terminal
+    /// transport error through the same shared session state as query execution.
+    func handleConnectionFailure(_ error: any Error, sessionID: UUID) async {
+        guard let session = sessions[sessionID],
+              let connection = session.connection else { return }
+        let isOpen = await connection.isConnected
+        guard !isOpen || Self.isTerminalConnectionError(error.localizedDescription) else { return }
+        await invalidateTransport(for: session, reason: error.localizedDescription)
+    }
+
     func disconnect(sessionID: UUID) async {
         guard let session = sessions[sessionID] else { return }
         do {
@@ -243,9 +447,15 @@ class DatabaseSessionManager {
         sessionID: UUID,
         editorRowLimit: Int? = nil
     ) async throws -> QueryResult {
-        guard let session = sessions[sessionID],
-              let connection = session.connection else {
+        guard let session = sessions[sessionID] else {
             throw SessionError.notConnected
+        }
+        guard session.state.isConnected,
+              let connection = session.connection else {
+            throw SessionError.connectionLost
+        }
+        guard await refreshConnectionState(sessionID: sessionID) else {
+            throw SessionError.connectionLost
         }
 
         if let editorRowLimit,
@@ -296,7 +506,16 @@ class DatabaseSessionManager {
                 affectedRows: nil,
                 error: error.localizedDescription
             )
+            await handleConnectionFailure(error, sessionID: sessionID)
+            if !session.state.isConnected {
+                throw SessionError.connectionLost
+            }
             throw error
+        }
+
+        if let error = result.error,
+           Self.isTerminalConnectionError(error) {
+            await invalidateTransport(for: session, reason: error)
         }
 
         // Track USE database switches so the UI shows the current database
@@ -324,9 +543,15 @@ class DatabaseSessionManager {
     }
 
     func explainQuery(_ sql: String, sessionID: UUID) async throws -> QueryResult {
-        guard let session = sessions[sessionID],
-              let connection = session.connection else {
+        guard let session = sessions[sessionID] else {
             throw SessionError.notConnected
+        }
+        guard session.state.isConnected,
+              let connection = session.connection else {
+            throw SessionError.connectionLost
+        }
+        guard await refreshConnectionState(sessionID: sessionID) else {
+            throw SessionError.connectionLost
         }
         guard connection.capabilities.contains(.explain) else {
             throw DatabaseError.unsupportedCapability(
@@ -359,6 +584,10 @@ class DatabaseSessionManager {
                 affectedRows: nil,
                 error: error.localizedDescription
             )
+            await handleConnectionFailure(error, sessionID: sessionID)
+            if !session.state.isConnected {
+                throw SessionError.connectionLost
+            }
             throw error
         }
     }
@@ -494,14 +723,116 @@ class DatabaseSessionManager {
         sessions[id]
     }
 
+    nonisolated static func isTerminalConnectionError(_ message: String) -> Bool {
+        let normalized = message.lowercased()
+        return [
+            "connection closed",
+            "connection is closed",
+            "connection lost",
+            "lost connection",
+            "connection reset",
+            "connection terminated",
+            "server has gone away",
+            "broken pipe",
+            "channel closed",
+            "channel is closed",
+            "not connected",
+            "timed out or was closed",
+        ].contains { normalized.contains($0) }
+    }
+
+    nonisolated static func isLocalNetworkPermissionDenied(
+        domain: String,
+        code: Int,
+        message: String
+    ) -> Bool {
+        let normalizedDomain = domain.lowercased()
+        let normalizedMessage = message.lowercased()
+        if code == -65_570 { return true } // kDNSServiceErr_PolicyDenied
+        if normalizedDomain == NSPOSIXErrorDomain.lowercased(), code == 1 || code == 13 {
+            return true
+        }
+        return normalizedMessage.contains("policy denied")
+            || normalizedMessage.contains("local network access")
+            || normalizedMessage.contains("local network permission")
+    }
+
+    private nonisolated static func actionableConnectionError(
+        _ error: any Error,
+        config: DatabaseConnectionConfig
+    ) -> any Error {
+        guard config.engine.supportsNetworkTransport else { return error }
+        let nsError = error as NSError
+        guard isLocalNetworkPermissionDenied(
+            domain: nsError.domain,
+            code: nsError.code,
+            message: error.localizedDescription
+        ) else { return error }
+        return SessionError.localNetworkPermissionDenied
+    }
+
+    private static func storedCredentials(
+        for config: DatabaseConnectionConfig
+    ) throws -> (database: String, ssh: String?) {
+        let databasePassword: String
+        if config.engine.supportsCredentials {
+            do {
+                databasePassword = try KeychainManager.retrievePassword(for: config)
+            } catch SecretStoreError.notFound {
+                databasePassword = ""
+            }
+        } else {
+            databasePassword = ""
+        }
+
+        var sshPassword: String?
+        if config.useSSHTunnel && config.sshAuthMethod != .sshKey {
+            do {
+                sshPassword = try KeychainManager.retrieveSSHPassword(for: config)
+            } catch SecretStoreError.notFound {
+                sshPassword = ""
+            }
+        }
+        return (databasePassword, sshPassword)
+    }
+
+    private func invalidateTransport(
+        for session: DatabaseSession,
+        reason: String
+    ) async {
+        guard session.state.isConnected || session.connection != nil else { return }
+        let connection = session.connection
+        let tunnel = session.tunnel
+
+        // Publish the terminal state before awaiting cleanup so every window
+        // disables database actions immediately.
+        session.lastConnectionError = reason
+        session.state = .disconnected
+        session.requiresTransportValidation = false
+        session.connection = nil
+        session.engine = nil
+        session.tunnel = nil
+        session.tunnelManager = nil
+
+        try? await connection?.close()
+        try? await tunnel?.close()
+        Logger.database.notice("Database transport became unavailable: \(reason, privacy: .public)")
+    }
+
     enum SessionError: Error, LocalizedError {
         case notConnected
+        case connectionLost
+        case localNetworkPermissionDenied
         case invalidConfiguration(String)
 
         var errorDescription: String? {
             switch self {
             case .notConnected:
                 return "No active database connection."
+            case .connectionLost:
+                return "The database connection timed out or was closed. Reconnect to continue."
+            case .localNetworkPermissionDenied:
+                return "Local Network access is off for glassdb. Allow it in Settings, then reconnect."
             case .invalidConfiguration(let message):
                 return message
             }
@@ -520,6 +851,8 @@ class DatabaseSession {
     var tunnelManager: SSHTunnelManager?
     var queryHistory: [QueryResult] = []
     var currentDatabase: String?
+    var lastConnectionError: String?
+    var requiresTransportValidation = false
     let aiAssistant = AIAssistant()
 
     init(connectionConfig: DatabaseConnectionConfig) {

@@ -1,5 +1,14 @@
 # Releases
 
+## Platforms Plus Plus — Native iPhone/iPad and Apple UX — Automated RC; External Gates Open
+- [Release Tracker](platforms-plus-plus/README.md) — native iOS/iPadOS 26+ implementation and five-destination automated matrix are green; signed-device/live-network/accessibility/Instruments/human gates remain
+- P0-P3: baseline, platform spine, adaptive shell, and Apple-default controls
+- P4-P7: native data workflows, SQL/schema tooling, lifecycle/security, and OS 27 polish
+- P8-P9: accessibility/performance/security QA and integrated release validation
+- P6/C3 cross-repository follow-up: approved **My Connections** contract;
+  neutral endpoint integration, eligible credential mobility, and signed
+  glas.sh/iPhone -> glassdb/Vision Pro tunnel acceptance remain open
+
 ## Codex Completions — Trustworthy Production Core — Validation in progress
 - [Release Tracker](codex-completions/README.md) — implementation and evidence plan for `../../../docs/glassdb-results.txt`
 - C0-C4: truthfulness, transport trust, query correctness, credentials, and safe mutations
