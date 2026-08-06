@@ -1,8 +1,10 @@
-# glassdb.app — Native visionOS Database Client
+# glassdb.app — Historical visionOS Architecture Scaffold
 
 **Version**: 0.1.0 (scaffolding)
-**Status**: Pre-development — architecture and scaffolding phase
+**Status**: Superseded historical plan — not current product or dependency truth
 **Parent project**: [glas.sh](https://github.com/msitarzewski/glas.sh) (shared patterns, separate codebase)
+
+> This document records the original pre-development design and remains useful only for glas.sh pattern provenance. For current platform support, architecture, dependency pins, and release state, use `AGENTS.md`, `memory-bank/activeContext.md`, `memory-bank/progress.md`, and the implemented source.
 
 ---
 

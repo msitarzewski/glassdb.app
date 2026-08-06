@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application-and-package-tests:
+    name: Application and package tests
+    runs-on: xcode-27
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Report toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Validate privacy manifest
+        run: |
+          plutil -lint glassdb/PrivacyInfo.xcprivacy
+          plutil -p glassdb/PrivacyInfo.xcprivacy | rg 'NSPrivacyAccessedAPICategoryUserDefaults|CA92.1|1C8F.1'
+
+      - name: Run application tests
+        run: |
+          xcodebuild \
+            -project glassdb.xcodeproj \
+            -scheme glassdb \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest' \
+            -derivedDataPath "$RUNNER_TEMP/glassdb-derived-data" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Verify bundled privacy manifest
+        run: |
+          test -f "$RUNNER_TEMP/glassdb-derived-data/Build/Products/Debug-iphonesimulator/glassdb.app/PrivacyInfo.xcprivacy"
+
+      - name: Run GlassDBKit tests
+        run: swift test --package-path Packages/GlassDBKit
+
+  security:
+    name: Secret and dependency scans
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install scanners
+        run: brew install gitleaks osv-scanner
+
+      - name: Scan repository history for secrets
+        run: gitleaks git --config .gitleaks.toml --redact --log-opts=--all .
+
+      - name: Scan resolved dependencies for advisories
+        run: osv-scanner scan source --recursive .

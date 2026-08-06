@@ -1,23 +1,23 @@
 # AGENTS.md
 
-**Version**: 2.1 (2025-10-25) | **Compatibility**: Claude, Cursor, Copilot, Cline, Aider, all AGENTS.md-compatible tools
+**Version**: 2.2 (2026-08-06) | **Compatibility**: Claude, Cursor, Copilot, Cline, Aider, all AGENTS.md-compatible tools
 **Status**: Canonical single-file guide for AI-assisted development
-**Project**: glassdb.app — Native visionOS Database Client
+**Project**: glassdb.app — Native Apple-Platform Database Client
 
 ---
 
 ## Project Context
 
-glassdb.app is a native visionOS database management client with a glass-first spatial UI. It is the database counterpart to [glas.sh](https://github.com/msitarzewski/glas.sh) (native visionOS SSH terminal).
+glassdb.app is a native database management client for iPhone, iPad, Apple silicon Mac, and Vision Pro. Its glass-first spatial UI remains the product-defining Vision Pro experience. It is the database counterpart to [glas.sh](https://github.com/msitarzewski/glas.sh) (native visionOS SSH terminal).
 
 **Key facts**:
-- visionOS 26.0+ target, Apple Silicon only, Swift 6 strict concurrency (verified with Swift 6.4)
-- SwiftUI + visionOS ornaments + glass materials (`.windowStyle(.plain)`, `.ultraThinMaterial`)
+- One shared arm64 target: iOS/iPadOS 26.0+, macOS 27.0+, visionOS 26.0+; Intel and Catalyst excluded; Swift 6 strict concurrency (verified with Swift 6.4)
+- Adaptive SwiftUI with a compact iPhone router, multiwindow regular-width workspaces, and visionOS ornaments/glass materials (`.windowStyle(.plain)`, `.ultraThinMaterial`)
 - MySQL (mysql-nio), PostgreSQL (postgres-nio), and managed-copy SQLite engines
 - SSH tunnel support via vendored Citadel package (shared with glas.sh)
 - `@Observable` (Observation framework) for all managers
-- Multi-window architecture: Connections, transparent Database Workspace, detached Results Grid, and Settings
-- Architectural patterns derived from glas.sh — study `PROJECT_SCAFFOLD.md` for mapping
+- Multi-window regular-width architecture: Connections, transparent Database Workspace, detached Results Grid, and Settings; iPhone uses the in-app single-window router
+- Architectural patterns derived from glas.sh — use `PROJECT_SCAFFOLD.md` only as the explicitly historical mapping and verify current behavior in source/Memory Bank
 
 **Sister project reference**: When uncertain about visionOS patterns, consult glas.sh source. Key files:
 - `glas_shApp.swift` — Window/Scene architecture

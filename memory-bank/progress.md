@@ -14,14 +14,22 @@
 - [x] OSV-discovered swift-nio 2.96.0 advisories repaired by locking 2.100.0; post-fix OSV scan reports no issues, Xcode Analyze succeeds, and post-fix Mac/iPhone/Vision application regressions pass
 - [x] Final authored-code scan found no in-scope TODO/FIXME/stub/fatalError/preconditionFailure/empty-catch implementation; vendored upstream markers are classified in the release tracker
 
+### Completed — Immediate Audit Remediation (2026-08-06)
+- [x] Added and bundle-validated the Apple privacy manifest with UserDefaults required reasons `CA92.1` and `1C8F.1`
+- [x] Removed the database-password fallback from SSH authentication and made the SSH credential argument explicit; focused regression coverage passes
+- [x] Routed iPhone workspace recovery back to the in-app connection list while preserving window routing on regular-width platforms; focused regression coverage and a generic iOS build pass
+- [x] Added GitHub Actions for the application/package suites and security scans, plus narrow Gitleaks exceptions for classified vendored fixtures and literal false positives
+- [x] Reconciled public/current platform and mysql-nio provenance documentation, ignored `*.profraw`, and recorded the remaining Xcode 27 beta App Intents metadata diagnostic without adding an unused framework dependency
+- [x] Audit regression: macOS app 103/103, GlassDBKit 25/25 with 3 live-service skips, generic iOS build, source/bundle privacy validation, OSV no issues, Gitleaks history/current tree clean, and `git diff --check` clean
+
 ### Completed — Infrastructure
 - [x] Initial market scan completed; revalidate competitor claims before public use
-- [x] Architecture planning — PROJECT_SCAFFOLD.md
+- [x] Historical architecture planning — `PROJECT_SCAFFOLD.md` (superseded by implemented source and current Memory Bank state)
 - [x] glas.sh pattern analysis — reuse mapping documented
 - [x] AGENTS.md adapted for glassdb.app
 - [x] Memory bank initialized
 - [x] Domain identified: glassdb.app (available)
-- [x] Xcode project targets native visionOS 26.0+ and native macOS 27.0+ application/test paths
+- [x] Xcode project targets native iPhone/iPad 26.0+, visionOS 26.0+, and Apple silicon macOS 27.0+ application/test paths
 - [x] Vendored Citadel + swift-nio-ssh packages from glas.sh
 - [x] GlassDBKit package created with mysql-nio dependency
 - [x] GitHub repo created, initial commit pushed
@@ -29,7 +37,7 @@
 ### Completed — Core Engine
 - [x] DatabaseProtocol abstraction (`DatabaseEngine`, `DatabaseConnection` protocols)
 - [x] MySQLAdapter — mysql-nio connect, execute, and schema-introspection paths used by the app
-- [x] Passwordless `caching_sha2_password` compatibility — immutable mysql-nio fork pin at `3ad138f`, focused upstream regression coverage, passing gated GlassDBKit/MySQL 9.7.1 test, user-confirmed fresh Mac-app connection, and upstream draft PR #126
+- [x] Passwordless `caching_sha2_password` compatibility — current immutable mysql-nio fork pin `69489876bebca3b54c46680e519669789060d0ae` in both SwiftPM resolution surfaces; the earlier upstream PR #126 was closed without merge, so the fork remains required until an equivalent upstream release is validated
 - [x] Typed QueryResult, ColumnInfo, and DatabaseValue models in GlassDBKit
 - [x] SSHTunnelManager — verified-host Citadel DirectTCPIP forwarding
 - [x] Utility command routing — USE/SET/SHOW through simpleQuery (COM_QUERY)

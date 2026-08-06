@@ -120,6 +120,15 @@ struct WorkspaceTabState: Equatable {
     }
 }
 
+enum DatabaseWorkspaceConnectionsRoute: Equatable {
+    case inAppRouter
+    case window
+
+    static func resolve(isPhone: Bool) -> Self {
+        isPhone ? .inAppRouter : .window
+    }
+}
+
 // MARK: - Workspace View
 
 struct DatabaseWorkspaceView: View {
@@ -293,7 +302,7 @@ struct DatabaseWorkspaceView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                     Button("Show Connections") {
-                        openWindow(id: "main")
+                        showConnections()
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -361,7 +370,7 @@ struct DatabaseWorkspaceView: View {
                     .help("Reconnect with the credentials already saved for this connection")
 
                     Button("Show Connections") {
-                        openWindow(id: "main")
+                        showConnections()
                     }
                     .buttonStyle(.bordered)
                 }
@@ -376,6 +385,19 @@ struct DatabaseWorkspaceView: View {
                 .stroke(recoveryTint(for: session.state).opacity(0.38), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.22), radius: 32, y: 14)
+    }
+
+    private func showConnections() {
+        #if os(iOS)
+        let route = DatabaseWorkspaceConnectionsRoute.resolve(
+            isPhone: UIDevice.current.userInterfaceIdiom == .phone
+        )
+        if route == .inAppRouter {
+            iOSRouter.showConnections()
+            return
+        }
+        #endif
+        openWindow(id: "main")
     }
 
     private func recoveryTitle(for state: SessionState) -> String {

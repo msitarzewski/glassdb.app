@@ -1,0 +1,46 @@
+title = "glassdb secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Release checklist prose describing the completed secret scan"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''secret scan, dependency/advisory review''']
+paths = ['''^memory-bank/releases/platforms-plus-plus/P8-accessibility-performance-security-qa\.md$''']
+
+[[allowlists]]
+description = "Historical SF Symbol ternary containing the words key and fill"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''Image\(systemName: column\.isPrimaryKey \? "key\.fill" : "rectangle\.split\.3x1"\)''']
+paths = ['''^glassdb/TableDetailView\.swift$''']
+
+[[allowlists]]
+description = "Vendored Citadel example declarations generate fresh local host keys"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = [
+  '''let privateKey: Curve25519\.Signing\.PrivateKey''',
+  '''let key: Curve25519\.Signing\.PrivateKey = \.init\(\)''',
+]
+paths = [
+  '''^Packages/Citadel/Examples/TerminalAppServer/Sources/main\.swift$''',
+  '''^Packages/Citadel/Sources/CitadelServerExample/Server\.swift$''',
+  '''^Packages/Citadel/Sources/CitadelServerExample/HostKeyFile\.swift$''',
+]
+
+[[allowlists]]
+description = "Vendored SSH parser strings and intentional private-key test fixtures"
+targetRules = ["private-key"]
+paths = [
+  '''^Packages/Citadel/Sources/Citadel/OpenSSHKey\.swift$''',
+  '''^Packages/Citadel/Sources/Citadel/SSHKeyTypeDetection\.swift$''',
+  '''^Packages/Citadel/Tests/CitadelTests/KeyTests\.swift$''',
+  '''^Packages/swift-nio-ssh/Tests/NIOSSHTests/CertifiedKeyTests\.swift$''',
+  '''^Packages/swift-nio-ssh/Tests/NIOSSHTests/UserAuthenticationStateMachineTests\.swift$''',
+]
