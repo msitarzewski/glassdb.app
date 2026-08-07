@@ -75,7 +75,11 @@ jobs:
         run: swift --version
 
       - name: Run GlassDBKit tests
-        run: swift test --package-path Packages/GlassDBKit
+        run: |
+          swift build --package-path Packages/GlassDBKit --build-tests
+          test_bundle="$(find Packages/GlassDBKit/.build -type d -name 'GlassDBKitTests.xctest' -print -quit)"
+          test -n "$test_bundle"
+          xcrun xctest "$test_bundle"
 
   security:
     name: Secret and dependency scans
