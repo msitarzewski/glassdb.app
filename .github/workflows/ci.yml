@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application-tests:
+    name: Application tests
+    runs-on: xcode-27
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: glassdb.app
+
+    steps:
+      - name: Check out glassdb
+        uses: actions/checkout@v6
+        with:
+          path: glassdb.app
+
+      - name: Check out GlasSecretStore dependency
+        uses: actions/checkout@v6
+        with:
+          repository: msitarzewski/GlasSecretStore
+          ref: 838e052680ff746f77188e72d58dd213f224ca8b
+          path: GlasSecretStore
+
+      - name: Report toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Validate privacy manifest
+        run: |
+          plutil -lint glassdb/PrivacyInfo.xcprivacy
+          plutil -p glassdb/PrivacyInfo.xcprivacy | /usr/bin/grep -E 'NSPrivacyAccessedAPICategoryUserDefaults|CA92.1|1C8F.1'
+
+      - name: Run application tests
+        run: |
+          xcodebuild \
+            -project glassdb.xcodeproj \
+            -scheme glassdb \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest' \
+            -derivedDataPath "$RUNNER_TEMP/glassdb-derived-data" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Verify bundled privacy manifest
+        run: |
+          test -f "$RUNNER_TEMP/glassdb-derived-data/Build/Products/Debug-iphonesimulator/glassdb.app/PrivacyInfo.xcprivacy"
+
+  glassdbkit-tests:
+    name: GlassDBKit tests
+    runs-on: xcode-27
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Report toolchain
+        run: swift --version
+
+      - name: Run GlassDBKit tests
+        run: |
+          swift build --package-path Packages/GlassDBKit --build-tests
+          test_bundle="$(find Packages/GlassDBKit/.build -type d -name 'GlassDBKitTests.xctest' -print -quit)"
+          test -n "$test_bundle"
+          xcrun xctest "$test_bundle"
+
+  security:
+    name: Secret and dependency scans
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Install scanners
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.4.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Scan repository history for secrets
+        run: gitleaks git --config .gitleaks.toml --redact --log-opts=--all .
+
+      - name: Scan resolved dependencies for advisories
+        run: osv-scanner scan source --recursive .

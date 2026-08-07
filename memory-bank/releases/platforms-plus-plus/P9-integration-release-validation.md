@@ -85,6 +85,7 @@ Any fix restarts the affected focused tests and the full four-platform regressio
 | 2026-07-21 | Post-advisory regression | swift-nio 2.100.0, Mac/iPhone/Vision app suites, GlassDBKit, Citadel, Xcode Analyze, OSV | PASS; OSV reports no issues | `/private/tmp/glassdb-platforms-security-*` |
 | 2026-07-21 | Complete-code scan | authored app, tests, GlassDBKit; vendor markers classified separately | PASS; no in-scope stub/TODO/fatalError/preconditionFailure/empty catch; `git diff --check` clean | `/private/tmp/glassdb-platforms-incomplete-scan.txt` |
 | 2026-07-21 | Credential contract | glassdb + GlasSecretStore tests and source entitlement comparison with glas.sh | PASS automated; signed cross-app read remains external | P6 evidence |
+| 2026-08-06 | Immediate audit remediation | macOS 27 app, generic iOS Simulator build, GlassDBKit, source/built privacy manifests, OSV, Gitleaks history/current tree, repository diff | PASS; app 103/103; GlassDBKit 25/25 with 3 live skips; iOS build and all static checks green | `memory-bank/tasks/immediate-audit-remediation.md` |
 
 ## Retained Custom-Component Exceptions
 

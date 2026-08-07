@@ -2533,6 +2533,26 @@ struct glassdbTests {
         }
     }
 
+    @Test func sshAuthenticationNeverFallsBackToTheDatabasePassword() {
+        #expect(DatabaseSessionManager.tunnelPassword(
+            sshPassword: nil,
+            hasPrivateKey: false
+        ) == nil)
+        #expect(DatabaseSessionManager.tunnelPassword(
+            sshPassword: "ssh-only-secret",
+            hasPrivateKey: false
+        ) == "ssh-only-secret")
+        #expect(DatabaseSessionManager.tunnelPassword(
+            sshPassword: "unused-password",
+            hasPrivateKey: true
+        ) == nil)
+    }
+
+    @Test func workspaceConnectionsRouteUsesTheInAppRouterOnlyOnPhone() {
+        #expect(DatabaseWorkspaceConnectionsRoute.resolve(isPhone: true) == .inAppRouter)
+        #expect(DatabaseWorkspaceConnectionsRoute.resolve(isPhone: false) == .window)
+    }
+
     @Test func sshTransportPreservesRemoteHostAndTLSIdentity() throws {
         let config = DatabaseConnectionConfig(
             name: "Tunnel",

@@ -70,7 +70,7 @@ class DatabaseSessionManager {
     func connect(
         config: DatabaseConnectionConfig,
         password: String,
-        sshPassword: String? = nil
+        sshPassword: String?
     ) async throws -> UUID {
         let sessionID = UUID()
         let session = DatabaseSession(connectionConfig: config)
@@ -140,7 +140,10 @@ class DatabaseSessionManager {
                     sshHost: sshHost,
                     sshPort: sshPort,
                     sshUsername: sshUsername,
-                    sshPassword: sshPrivateKey == nil ? (sshPassword ?? password) : nil,
+                    sshPassword: Self.tunnelPassword(
+                        sshPassword: sshPassword,
+                        hasPrivateKey: sshPrivateKey != nil
+                    ),
                     sshPrivateKey: sshPrivateKey,
                     sshKeyPassphrase: sshKeyPassphrase,
                     remoteHost: config.host,
@@ -198,6 +201,16 @@ class DatabaseSessionManager {
         case .postgresql: PostgreSQLEngine()
         case .sqlite: SQLiteEngine()
         }
+    }
+
+    /// Keeps database and SSH credentials in separate authentication domains.
+    /// Key-based tunnels must not also receive a password, and a missing SSH
+    /// password must never fall back to the database password.
+    nonisolated static func tunnelPassword(
+        sshPassword: String?,
+        hasPrivateKey: Bool
+    ) -> String? {
+        hasPrivateKey ? nil : sshPassword
     }
 
     nonisolated static func transportPlan(

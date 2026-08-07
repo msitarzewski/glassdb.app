@@ -23,6 +23,7 @@
 		29D787D970624B23ABE13289 /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF83AE0207B342A29E2ADEE7 /* ConnectionManager.swift */; };
 		3711EDCA0BA34F4E98E10CE0 /* ConnectionFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BFCB3DBBA154885A5CF2BFB /* ConnectionFormView.swift */; };
 		3B64A03BF9CD4108BE9A5DEC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 990BF6E8175444E180F44614 /* Assets.xcassets */; };
+		A0C1D2E3F4A5061728394051 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A0C1D2E3F4A5061728394052 /* PrivacyInfo.xcprivacy */; };
 		4EEEE200E4F6459C9A24647C /* DatabaseSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBC442DB6AB4D709CB10272 /* DatabaseSessionManager.swift */; };
 		5760A471B09743FFA44D4265 /* QueryEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3792B5DAA1074993A43635A7 /* QueryEditorView.swift */; };
 		5FF0BC99598B472C869B9ACD /* SettingsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02EDAE92FBA4446990FFA07F /* SettingsManager.swift */; };
@@ -63,6 +64,7 @@
 		7BFCB3DBBA154885A5CF2BFB /* ConnectionFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionFormView.swift; sourceTree = "<group>"; };
 		990BF6E8175444E180F44614 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A11C0A1C0A1C0A1C0A1C0002 /* MacAppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = MacAppIcon.icon; sourceTree = "<group>"; };
+		A0C1D2E3F4A5061728394052 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 
 		AE1A61DE012A4FE1BF43783B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		C0149C38F9584EDF8F43B6A9 /* glassdb.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glassdb.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -140,6 +142,7 @@
 				C80284FE2C784ED1A35C853D /* Models.swift */,
 				3792B5DAA1074993A43635A7 /* QueryEditorView.swift */,
 				A0B1C2D3E4F5A6B7C8D9E0F1 /* RecordEditorView.swift */,
+				A0C1D2E3F4A5061728394052 /* PrivacyInfo.xcprivacy */,
 				F06AA08C663E426587B3B46C /* ResultsGridView.swift */,
 				DF6C04803014428EA95F2A77 /* SchemaBrowserView.swift */,
 				4E5F6A7B8C9D0E1F2A3B4C5D /* SQLHighlighter.swift */,
@@ -252,6 +255,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				3B64A03BF9CD4108BE9A5DEC /* Assets.xcassets in Resources */,
+				A0C1D2E3F4A5061728394051 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

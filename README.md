@@ -1,10 +1,10 @@
 # glassdb
 
-A native visionOS database client built for spatial computing. Glass-first UI, a DBeaver-style workspace, and optional on-device AI with no AI cloud service.
+A native Apple-platform database client for iPhone, iPad, Apple silicon Mac, and Vision Pro. It combines adaptive SwiftUI workflows, a glass-first spatial workspace, and optional on-device AI with no AI cloud service.
 
 **[glassdb.app](https://glassdb.app)** &nbsp;|&nbsp; **[Sponsor](https://github.com/sponsors/msitarzewski)**
 
-![Platform: visionOS 26+](https://img.shields.io/badge/platform-visionOS_26+-1a1a2e?style=flat-square)
+![Platforms: iOS 26+, macOS 27+, visionOS 26+](https://img.shields.io/badge/platforms-iOS_26+_%7C_macOS_27+_%7C_visionOS_26+-1a1a2e?style=flat-square)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
 ![Planned price: $10](https://img.shields.io/badge/planned_price-$10-0D96F6?style=flat-square&logo=apple&logoColor=white)
@@ -13,7 +13,7 @@ A native visionOS database client built for spatial computing. Glass-first UI, a
 
 ## Why glassdb
 
-glassdb is built specifically for Vision Pro: transparent database workspaces, system ornaments, and an eye/hand/keyboard-friendly query-and-grid layout rather than a repackaged desktop or iPad application.
+glassdb uses one native SwiftUI target with purpose-built adaptations: compact single-window navigation on iPhone, a professional split-view and multiwindow data plane on iPad and Mac, and transparent spatial database workspaces with system ornaments on Vision Pro.
 
 ---
 
@@ -62,7 +62,7 @@ glassdb is built specifically for Vision Pro: transparent database workspaces, s
 - Modified field indicators with change count
 - Optimistic updates use stable identity plus original-row predicates
 
-### AI Assistant (On-Device, Private; visionOS 27+)
+### AI Assistant (On-Device, Private; supported Foundation Models runtimes)
 - **SQL Query Assistant**: Describe what you want in natural language, get a SQL query with risk assessment (safe/moderate/destructive)
 - Uses privacy-bounded metadata for the currently selected table; row values are excluded by default
 - Inserts generated SQL into the editor for review; deterministic app policy controls execution
@@ -89,8 +89,8 @@ glassdb is built specifically for Vision Pro: transparent database workspaces, s
 
 ### Requirements
 
-- Xcode 27.0 beta (27A5209h) with the visionOS 27.0 SDK
-- Apple Vision Pro or visionOS Simulator
+- Xcode 27.0 or a compatible Xcode 27 preview with the iOS, macOS, and visionOS SDKs
+- iPhone or iPad on iOS/iPadOS 26+, an Apple silicon Mac on macOS 27+, or Apple Vision Pro on visionOS 26+
 - Apple Silicon development Mac
 - GlasSecretStore package at `../GlasSecretStore/` (shared with glas.sh)
 
@@ -105,7 +105,7 @@ open glassdb.xcodeproj
 
 Keep both repositories in the same parent directory so the checked-in `../GlasSecretStore` local-package reference resolves. The app workspace lockfile pins all remote Swift package revisions.
 
-Select the **glassdb** scheme, choose a visionOS Simulator or your Apple Vision Pro, and hit Cmd+R. Swift Package Manager resolves the MySQL, PostgreSQL, TLS, and supporting dependencies. Citadel and swift-nio-ssh are vendored in `Packages/`.
+Select the **glassdb** scheme, choose a supported iPhone, iPad, Mac, or Vision Pro destination, and hit Cmd+R. Swift Package Manager resolves the MySQL, PostgreSQL, TLS, and supporting dependencies. Citadel and swift-nio-ssh are vendored in `Packages/`.
 
 **Note:** If local-package resolution fails while glas.sh is open in the same Xcode installation, closing the other workspace resolves the observed GlasSecretStore package conflict.
 
@@ -224,13 +224,14 @@ If you find glassdb useful, consider supporting development:
 
 ## Known Limitations
 
-- The shipping application is Vision Pro/visionOS only; GlassDBKit also contains PostgreSQL and SQLite adapters.
+- The shared native release candidate targets iPhone/iPad (26+), Apple silicon Mac (27+), and Vision Pro (26+); Intel and Mac Catalyst are intentionally unsupported.
+- Automated suites are green, but signed physical-device, live MySQL/PostgreSQL/TLS/SSH, accessibility, performance, iOS 26 fallback, and human release-approval gates remain open.
 - Network-engine cancellation is abortive: it closes the transport, terminates the query, and marks the session disconnected. PostgreSQL complete DDL reconstruction and table statistics remain capability-gated as unavailable.
 - SQLite imports a private managed copy so the original file remains unchanged.
 - `.inspector()` is unavailable on visionOS -- record editor uses `.sheet()` instead
 - `.smartQuotesDisabled()` is unavailable on visionOS -- uses `.keyboardType(.asciiCapable)`
 - Imported P256 material may be Secure Enclave-wrapped; true non-exportable hardware signing keys remain device-bound and glas.sh-only
-- Foundation Models AI requires visionOS 27-compatible hardware and an available on-device model; core database workflows remain available on visionOS 26.
+- Foundation Models AI requires a compatible runtime, eligible hardware, Apple Intelligence, and an available on-device model; core database workflows remain available without it.
 - An observed Xcode local-package conflict may require closing another workspace that has GlasSecretStore open
 
 ## Built With
