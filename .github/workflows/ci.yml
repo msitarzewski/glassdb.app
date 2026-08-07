@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -13,10 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  application-and-package-tests:
-    name: Application and package tests
+  application-tests:
+    name: Application tests
     runs-on: xcode-27
-    timeout-minutes: 60
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: glassdb.app
@@ -59,6 +61,18 @@ jobs:
       - name: Verify bundled privacy manifest
         run: |
           test -f "$RUNNER_TEMP/glassdb-derived-data/Build/Products/Debug-iphonesimulator/glassdb.app/PrivacyInfo.xcprivacy"
+
+  glassdbkit-tests:
+    name: GlassDBKit tests
+    runs-on: xcode-27
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Report toolchain
+        run: swift --version
 
       - name: Run GlassDBKit tests
         run: swift test --package-path Packages/GlassDBKit
