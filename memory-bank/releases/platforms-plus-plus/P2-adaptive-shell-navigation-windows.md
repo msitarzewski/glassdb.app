@@ -10,7 +10,7 @@ Deliver platform-native information architecture: a focused compact iPhone flow 
 
 ## iPhone Plan
 
-- [ ] Use `NavigationStack` for the connection library and drill-in detail.
+- [x] Use `NavigationStack` for the connection library and drill-in detail.
 - [ ] Define no more than a small stable set of top-level connected areas, expected to be Overview, Browse, and SQL, using native `TabView` only if user testing confirms these are true peers.
 - [ ] Keep table Data/Structure/DDL/Indexes/Foreign Keys as contextual navigation or toolbar modes, not a nested tab bar.
 - [ ] Make the first connected screen the connection/server overview, not an empty query editor.
@@ -19,7 +19,7 @@ Deliver platform-native information architecture: a focused compact iPhone flow 
 
 ## iPad Plan
 
-- [ ] Use `NavigationSplitView` for schema navigation and workspace detail.
+- [x] Use `NavigationSplitView` for schema navigation and workspace detail.
 - [ ] Use `preferredCompactColumn` so narrow/resized windows collapse predictably.
 - [ ] Use system sidebar visibility and edge-swipe behavior; do not add a competing gesture.
 - [ ] Preserve at most two visible hierarchy levels in the sidebar; place deeper data in content/detail navigation.
@@ -59,3 +59,4 @@ At each width verify orientation, title, primary action, back/sidebar control, s
 | 2026-07-21 | Mac and Vision regression compile | Pass (compile) | macOS 27 test target built successfully; generic visionOS 27 arm64 build succeeded. The full Mac unit run had one reconnect lifecycle failure outside this UX slice, while the focused UX tests passed. |
 | 2026-07-21 | Four-platform integrated regression | Pass (automated) | macOS, iPhone 17 Pro, iPad Pro 13-inch, visionOS 26.5, and visionOS 27 each passed the 101-test app suite. Workspace window identity, tab isolation/close fallback, overview routing, and session ownership cases passed. |
 | 2026-07-21 | iPhone/iPad visual smoke | Pass (simulator) | Native compact connection stack and regular split-view empty state launched and were visually inspected through Simulator captures. Physical resize, pointer, menu-bar, and restoration acceptance remains a device gate. |
+| 2026-08-09 | Adaptive database connection library | Pass (automated) | One saved catalog now projects All/Favorites/Recent/Collections and search into iPhone stack, Mac/iPad split, and Vision mode-tab/spatial layouts. Final suites passed Mac 105/105 and iPhone/iPad/Vision 103/103 each; physical interaction acceptance remains open. |

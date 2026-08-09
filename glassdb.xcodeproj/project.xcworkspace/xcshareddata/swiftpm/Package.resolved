@@ -1,5 +1,5 @@
 {
-  "originHash" : "8c9e9bc0b1058147eccca17e2c08110a465160407f3bb946b6693ddf11fcb488",
+  "originHash" : "5f853dfccb8201945f97852d7cee1f9774aac1494d796fc6308d2ea5ab07bc82",
   "pins" : [
     {
       "identity" : "bigint",
@@ -8,6 +8,22 @@
       "state" : {
         "revision" : "e07e00fa1fd435143a2dcf8b7eec9a7710b2fdfe",
         "version" : "5.7.0"
+      }
+    },
+    {
+      "identity" : "glassconnectionkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/msitarzewski/GlassConnectionKit.git",
+      "state" : {
+        "revision" : "0ced944e3a9799201f6563f057f7f760e9e7b988"
+      }
+    },
+    {
+      "identity" : "glassecretstore",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/msitarzewski/GlasSecretStore.git",
+      "state" : {
+        "revision" : "9be45c91d145333252e3f5b03a5e5b6e6349e3e6"
       }
     },
     {

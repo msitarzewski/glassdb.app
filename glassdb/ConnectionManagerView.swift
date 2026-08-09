@@ -21,6 +21,11 @@ private struct PendingHostTrustAttempt {
     let challenge: SSHHostKeyChallenge
 }
 
+private enum DatabaseConnectionCompactDestination: Hashable {
+    case results
+    case detail
+}
+
 struct ConnectionManagerView: View {
     @Environment(ConnectionManager.self) private var connectionManager
     @Environment(DatabaseSessionManager.self) private var sessionManager
@@ -32,6 +37,8 @@ struct ConnectionManagerView: View {
     #endif
 
     @State private var selectedConnectionID: UUID?
+    @State private var selectedScope: DatabaseConnectionLibraryScope = .allConnections
+    @State private var selectedMode: DatabaseConnectionLibraryMode = .all
     @State private var searchText = ""
     @State private var connectingConnectionID: UUID?
     @State private var connectionError: String?
@@ -41,11 +48,14 @@ struct ConnectionManagerView: View {
     @State private var pendingHostTrustAttempt: PendingHostTrustAttempt?
     @FocusState private var searchFieldFocused: Bool
     #if os(iOS)
-    @State private var compactNavigationPath: [UUID] = []
+    @State private var compactNavigationPath: [DatabaseConnectionCompactDestination] = []
     #endif
 
     var body: some View {
-        platformNavigation
+        let connectionLibrary = DatabaseConnectionLibraryProjection(
+            connections: connectionManager.connections
+        )
+        platformNavigation(connectionLibrary: connectionLibrary)
         .sheet(isPresented: $showingAddConnection) {
             ConnectionFormView(mode: .add) { connection, password, sshPassword in
                 let credentialReceipt = try saveCredentials(
@@ -57,7 +67,14 @@ struct ConnectionManagerView: View {
                 do {
                     try connectionManager.add(connection)
                     searchText = ""
+                    selectedMode = .all
+                    selectedScope = .allConnections
                     selectedConnectionID = connection.id
+                    #if os(iOS)
+                    if horizontalSizeClass == .compact {
+                        compactNavigationPath = [.results, .detail]
+                    }
+                    #endif
                 } catch {
                     try restoreCredentials(credentialReceipt, after: error)
                 }
@@ -130,83 +147,223 @@ struct ConnectionManagerView: View {
         }
         .onAppear {
             if selectedConnectionID == nil {
-                selectedConnectionID = connectionManager.connections.first?.id
+                selectedConnectionID = connectionLibrary.connections.first?.id
             }
         }
         .onChange(of: connectionManager.connections.map(\.id)) { _, ids in
             if let selectedConnectionID, !ids.contains(selectedConnectionID) {
-                self.selectedConnectionID = ids.first
+                self.selectedConnectionID = nil
             } else if selectedConnectionID == nil {
-                selectedConnectionID = ids.first
+                selectedConnectionID = connectionLibrary.connections(
+                    in: selectedScope,
+                    searchQuery: searchText
+                ).first?.id
             }
-            #if os(iOS)
-            compactNavigationPath.removeAll { !ids.contains($0) }
-            #endif
+        }
+        .onChange(of: connectionLibrary.connections(
+            in: selectedScope,
+            searchQuery: searchText
+        ).map(\.id)) { _, _ in
+            selectedConnectionID = connectionLibrary.resolvedSelection(
+                preferredConnectionID: selectedConnectionID,
+                in: selectedScope,
+                searchQuery: searchText
+            )
+        }
+        .onChange(of: connectionLibrary.collections.map(\.id)) { _, collectionIDs in
+            guard selectedMode == .collections else { return }
+            if case .collection(let selectedCollectionID) = selectedScope,
+               collectionIDs.contains(selectedCollectionID) {
+                return
+            }
+            selectedConnectionID = nil
+            if let firstCollectionID = collectionIDs.first {
+                selectedScope = .collection(firstCollectionID)
+            } else {
+                selectedMode = .all
+                selectedScope = .allConnections
+            }
+        }
+        #if os(iOS)
+        .onChange(of: selectedConnectionID) { _, connectionID in
+            updateCompactDetailPath(hasSelection: connectionID != nil)
+        }
+        .onChange(of: compactNavigationPath) { _, path in
+            if path.last != .detail {
+                selectedConnectionID = nil
+            }
+        }
+        #endif
+    }
+
+    // MARK: - Connection Library Shells
+
+    @ViewBuilder
+    private func platformNavigation(
+        connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> some View {
+        #if os(macOS)
+        regularNavigation(connectionLibrary: connectionLibrary)
+        #elseif os(visionOS)
+        visionNavigation(connectionLibrary: connectionLibrary)
+        #elseif os(iOS)
+        if horizontalSizeClass == .compact {
+            compactNavigation(connectionLibrary: connectionLibrary)
+        } else {
+            regularNavigation(connectionLibrary: connectionLibrary)
+        }
+        #else
+        regularNavigation(connectionLibrary: connectionLibrary)
+        #endif
+    }
+
+    private func regularNavigation(
+        connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> some View {
+        NavigationSplitView {
+            libraryNavigation(connectionLibrary: connectionLibrary)
+                .databaseSidebarColumnWidth()
+        } content: {
+            connectionResults(connectionLibrary: connectionLibrary)
+        } detail: {
+            detailView(connectionLibrary: connectionLibrary)
+        }
+    }
+
+    #if os(visionOS)
+    private func visionNavigation(
+        connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> some View {
+        TabView(selection: visionModeSelection(in: connectionLibrary)) {
+            ForEach(DatabaseConnectionLibraryMode.allCases) { mode in
+                visionLibrary(mode: mode, connectionLibrary: connectionLibrary)
+                    .tabItem {
+                        Label(mode.title, systemImage: modeSystemImage(mode))
+                            .accessibilityIdentifier(
+                                "database-connection-library-mode-\(mode.rawValue)"
+                            )
+                    }
+                    .tag(mode)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .bottomOrnament) {
+                HStack {
+                    Button("Add Connection", systemImage: "plus") {
+                        showingAddConnection = true
+                    }
+                    .accessibilityIdentifier("database-connection-library-add")
+
+                    Button("Settings", systemImage: "gearshape") {
+                        showSettings()
+                    }
+                    .accessibilityIdentifier("database-connection-library-settings")
+                }
+            }
         }
     }
 
     @ViewBuilder
-    private var platformNavigation: some View {
-        #if os(iOS)
-        if horizontalSizeClass == .compact {
-            compactNavigation
+    private func visionLibrary(
+        mode: DatabaseConnectionLibraryMode,
+        connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> some View {
+        if mode == .collections {
+            NavigationSplitView {
+                collectionNavigation(connectionLibrary: connectionLibrary)
+            } content: {
+                connectionResults(connectionLibrary: connectionLibrary)
+            } detail: {
+                detailView(connectionLibrary: connectionLibrary)
+            }
         } else {
-            regularNavigation
+            NavigationSplitView {
+                connectionResults(connectionLibrary: connectionLibrary)
+            } detail: {
+                detailView(connectionLibrary: connectionLibrary)
+            }
         }
-        #else
-        regularNavigation
-        #endif
     }
 
-    private var regularNavigation: some View {
-        NavigationSplitView {
-            sidebar
-                .databaseSidebarColumnWidth()
-        } detail: {
-            detailView
-        }
+    private func visionModeSelection(
+        in connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> Binding<DatabaseConnectionLibraryMode> {
+        Binding(
+            get: { selectedMode },
+            set: { selectMode($0, in: connectionLibrary) }
+        )
     }
+    #endif
 
     #if os(iOS)
-    private var compactNavigation: some View {
+    private func compactNavigation(
+        connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> some View {
         NavigationStack(path: $compactNavigationPath) {
-            compactConnectionList
-                .navigationDestination(for: UUID.self) { connectionID in
-                    if let connection = connectionManager.connection(for: connectionID) {
-                        compactConnectionDetail(connection)
-                    } else {
-                        ContentUnavailableView(
-                            "Connection Unavailable",
-                            systemImage: "cylinder.split.1x2",
-                            description: Text("This saved connection is no longer available.")
+            libraryNavigation(connectionLibrary: connectionLibrary)
+                .navigationDestination(
+                    for: DatabaseConnectionCompactDestination.self
+                ) { destination in
+                    switch destination {
+                    case .results:
+                        connectionResults(connectionLibrary: connectionLibrary)
+                    case .detail:
+                        detailView(connectionLibrary: connectionLibrary)
+                    }
+                }
+        }
+    }
+
+    private func updateCompactDetailPath(hasSelection: Bool) {
+        if hasSelection {
+            guard compactNavigationPath.last == .results else { return }
+            compactNavigationPath.append(.detail)
+        } else if compactNavigationPath.last == .detail {
+            compactNavigationPath.removeLast()
+        }
+    }
+    #endif
+
+    private func libraryNavigation(
+        connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> some View {
+        List {
+            Section("Library") {
+                scopeNavigationButton(
+                    mode: .all,
+                    scope: .allConnections,
+                    title: "All Connections",
+                    count: connectionLibrary.itemCount(in: .allConnections)
+                )
+                scopeNavigationButton(
+                    mode: .favorites,
+                    scope: .favorites,
+                    title: "Favorites",
+                    count: connectionLibrary.itemCount(in: .favorites)
+                )
+                scopeNavigationButton(
+                    mode: .recent,
+                    scope: .recent,
+                    title: "Recent",
+                    count: connectionLibrary.itemCount(in: .recent)
+                )
+            }
+
+            if !connectionLibrary.collections.isEmpty {
+                Section("Collections") {
+                    ForEach(connectionLibrary.collections) { collection in
+                        scopeNavigationButton(
+                            mode: .collections,
+                            scope: .collection(collection.id),
+                            title: collection.name,
+                            count: collection.count
                         )
                     }
                 }
-        }
-    }
-
-    private var compactConnectionList: some View {
-        List {
-            if connectionManager.connections.isEmpty {
-                ContentUnavailableView {
-                    Label("No Connections", systemImage: "cylinder.split.1x2")
-                } description: {
-                    Text("Add a database connection to begin.")
-                } actions: {
-                    Button("Add Connection", systemImage: "plus") {
-                        showingAddConnection = true
-                    }
-                }
-                .listRowBackground(Color.clear)
-            } else if filteredConnections(connectionManager.connections).isEmpty {
-                ContentUnavailableView.search(text: searchText)
-                    .listRowBackground(Color.clear)
-            } else {
-                compactConnectionSections
             }
         }
-        .searchable(text: $searchText, prompt: "Search connections")
-        .searchFocused($searchFieldFocused)
+        .accessibilityIdentifier("database-connection-library-navigation")
+        .listStyle(.sidebar)
         .navigationTitle("Connections")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -214,172 +371,238 @@ struct ConnectionManagerView: View {
                     showingAddConnection = true
                 }
                 .managerNewConnectionShortcut()
-            }
-            ToolbarItem(placement: .secondaryAction) {
-                Button("Settings", systemImage: "gear") {
-                    showSettings()
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var compactConnectionSections: some View {
-        if !filteredConnections(connectionManager.favoriteConnections).isEmpty {
-            Section("Favorites") {
-                ForEach(filteredConnections(connectionManager.favoriteConnections)) { connection in
-                    compactConnectionRow(connection)
-                }
-            }
-        }
-        if !filteredConnections(connectionManager.recentConnections).isEmpty {
-            Section("Recent") {
-                ForEach(filteredConnections(connectionManager.recentConnections)) { connection in
-                    compactConnectionRow(connection)
-                }
-            }
-        }
-        Section("All Connections") {
-            ForEach(filteredConnections(connectionManager.connections)) { connection in
-                compactConnectionRow(connection)
-            }
-        }
-    }
-
-    private func compactConnectionRow(_ connection: DatabaseConnectionConfig) -> some View {
-        NavigationLink(value: connection.id) {
-            connectionRowLabel(connection)
-        }
-        .contextMenu {
-            connectionActions(for: connection)
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                connectionManager.toggleFavorite(connection)
-            } label: {
-                Label(
-                    connection.isFavorite ? "Unfavorite" : "Favorite",
-                    systemImage: connection.isFavorite ? "star.slash" : "star"
-                )
-            }
-            .tint(.yellow)
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button {
-                editingConnection = connection
-            } label: {
-                Label("Edit", systemImage: "pencil")
-            }
-            .tint(.blue)
-
-            Button(role: .destructive) {
-                connectionPendingDeletion = connection
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-            .disabled(activeSessionID(for: connection) != nil)
-        }
-        .accessibilityHint("Opens connection details. Swipe for favorite, edit, and delete actions.")
-    }
-
-    private func compactConnectionDetail(_ connection: DatabaseConnectionConfig) -> some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                connectionDetailHeader(connection)
-                connectionDetailActions(connection)
-            }
-            .padding()
-            .frame(maxWidth: .infinity)
-        }
-        .navigationTitle(connection.name)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .secondaryAction) {
-                Menu("Connection Actions", systemImage: "ellipsis.circle") {
-                    connectionActions(for: connection)
-                }
-            }
-        }
-    }
-    #endif
-
-    // MARK: - Sidebar
-
-    private var sidebar: some View {
-        List(selection: $selectedConnectionID) {
-            if connectionManager.connections.isEmpty {
-                ContentUnavailableView {
-                    Label("No Connections", systemImage: "cylinder.split.1x2")
-                } description: {
-                    Text("Add a database connection to begin.")
-                } actions: {
-                    Button("Add Connection", systemImage: "plus") {
-                        showingAddConnection = true
-                    }
-                }
-                .listRowBackground(Color.clear)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 12)
-            } else if filteredConnections(connectionManager.connections).isEmpty {
-                ContentUnavailableView.search(text: searchText)
-                    .listRowBackground(Color.clear)
-            } else if !filteredConnections(connectionManager.favoriteConnections).isEmpty {
-                Section("Favorites") {
-                    ForEach(filteredConnections(connectionManager.favoriteConnections)) { conn in
-                        connectionRow(conn)
-                    }
-                }
-            }
-
-            if !connectionManager.connections.isEmpty,
-               !filteredConnections(connectionManager.connections).isEmpty,
-               !filteredConnections(connectionManager.recentConnections).isEmpty {
-                Section("Recent") {
-                    ForEach(filteredConnections(connectionManager.recentConnections)) { conn in
-                        connectionRow(conn)
-                    }
-                }
-            }
-
-            if !connectionManager.connections.isEmpty,
-               !filteredConnections(connectionManager.connections).isEmpty {
-                Section("All Connections") {
-                    ForEach(filteredConnections(connectionManager.connections)) { conn in
-                        connectionRow(conn)
-                    }
-                }
-            }
-        }
-        .searchable(text: $searchText, prompt: "Search connections...")
-        .searchFocused($searchFieldFocused)
-        .databaseLookScrollEnabled()
-        .navigationTitle("glassdb")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showingAddConnection = true
-                } label: {
-                    Label("Add Connection", systemImage: "plus")
-                }
-                .managerNewConnectionShortcut()
-                .help("Add a database connection (Command-N)")
+                .accessibilityIdentifier("database-connection-library-add")
+                .help("Add a database connection")
             }
             #if !os(macOS)
-            ToolbarItem(placement: .primaryAction) {
-                Button {
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Settings", systemImage: "gearshape") {
                     showSettings()
-                } label: {
-                    Label("Settings", systemImage: "gear")
                 }
+                .accessibilityIdentifier("database-connection-library-settings")
                 .help("Open glassdb settings")
             }
             #endif
         }
     }
 
+    private func collectionNavigation(
+        connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> some View {
+        List {
+            if connectionLibrary.collections.isEmpty {
+                ContentUnavailableView(
+                    "No Collections",
+                    systemImage: "folder",
+                    description: Text(
+                        "Add a collection to a saved connection to organize it here."
+                    )
+                )
+            } else {
+                ForEach(connectionLibrary.collections) { collection in
+                    scopeNavigationButton(
+                        mode: .collections,
+                        scope: .collection(collection.id),
+                        title: collection.name,
+                        count: collection.count
+                    )
+                }
+            }
+        }
+        .accessibilityIdentifier("database-connection-library-collections")
+        .listStyle(.sidebar)
+        .navigationTitle("Collections")
+    }
+
+    private func scopeNavigationButton(
+        mode: DatabaseConnectionLibraryMode,
+        scope: DatabaseConnectionLibraryScope,
+        title: String,
+        count: Int
+    ) -> some View {
+        Button {
+            selectedMode = mode
+            selectedScope = scope
+            selectedConnectionID = nil
+            #if os(iOS)
+            if horizontalSizeClass == .compact {
+                compactNavigationPath = [.results]
+            }
+            #endif
+        } label: {
+            HStack {
+                Label(title, systemImage: modeSystemImage(mode))
+                Spacer()
+                Text(count, format: .number)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(
+            "database-connection-library-scope-\(scope.id)"
+        )
+        .listRowBackground(
+            selectedScope == scope
+                ? Color.accentColor.opacity(0.16)
+                : Color.clear
+        )
+        .accessibilityAddTraits(selectedScope == scope ? .isSelected : [])
+    }
+
+    private func connectionResults(
+        connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> some View {
+        let connections = connectionLibrary.connections(
+            in: selectedScope,
+            searchQuery: searchText
+        )
+        return List(selection: $selectedConnectionID) {
+            if connections.isEmpty {
+                if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ContentUnavailableView {
+                        Label(emptyResultsTitle, systemImage: modeSystemImage(selectedMode))
+                    } description: {
+                        Text(emptyResultsDescription)
+                    } actions: {
+                        if connectionManager.connections.isEmpty {
+                            Button("Add Connection", systemImage: "plus") {
+                                showingAddConnection = true
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier(
+                        "database-connection-library-empty-results"
+                    )
+                } else {
+                    ContentUnavailableView.search(text: searchText)
+                }
+            } else {
+                ForEach(connections) { connection in
+                    connectionRow(connection)
+                        .accessibilityIdentifier(
+                            "database-connection-library-connection-\(connection.id.uuidString.lowercased())"
+                        )
+                }
+            }
+        }
+        .accessibilityIdentifier("database-connection-library-results")
+        .searchable(text: $searchText, prompt: "Search connections...")
+        .searchFocused($searchFieldFocused)
+        .databaseLookScrollEnabled()
+        .navigationTitle(scopeTitle(in: connectionLibrary))
+    }
+
+    private func selectMode(
+        _ mode: DatabaseConnectionLibraryMode,
+        in connectionLibrary: DatabaseConnectionLibraryProjection
+    ) {
+        selectedMode = mode
+        selectedConnectionID = nil
+        switch mode {
+        case .all:
+            selectedScope = .allConnections
+        case .favorites:
+            selectedScope = .favorites
+        case .recent:
+            selectedScope = .recent
+        case .collections:
+            selectedScope = .collection(
+                connectionLibrary.collections.first?.id ?? ""
+            )
+        }
+    }
+
+    private func modeSystemImage(
+        _ mode: DatabaseConnectionLibraryMode
+    ) -> String {
+        switch mode {
+        case .all: return "cylinder.split.1x2"
+        case .favorites: return "star"
+        case .recent: return "clock"
+        case .collections: return "folder"
+        }
+    }
+
+    private func scopeTitle(
+        in connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> String {
+        switch selectedScope {
+        case .allConnections: return "All Connections"
+        case .favorites: return "Favorites"
+        case .recent: return "Recent"
+        case .collection(let collectionID):
+            return connectionLibrary.collections
+                .first { $0.id == collectionID }?.name ?? "Collections"
+        }
+    }
+
+    private var emptyResultsTitle: String {
+        switch selectedScope {
+        case .allConnections: return "No Connections"
+        case .favorites: return "No Favorites"
+        case .recent: return "No Recent Connections"
+        case .collection: return "No Connections"
+        }
+    }
+
+    private var emptyResultsDescription: String {
+        switch selectedScope {
+        case .allConnections:
+            return "Add a MySQL, PostgreSQL, or SQLite connection to begin."
+        case .favorites:
+            return "Mark a connection as a favorite to keep it in this scope."
+        case .recent:
+            return "Connections appear here after you use them."
+        case .collection:
+            return "Edit a connection to add it to this collection."
+        }
+    }
+
     // MARK: - Connection Row
 
     private func connectionRow(_ connection: DatabaseConnectionConfig) -> some View {
+        #if os(iOS)
+        connectionRowLabel(connection)
+            .contentShape(Rectangle())
+            .tag(connection.id)
+            .onTapGesture {
+                selectedConnectionID = connection.id
+            }
+            .contextMenu {
+                connectionActions(for: connection)
+            }
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                Button {
+                    connectionManager.toggleFavorite(connection)
+                } label: {
+                    Label(
+                        connection.isFavorite ? "Unfavorite" : "Favorite",
+                        systemImage: connection.isFavorite ? "star.slash" : "star"
+                    )
+                }
+                .tint(.yellow)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button {
+                    editingConnection = connection
+                } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
+                .tint(.blue)
+
+                Button(role: .destructive) {
+                    connectionPendingDeletion = connection
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .disabled(activeSessionID(for: connection) != nil)
+            }
+            .accessibilityHint(
+                "Opens connection details. Swipe for favorite, edit, and delete actions."
+            )
+        #elseif os(macOS)
         connectionRowLabel(connection)
             .contentShape(Rectangle())
             .tag(connection.id)
@@ -394,6 +617,17 @@ struct ConnectionManagerView: View {
                 connectionActions(for: connection)
             }
             .help("Select \(connection.name); double-click to connect or open its workspace")
+        #else
+        connectionRowLabel(connection)
+            .contentShape(Rectangle())
+            .tag(connection.id)
+            .onTapGesture {
+                selectedConnectionID = connection.id
+            }
+            .contextMenu {
+                connectionActions(for: connection)
+            }
+        #endif
     }
 
     private func connectionRowLabel(_ connection: DatabaseConnectionConfig) -> some View {
@@ -492,16 +726,13 @@ struct ConnectionManagerView: View {
     // MARK: - Detail View
 
     @ViewBuilder
-    private var detailView: some View {
+    private func detailView(
+        connectionLibrary: DatabaseConnectionLibraryProjection
+    ) -> some View {
         if let id = selectedConnectionID,
            let connection = connectionManager.connection(for: id) {
-            VStack(spacing: 24) {
-                connectionDetailHeader(connection)
-                connectionDetailActions(connection)
-            }
-            .padding(32)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if connectionManager.connections.isEmpty {
+            connectionDetail(connection)
+        } else if connectionLibrary.connections.isEmpty {
             ContentUnavailableView {
                 Label("No Connections", systemImage: "cylinder.split.1x2")
             } description: {
@@ -521,30 +752,136 @@ struct ConnectionManagerView: View {
         }
     }
 
-    private func connectionDetailHeader(_ connection: DatabaseConnectionConfig) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: connection.engine.iconName)
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
+    private func connectionDetail(
+        _ connection: DatabaseConnectionConfig
+    ) -> some View {
+        VStack(spacing: 0) {
+            Form {
+                Section("Connection") {
+                    LabeledContent("Engine", value: connection.engine.displayName)
+                    if connection.engine == .sqlite {
+                        LabeledContent(
+                            "Database File",
+                            value: URL(fileURLWithPath: connection.host).lastPathComponent
+                        )
+                    } else {
+                        LabeledContent("Host", value: connection.host)
+                        LabeledContent("Port", value: String(connection.port))
+                        LabeledContent("Username", value: connection.username)
+                        LabeledContent(
+                            "Default Database",
+                            value: connection.defaultDatabase.map {
+                                $0.isEmpty ? "Not set" : $0
+                            } ?? "Not set"
+                        )
+                    }
+                }
 
-            Text(connection.name)
-                .font(.title)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
+                Section("Security") {
+                    if connection.engine.supportsCredentials {
+                        LabeledContent(
+                            "Database Password",
+                            value: connection.databaseCredentialPolicy.displayName
+                        )
+                    }
+                    if connection.engine.supportsTLS {
+                        LabeledContent(
+                            "TLS",
+                            value: connection.useTLS ? "Required" : "Off"
+                        )
+                    }
+                    LabeledContent(
+                        "SSH Tunnel",
+                        value: connection.useSSHTunnel ? "On" : "Off"
+                    )
+                    if connection.useSSHTunnel {
+                        LabeledContent(
+                            "SSH Server",
+                            value: "\(connection.sshHost ?? "Not set"):\(connection.sshPort ?? 22)"
+                        )
+                        LabeledContent(
+                            "SSH Username",
+                            value: connection.sshUsername.map {
+                                $0.isEmpty ? "Not set" : $0
+                            } ?? "Not set"
+                        )
+                        LabeledContent(
+                            "SSH Authentication",
+                            value: connection.sshAuthMethod?.displayName ?? "Password"
+                        )
+                        if connection.sshAuthMethod != .sshKey {
+                            LabeledContent(
+                                "SSH Password",
+                                value: connection.sshCredentialPolicy.displayName
+                            )
+                        }
+                    }
+                }
 
-            Text(connection.displaySubtitle)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .multilineTextAlignment(.center)
+                Section("Activity") {
+                    LabeledContent("Status") {
+                        if activeSessionID(for: connection) == nil {
+                            Label("Disconnected", systemImage: "bolt.slash")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Label("Connected", systemImage: "bolt.fill")
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    LabeledContent(
+                        "Last Connected",
+                        value: connection.lastConnected?.formatted(
+                            date: .abbreviated,
+                            time: .shortened
+                        ) ?? "Never"
+                    )
+                    LabeledContent(
+                        "Added",
+                        value: connection.dateAdded.formatted(
+                            date: .abbreviated,
+                            time: .omitted
+                        )
+                    )
+                }
 
-            if activeSessionID(for: connection) != nil {
-                Label("Connected", systemImage: "bolt.fill")
-                    .foregroundStyle(.green)
-                    .font(.callout)
+                if !connection.tags.isEmpty || connection.colorTag != .none {
+                    Section("Organization") {
+                        if !connection.tags.isEmpty {
+                            LabeledContent(
+                                "Collections",
+                                value: connection.tags.joined(separator: ", ")
+                            )
+                        }
+                        if connection.colorTag != .none {
+                            LabeledContent(
+                                "Color Tag",
+                                value: connection.colorTag.displayName
+                            )
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .databaseLookScrollEnabled()
+            .accessibilityIdentifier(
+                "database-connection-library-detail-\(connection.id.uuidString.lowercased())"
+            )
+
+            connectionDetailActions(connection)
+                .padding()
+                .background(.bar)
+        }
+        .navigationTitle(connection.name)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Menu("Connection Actions", systemImage: "ellipsis.circle") {
+                    connectionActions(for: connection)
+                }
             }
         }
+        #endif
     }
 
     private func connectionDetailActions(_ connection: DatabaseConnectionConfig) -> some View {
@@ -611,7 +948,7 @@ struct ConnectionManagerView: View {
         do {
             try connectionManager.delete(connection)
             if selectedConnectionID == connection.id {
-                selectedConnectionID = connectionManager.connections.first?.id
+                selectedConnectionID = nil
             }
         } catch {
             connectionError = "The connection was not deleted safely. \(error.localizedDescription)"
@@ -765,17 +1102,6 @@ struct ConnectionManagerView: View {
         throw persistenceError
     }
 
-    // MARK: - Filtering
-
-    private func filteredConnections(_ connections: [DatabaseConnectionConfig]) -> [DatabaseConnectionConfig] {
-        guard !searchText.isEmpty else { return connections }
-        return connections.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            $0.host.localizedCaseInsensitiveContains(searchText) ||
-            $0.username.localizedCaseInsensitiveContains(searchText) ||
-            ($0.defaultDatabase ?? "").localizedCaseInsensitiveContains(searchText)
-        }
-    }
 }
 
 private extension View {

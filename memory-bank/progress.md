@@ -179,12 +179,18 @@
 - [x] Transport pending buffers are bounded; Citadel payload/SFTP/invalid-state paths use typed failure handling rather than process traps
 - [x] Latest development-signed macOS arm64 bundle and generic visionOS simulator arm64 build passed; strict Mac signature verification succeeded
 
+### Completed — Adaptive Connection Library (2026-08-09)
+- [x] One transient projection over `ConnectionManager.connections` provides deterministic All Connections, Favorites, Recent, Collections, scoped search, and selection reconciliation without a second catalog
+- [x] iPhone uses scope → results → detail `NavigationStack`; iPad and Mac use a regular-width split view; Vision Pro uses mode tabs with two- and three-column spatial layouts
+- [x] Existing connection tags are editable as normalized Collections on every target; grouped details expose credential policy but no credential material
+- [x] Final regressions passed 105/105 on Mac and 103/103 each on iPhone, iPad, and Vision Pro with zero failures or skips
+
 ### In Progress
 - [ ] C3 cross-device Glass-family credential catalog and eligible-secret synchronization; shared access group/App Group behavior is currently same-device only
 - [ ] Magic / First Class **My Connections** contract: neutral endpoint identity,
   glassdb database/tunnel overlay, outcome-oriented onboarding, and canonical
   glas.sh/iPhone -> glassdb/Vision Pro tunnel acceptance; approved direction,
-  implementation not started
+  database-library presentation complete but synchronized endpoint implementation not started
 - [ ] External distribution provisioning/signing and physical-device acceptance for Vision Pro and Mac, including device-only Keychain, user-presence, Secure Enclave, and supported Foundation Models behavior
 - [ ] Physical iPhone/iPad acceptance, signed glassdb/glas.sh cross-app Keychain read, live database/TLS/SSH/Tailscale failure matrix, accessibility/input review, Instruments, and iOS 26 runtime fallback validation for `platforms-plus-plus`
 - [ ] Final residual-risk review and release documentation reconciliation

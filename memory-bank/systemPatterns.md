@@ -123,6 +123,10 @@
 - Extend the existing `ConnectionManager`, Keychain integration, App Group bridge,
   GlasSecretStore, and iCloud integration. Do not introduce another endpoint or
   credential authority inside `GlassDBKit`, Citadel, or the UI layer.
+- The completed cross-repository reuse audit assigns neutral value types and pure
+  validation/migration behavior to the Foundation-only `GlassConnectionKit`,
+  consumed at a reviewed exact revision. Persistence, CloudKit, Keychain, trust,
+  database/SSH transport, and UI remain outside it.
 
 ## Glass Material Pattern (visionOS 26)
 - Only the `query-editor` database workspace uses `.windowStyle(.plain)` and user-controlled 0...1 opacity/blur.
@@ -141,4 +145,4 @@
 - Runtime app code in `glassdb/` (22 top-level Swift files at this release snapshot).
 - Shared package code in `Packages/GlassDBKit/` (DB protocol, adapters, models).
 - Vendored SSH packages in `Packages/Citadel/` and `Packages/swift-nio-ssh/`.
-- Shared Keychain package at `../GlasSecretStore/` (local path dependency).
+- Shared Keychain package resolved from its reviewed exact remote revision.

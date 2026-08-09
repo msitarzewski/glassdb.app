@@ -12,6 +12,10 @@
 - [competitive-analysis.md](competitive-analysis.md) — DBeaver/TablePlus/DataGrip comparison, feature roadmap, UX insights
 - [quick-start.md](quick-start.md) — Common patterns
 
+## Tasks
+- [August 2026](tasks/2026-08/README.md) — Current task index
+  - [Connection Library Parity](tasks/2026-08/090826_connection-library-parity.md) — adaptive single-catalog connection UX
+
 ## Releases
 - [releases/README.md](releases/README.md) — Release index
 - [v0.1 Release Plan](releases/v0.1/release.md) — MVP (MySQL) — **M4 in-progress**

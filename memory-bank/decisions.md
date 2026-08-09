@@ -91,6 +91,33 @@
     baseline and must not be described as cross-device completion.
 - References: `memory-bank/releases/codex-completions/C3-credentials-secrets.md`, `memory-bank/releases/platforms-plus-plus/P6-network-credentials-lifecycle.md`, `../glas.sh/memory-bank/releases/codex-completions/08-glassdb-metadata-sync.md`
 
+## 2026-08-09: Consume the GlassConnectionKit endpoint contract
+
+- Status: Approved package boundary; initial package published and pinned
+- Context:
+  - glas.sh Phase 08.1/08.8 found no neutral reusable target across either app,
+    RealityKitContent, Citadel, GlassDBKit, or GlasSecretStore.
+  - `DatabaseConnectionConfig` currently embeds SSH tunnel fields and cannot serve
+    as the shared endpoint wire contract without making database behavior the
+    family-wide authority.
+- Decision:
+  - Consume the Foundation-only `GlassConnectionKit` package at reviewed exact
+    revision `0ced944e3a9799201f6563f057f7f760e9e7b988`.
+  - Preserve `DatabaseConnectionConfig.id` as the database-overlay identity. Move
+    embedded SSH facts to a versioned `EndpointProfile`; retain only a stable
+    `tunnelEndpointID` and database-specific fields in the overlay.
+  - Treat `CredentialID` as an opaque shared value whose lifecycle and material are
+    owned by GlasSecretStore. Do not derive endpoint or credential identity from
+    mutable host/user/port fields.
+  - Keep CloudKit, App Group storage, Keychain, host trust, transport, and UI out of
+    GlassConnectionKit. Phase 08.3/08.4 must assign one logical record/sync namespace
+    before either app writes synchronization code.
+- Consequences:
+  - The schema and package foundation are settled, but C3 endpoint migration,
+    synchronization, and the physical iPhone-to-Vision-Pro tunnel path remain open.
+  - Deleting a database overlay cannot cascade to the shared endpoint or credential.
+- References: `memory-bank/releases/codex-completions/C3-credentials-secrets.md`, `memory-bank/systemPatterns.md#Glass-Family-Connection-and-Tunnel-Contract`, `glassdb/Models.swift:13`, `Packages/GlassDBKit/Package.swift:6`, `https://github.com/msitarzewski/GlassConnectionKit/commit/0ced944e3a9799201f6563f057f7f760e9e7b988`
+
 ## 2026-03-15: DBeaver-style unified workspace over separate windows
 - Status: Approved
 - Context: Original architecture had separate windows for query editor, schema browser, and results grid. User wanted a traditional IDE layout with sidebar + context-sensitive detail surface, inspired by DBeaver's interaction model.
