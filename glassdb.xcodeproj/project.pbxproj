@@ -13,6 +13,7 @@
 
 		22B58E26C7444FF4802B4B17 /* GlassDBKit in Frameworks */ = {isa = PBXBuildFile; productRef = 469DAC2964D74CADB1B32DE2 /* GlassDBKit */; };
 		A1B2C3D4E5F64A7B8C9D0E1F /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */; };
+		C0DEC0DEC0DEC0DEC0DEC001 /* GlassConnectionKit in Frameworks */ = {isa = PBXBuildFile; productRef = C0DEC0DEC0DEC0DEC0DEC003 /* GlassConnectionKit */; };
 		28A1F3C5D7E84B6A9C0D2E4F /* DatabaseWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3E8A1F42B54C7D9E0F1A2B /* DatabaseWorkspaceView.swift */; };
 		2A1B3C4D5E6F78A9B0C1D2E3 /* SQLHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E5F6A7B8C9D0E1F2A3B4C5D /* SQLHighlighter.swift */; };
 		2B3C4D5E6F7A89B0C1D2E3F4 /* HighlightedTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F6A7B8C9D0E1F2A3B4C5D6E /* HighlightedTextEditor.swift */; };
@@ -89,9 +90,10 @@
 		ADA2B3566B6941DB91660EC0 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
-			files = (
-				22B58E26C7444FF4802B4B17 /* GlassDBKit in Frameworks */,
-				A1B2C3D4E5F64A7B8C9D0E1F /* GlasSecretStore in Frameworks */,
+				files = (
+					22B58E26C7444FF4802B4B17 /* GlassDBKit in Frameworks */,
+					C0DEC0DEC0DEC0DEC0DEC001 /* GlassConnectionKit in Frameworks */,
+					A1B2C3D4E5F64A7B8C9D0E1F /* GlasSecretStore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -180,9 +182,10 @@
 			dependencies = (
 			);
 			name = glassdb;
-			packageProductDependencies = (
-				469DAC2964D74CADB1B32DE2 /* GlassDBKit */,
-				B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */,
+				packageProductDependencies = (
+					469DAC2964D74CADB1B32DE2 /* GlassDBKit */,
+					C0DEC0DEC0DEC0DEC0DEC003 /* GlassConnectionKit */,
+					B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */,
 			);
 			productName = glassdb;
 			productReference = C0149C38F9584EDF8F43B6A9 /* glassdb.app */;
@@ -234,9 +237,10 @@
 				Base,
 			);
 			mainGroup = 322E2E8ABC124DE8A96D43A8;
-			packageReferences = (
-				95EEFE7D4E8E42E092908953 /* XCLocalSwiftPackageReference "Packages/GlassDBKit" */,
-				C3D4E5F6A7B84C9D0E1F2A3B /* XCRemoteSwiftPackageReference "GlasSecretStore" */,
+				packageReferences = (
+					95EEFE7D4E8E42E092908953 /* XCLocalSwiftPackageReference "Packages/GlassDBKit" */,
+					C0DEC0DEC0DEC0DEC0DEC002 /* XCRemoteSwiftPackageReference "GlassConnectionKit" */,
+					C3D4E5F6A7B84C9D0E1F2A3B /* XCRemoteSwiftPackageReference "GlasSecretStore" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9A75A586B2504699B8C19A5C /* Products */;
@@ -623,6 +627,14 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		C0DEC0DEC0DEC0DEC0DEC002 /* XCRemoteSwiftPackageReference "GlassConnectionKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/msitarzewski/GlassConnectionKit.git";
+			requirement = {
+				kind = revision;
+				revision = 0ced944e3a9799201f6563f057f7f760e9e7b988;
+			};
+		};
 		C3D4E5F6A7B84C9D0E1F2A3B /* XCRemoteSwiftPackageReference "GlasSecretStore" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/msitarzewski/GlasSecretStore.git";
@@ -638,6 +650,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 95EEFE7D4E8E42E092908953 /* XCLocalSwiftPackageReference "Packages/GlassDBKit" */;
 			productName = GlassDBKit;
+		};
+		C0DEC0DEC0DEC0DEC0DEC003 /* GlassConnectionKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0DEC0DEC0DEC0DEC0DEC002 /* XCRemoteSwiftPackageReference "GlassConnectionKit" */;
+			productName = GlassConnectionKit;
 		};
 		B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */ = {
 			isa = XCSwiftPackageProductDependency;

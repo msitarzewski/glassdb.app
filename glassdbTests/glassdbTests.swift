@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import GlassDBKit
+import GlassConnectionKit
 import GlasSecretStore
 import Security
 @testable import glassdb
@@ -1715,6 +1716,40 @@ struct glassdbTests {
             == GlassFamilyCredentialAccount.databasePassword(profileID: profileID))
         #expect(KeychainManager.sshAccount(for: profileID)
             == GlassFamilyCredentialAccount.sshPassword(profileID: profileID))
+    }
+
+    @Test func neutralEndpointContractRoundTripsWithoutCredentialMaterial() throws {
+        let endpointID = EndpointID(
+            rawValue: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        )
+        let credentialID = CredentialID(
+            rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        )
+        let writerID = WriterID(
+            rawValue: UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        )
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let profile = try EndpointProfile(
+            id: endpointID,
+            displayName: "Shared bastion",
+            host: "bastion.example.com",
+            username: "operator",
+            credentialID: credentialID,
+            appVisibility: .glassFamily,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            lastWriterID: writerID
+        )
+
+        let payload = try EndpointProfileCodec.encode(profile)
+        let decoded = try EndpointProfileCodec.decode(payload)
+        let serialized = String(decoding: payload, as: UTF8.self)
+
+        #expect(decoded.id == endpointID)
+        #expect(decoded.credentialID == credentialID)
+        #expect(!serialized.contains("password"))
+        #expect(!serialized.contains("privateKey"))
+        #expect(!serialized.contains("hostFingerprint"))
     }
 
     @Test func sharedSSHCredentialPublishesTheGlasCompatibilityRecordAtomically() throws {

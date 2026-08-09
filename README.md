@@ -92,7 +92,7 @@ glassdb uses one native SwiftUI target with purpose-built adaptations: compact s
 - Xcode 27.0 or a compatible Xcode 27 preview with the iOS, macOS, and visionOS SDKs
 - iPhone or iPad on iOS/iPadOS 26+, an Apple silicon Mac on macOS 27+, or Apple Vision Pro on visionOS 26+
 - Apple Silicon development Mac
-- Network access for Swift Package Manager to resolve the reviewed GlasSecretStore revision
+- Network access for Swift Package Manager to resolve the reviewed GlassConnectionKit and GlasSecretStore revisions
 
 ### Build from Source
 
@@ -102,7 +102,7 @@ cd glassdb.app
 open glassdb.xcodeproj
 ```
 
-The Xcode project and workspace lockfile pin the reviewed remote GlasSecretStore revision, so a sibling checkout is not required.
+The Xcode project and workspace lockfile pin the reviewed remote GlassConnectionKit and GlasSecretStore revisions, so sibling checkouts are not required.
 
 Select the **glassdb** scheme, choose a supported iPhone, iPad, Mac, or Vision Pro destination, and hit Cmd+R. Swift Package Manager resolves the MySQL, PostgreSQL, TLS, and supporting dependencies. Citadel and swift-nio-ssh are vendored in `Packages/`.
 
@@ -140,6 +140,7 @@ Packages/
 ├── Citadel/                     Vendored SSH library (shared with glas.sh)
 └── swift-nio-ssh/               Vendored NIO SSH transport
 
+Remote GlassConnectionKit        Reviewed non-secret endpoint-contract revision
 Remote GlasSecretStore           Reviewed Keychain package revision shared with glas.sh
 ```
 
@@ -162,6 +163,8 @@ Remote GlasSecretStore           Reviewed Keychain package revision shared with 
 ### Security
 
 `GlasSecretStore` provides `SecureBytes` and Keychain-backed credential, SSH-key, and host-trust APIs. SSH private keys and database passwords never touch UserDefaults. The shared Keychain access group enables eligible credentials to be shared with glas.sh on the same device. Cross-device synchronization is planned for eligible exportable secrets; Secure Enclave and user-presence-protected material remains device-bound.
+
+`GlassConnectionKit` defines the neutral, versioned `EndpointProfile`, stable endpoint/credential references, validation, and canonical serialization. It has no CloudKit, Keychain, transport, database, terminal, or UI implementation. Endpoint migration and synchronization remain explicitly tracked work.
 
 ---
 
@@ -190,6 +193,7 @@ The full roadmap tracks feature parity against DBeaver CE, TablePlus, and DataGr
 
 - **Citadel** and **swift-nio-ssh** vendored packages
 - **GlasSecretStore** Keychain package for credential storage
+- **GlassConnectionKit** non-secret endpoint contract
 - SSH key credentials via shared Keychain access group
 - Glass-first spatial UI patterns
 - Foundation Models AI integration
@@ -229,7 +233,6 @@ If you find glassdb useful, consider supporting development:
 - `.smartQuotesDisabled()` is unavailable on visionOS -- uses `.keyboardType(.asciiCapable)`
 - Imported P256 material may be Secure Enclave-wrapped; true non-exportable hardware signing keys remain device-bound and glas.sh-only
 - Foundation Models AI requires a compatible runtime, eligible hardware, Apple Intelligence, and an available on-device model; core database workflows remain available without it.
-- An observed Xcode local-package conflict may require closing another workspace that has GlasSecretStore open
 
 ## Built With
 
