@@ -67,5 +67,5 @@
 - postgres-nio: https://github.com/vapor/postgres-nio (resolved 1.33.0)
 - Citadel: vendored local package
 - swift-nio-ssh: vendored local package (patched for toolchain compat)
-- GlasSecretStore: local path dependency (../GlasSecretStore), shared with glas.sh
+- GlasSecretStore: reviewed exact remote revision shared with glas.sh
 - Foundation Models: weak-linked system framework; generation is runtime-gated to visionOS 27+

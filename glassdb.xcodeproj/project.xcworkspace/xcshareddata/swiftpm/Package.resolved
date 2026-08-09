@@ -1,5 +1,5 @@
 {
-  "originHash" : "8c9e9bc0b1058147eccca17e2c08110a465160407f3bb946b6693ddf11fcb488",
+  "originHash" : "c005fe5779071f5f25a43f6b653bfbecc05bb304eb8190d65e5c5d949d1e25ca",
   "pins" : [
     {
       "identity" : "bigint",
@@ -8,6 +8,14 @@
       "state" : {
         "revision" : "e07e00fa1fd435143a2dcf8b7eec9a7710b2fdfe",
         "version" : "5.7.0"
+      }
+    },
+    {
+      "identity" : "glassecretstore",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/msitarzewski/GlasSecretStore.git",
+      "state" : {
+        "revision" : "9be45c91d145333252e3f5b03a5e5b6e6349e3e6"
       }
     },
     {

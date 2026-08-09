@@ -141,4 +141,4 @@
 - Runtime app code in `glassdb/` (22 top-level Swift files at this release snapshot).
 - Shared package code in `Packages/GlassDBKit/` (DB protocol, adapters, models).
 - Vendored SSH packages in `Packages/Citadel/` and `Packages/swift-nio-ssh/`.
-- Shared Keychain package at `../GlasSecretStore/` (local path dependency).
+- Shared Keychain package resolved from its reviewed exact remote revision.

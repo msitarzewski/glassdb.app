@@ -236,7 +236,7 @@
 			mainGroup = 322E2E8ABC124DE8A96D43A8;
 			packageReferences = (
 				95EEFE7D4E8E42E092908953 /* XCLocalSwiftPackageReference "Packages/GlassDBKit" */,
-				C3D4E5F6A7B84C9D0E1F2A3B /* XCLocalSwiftPackageReference "../GlasSecretStore" */,
+				C3D4E5F6A7B84C9D0E1F2A3B /* XCRemoteSwiftPackageReference "GlasSecretStore" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9A75A586B2504699B8C19A5C /* Products */;
@@ -620,11 +620,18 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/GlassDBKit;
 		};
-		C3D4E5F6A7B84C9D0E1F2A3B /* XCLocalSwiftPackageReference "../GlasSecretStore" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../GlasSecretStore;
-		};
 /* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C3D4E5F6A7B84C9D0E1F2A3B /* XCRemoteSwiftPackageReference "GlasSecretStore" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/msitarzewski/GlasSecretStore.git";
+			requirement = {
+				kind = revision;
+				revision = 9be45c91d145333252e3f5b03a5e5b6e6349e3e6;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		469DAC2964D74CADB1B32DE2 /* GlassDBKit */ = {
@@ -634,7 +641,7 @@
 		};
 		B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C3D4E5F6A7B84C9D0E1F2A3B /* XCLocalSwiftPackageReference "../GlasSecretStore" */;
+			package = C3D4E5F6A7B84C9D0E1F2A3B /* XCRemoteSwiftPackageReference "GlasSecretStore" */;
 			productName = GlasSecretStore;
 		};
 /* End XCSwiftPackageProductDependency section */
