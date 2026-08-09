@@ -578,6 +578,102 @@ struct glassdbTests {
         #expect(ConnectionFormView.nextField(after: .sshHost, in: fields) == nil)
     }
 
+    @Test func connectionLibraryProjectsUniqueScopedSearchableConnections() throws {
+        let baseline = Date(timeIntervalSince1970: 1_700_000_000)
+        let productionID = UUID()
+        let analyticsID = UUID()
+        let archiveID = UUID()
+        let production = DatabaseConnectionConfig(
+            id: productionID,
+            name: "Zulu Production",
+            engine: .mysql,
+            host: "db.example.com",
+            port: 3306,
+            username: "app",
+            defaultDatabase: "orders",
+            isFavorite: true,
+            dateAdded: baseline,
+            lastConnected: baseline.addingTimeInterval(30),
+            tags: [" Production ", "production", "Client A"]
+        )
+        let analytics = DatabaseConnectionConfig(
+            id: analyticsID,
+            name: "Alpha Analytics",
+            engine: .postgresql,
+            host: "analytics.example.com",
+            port: 5432,
+            username: "analyst",
+            defaultDatabase: "warehouse",
+            isFavorite: true,
+            dateAdded: baseline.addingTimeInterval(20),
+            lastConnected: baseline.addingTimeInterval(10),
+            tags: ["PRODUCTION", "Résumé"]
+        )
+        let archive = DatabaseConnectionConfig(
+            id: archiveID,
+            name: "Local Archive",
+            engine: .sqlite,
+            host: "/managed/archive.sqlite",
+            port: 0,
+            username: "",
+            dateAdded: baseline.addingTimeInterval(40),
+            tags: ["resume", " "]
+        )
+        var duplicateProduction = production
+        duplicateProduction.name = "Duplicate Must Not Surface"
+
+        let library = DatabaseConnectionLibraryProjection(
+            connections: [production, analytics, archive, duplicateProduction]
+        )
+
+        #expect(library.connections.map(\.id) == [analyticsID, archiveID, productionID])
+        #expect(library.favoriteConnectionIDs == [productionID, analyticsID])
+        #expect(library.recentConnectionIDs == [productionID, analyticsID])
+        #expect(
+            library.collection(named: "production")?.connectionIDs
+                == [analyticsID, productionID]
+        )
+        #expect(library.collection(named: "résumé")?.count == 2)
+        #expect(library.collection(named: "client a")?.connectionIDs == [productionID])
+        #expect(library.connections(in: .favorites).map(\.id) == [productionID, analyticsID])
+        #expect(library.connections(in: .recent).map(\.id) == [productionID, analyticsID])
+        #expect(library.connections(in: .allConnections, searchQuery: "postgresql").map(\.id) == [analyticsID])
+        #expect(library.connections(in: .allConnections, searchQuery: "orders").map(\.id) == [productionID])
+        #expect(library.connections(in: .allConnections, searchQuery: "client a").map(\.id) == [productionID])
+        #expect(library.connections(in: .allConnections, searchQuery: "  archive  ").map(\.id) == [archiveID])
+        #expect(
+            library.resolvedSelection(
+                preferredConnectionID: analyticsID,
+                in: .favorites
+            ) == analyticsID
+        )
+        #expect(
+            library.resolvedSelection(
+                preferredConnectionID: archiveID,
+                in: .favorites
+            ) == nil
+        )
+    }
+
+    @Test func connectionLibraryNormalizesCollectionTagsForPersistence() {
+        let tags = DatabaseConnectionLibraryProjection.normalizedTags([
+            " Production ",
+            "production",
+            "CLIENT A",
+            "client a",
+            "Résumé",
+            "resume",
+            "",
+            "   "
+        ])
+        let normalizedIDs = Set(
+            tags.compactMap(DatabaseConnectionLibraryProjection.collectionID(for:))
+        )
+
+        #expect(tags.count == 3)
+        #expect(normalizedIDs == Set(["production", "client a", "resume"]))
+    }
+
     @Test func sqlParserPreservesQuotedAndCommentSemicolons() {
         let script = """
         -- semicolon ; in a comment

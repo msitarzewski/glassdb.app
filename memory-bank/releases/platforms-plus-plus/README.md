@@ -187,6 +187,7 @@ Allowed statuses: `not started`, `in progress`, `blocked`, `done`.
 | 2026-07-21 | P2-P7 implementation regression | macOS, iPhone 17 Pro, iPad Pro 13-inch, visionOS 26.5, and visionOS 27 application suites each passed all 101 tests; generic unsigned iOS and visionOS device builds passed | `/private/tmp/glassdb-platforms-*` | automated matrix passed |
 | 2026-07-21 | Shared credential contract | GlasSecretStore passed 69 tests in 13 suites; glassdb tests proved UUID identities, atomic glassdb/glas.sh compatibility writes, rollback, access-group validation, and private/device-bound policy separation | `../GlasSecretStore`; app test logs | automated contract passed; signed cross-app device read remains open |
 | 2026-07-21 | P8 security remediation | OSV found swift-nio 2.96.0 advisories; lock advanced to Apple swift-nio 2.100.0; OSV rerun reported no issues; GlassDBKit 25 tests, Citadel 31 tests, Xcode analyze, macOS 101, iPhone 101, and visionOS 27 101 all passed post-remediation | `Package.resolved`; `/private/tmp/glassdb-platforms-security-*` | passed |
+| 2026-08-09 | Adaptive connection library | All/Favorites/Recent/Collections projection, scoped search, native iPhone/iPad/Mac/Vision shells, normalized tag-backed Collections, grouped non-secret detail | `agent/connection-library-parity`; task record `memory-bank/tasks/2026-08/090826_connection-library-parity.md` | Mac 105/105; iPhone/iPad/Vision 103/103 each; C3 synchronization remains open |
 
 ## Current Release Disposition
 

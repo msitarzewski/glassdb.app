@@ -54,6 +54,241 @@ struct ConnectionPersistenceStore: @unchecked Sendable {
     )
 }
 
+enum DatabaseConnectionLibraryMode: String, CaseIterable, Identifiable, Hashable {
+    case all
+    case favorites
+    case recent
+    case collections
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All"
+        case .favorites: return "Favorites"
+        case .recent: return "Recent"
+        case .collections: return "Collections"
+        }
+    }
+}
+
+enum DatabaseConnectionLibraryScope: Hashable, Identifiable {
+    case allConnections
+    case favorites
+    case recent
+    case collection(String)
+
+    var id: String {
+        switch self {
+        case .allConnections: return "all-connections"
+        case .favorites: return "favorites"
+        case .recent: return "recent"
+        case .collection(let id): return "collection-\(id)"
+        }
+    }
+}
+
+struct DatabaseConnectionLibraryCollection: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let connectionIDs: [UUID]
+
+    var count: Int { connectionIDs.count }
+}
+
+/// A transient, read-only library view over ConnectionManager's persisted
+/// records. Scopes never become a second connection catalog.
+struct DatabaseConnectionLibraryProjection {
+    let connections: [DatabaseConnectionConfig]
+    let favoriteConnectionIDs: [UUID]
+    let recentConnectionIDs: [UUID]
+    let collections: [DatabaseConnectionLibraryCollection]
+
+    private struct CollectionAccumulator {
+        var names: Set<String> = []
+        var connectionIDs: [UUID] = []
+    }
+
+    init(
+        connections: [DatabaseConnectionConfig],
+        recentLimit: Int = 10
+    ) {
+        var seenConnectionIDs = Set<UUID>()
+        let uniqueConnections = connections.filter {
+            seenConnectionIDs.insert($0.id).inserted
+        }
+        let orderedConnections = uniqueConnections.sorted(by: Self.connectionOrder)
+        self.connections = orderedConnections
+        let connectionIndexByID = Dictionary(
+            uniqueKeysWithValues: orderedConnections.enumerated().map {
+                ($0.element.id, $0.offset)
+            }
+        )
+
+        favoriteConnectionIDs = uniqueConnections
+            .filter(\.isFavorite)
+            .sorted(by: Self.activityOrder)
+            .map(\.id)
+
+        recentConnectionIDs = uniqueConnections
+            .filter { $0.lastConnected != nil }
+            .sorted(by: Self.recentOrder)
+            .prefix(max(0, recentLimit))
+            .map(\.id)
+
+        var collectionsByID: [String: CollectionAccumulator] = [:]
+        for connection in uniqueConnections {
+            var connectionCollectionIDs = Set<String>()
+            for rawTag in connection.tags {
+                let name = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let id = Self.collectionID(for: name),
+                      connectionCollectionIDs.insert(id).inserted else {
+                    continue
+                }
+                var accumulator = collectionsByID[id, default: CollectionAccumulator()]
+                accumulator.names.insert(name)
+                accumulator.connectionIDs.append(connection.id)
+                collectionsByID[id] = accumulator
+            }
+        }
+
+        collections = collectionsByID.map { id, accumulator in
+            DatabaseConnectionLibraryCollection(
+                id: id,
+                name: accumulator.names.sorted(by: Self.displayOrder).first ?? id,
+                connectionIDs: accumulator.connectionIDs.sorted {
+                    (connectionIndexByID[$0] ?? .max)
+                        < (connectionIndexByID[$1] ?? .max)
+                }
+            )
+        }
+        .sorted { Self.displayOrder($0.name, $1.name) }
+    }
+
+    func connections(
+        in scope: DatabaseConnectionLibraryScope,
+        searchQuery: String = ""
+    ) -> [DatabaseConnectionConfig] {
+        let candidates: [DatabaseConnectionConfig]
+        switch scope {
+        case .allConnections:
+            candidates = connections
+        case .favorites:
+            candidates = connections(withIDs: favoriteConnectionIDs)
+        case .recent:
+            candidates = connections(withIDs: recentConnectionIDs)
+        case .collection(let collectionID):
+            candidates = connections(
+                withIDs: collections.first { $0.id == collectionID }?.connectionIDs ?? []
+            )
+        }
+
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return candidates }
+        return candidates.filter { connection in
+            connection.name.localizedCaseInsensitiveContains(query)
+                || connection.engine.displayName.localizedCaseInsensitiveContains(query)
+                || connection.host.localizedCaseInsensitiveContains(query)
+                || connection.username.localizedCaseInsensitiveContains(query)
+                || (connection.defaultDatabase ?? "").localizedCaseInsensitiveContains(query)
+                || connection.tags.contains {
+                    $0.localizedCaseInsensitiveContains(query)
+                }
+        }
+    }
+
+    func resolvedSelection(
+        preferredConnectionID: UUID?,
+        in scope: DatabaseConnectionLibraryScope,
+        searchQuery: String = ""
+    ) -> UUID? {
+        guard let preferredConnectionID else { return nil }
+        return connections(in: scope, searchQuery: searchQuery)
+            .contains { $0.id == preferredConnectionID }
+            ? preferredConnectionID
+            : nil
+    }
+
+    func itemCount(in scope: DatabaseConnectionLibraryScope) -> Int {
+        connections(in: scope).count
+    }
+
+    func collection(named name: String) -> DatabaseConnectionLibraryCollection? {
+        guard let id = Self.collectionID(for: name) else { return nil }
+        return collections.first { $0.id == id }
+    }
+
+    static func normalizedTags(_ rawTags: [String]) -> [String] {
+        var namesByID: [String: Set<String>] = [:]
+        for rawTag in rawTags {
+            let name = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let id = collectionID(for: name) else { continue }
+            namesByID[id, default: []].insert(name)
+        }
+        return namesByID.values
+            .compactMap { $0.sorted(by: displayOrder).first }
+            .sorted(by: displayOrder)
+    }
+
+    static func collectionID(for name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+            .lowercased(with: Locale(identifier: "en_US_POSIX"))
+    }
+
+    private func connections(withIDs ids: [UUID]) -> [DatabaseConnectionConfig] {
+        let connectionsByID = Dictionary(
+            uniqueKeysWithValues: connections.map { ($0.id, $0) }
+        )
+        return ids.compactMap { connectionsByID[$0] }
+    }
+
+    private static func activityOrder(
+        _ lhs: DatabaseConnectionConfig,
+        _ rhs: DatabaseConnectionConfig
+    ) -> Bool {
+        let lhsDate = lhs.lastConnected ?? lhs.dateAdded
+        let rhsDate = rhs.lastConnected ?? rhs.dateAdded
+        if lhsDate != rhsDate { return lhsDate > rhsDate }
+        return connectionOrder(lhs, rhs)
+    }
+
+    private static func recentOrder(
+        _ lhs: DatabaseConnectionConfig,
+        _ rhs: DatabaseConnectionConfig
+    ) -> Bool {
+        if lhs.lastConnected != rhs.lastConnected {
+            return (lhs.lastConnected ?? .distantPast)
+                > (rhs.lastConnected ?? .distantPast)
+        }
+        return connectionOrder(lhs, rhs)
+    }
+
+    private static func connectionOrder(
+        _ lhs: DatabaseConnectionConfig,
+        _ rhs: DatabaseConnectionConfig
+    ) -> Bool {
+        if displayOrder(lhs.name, rhs.name) { return true }
+        if displayOrder(rhs.name, lhs.name) { return false }
+        if lhs.host != rhs.host { return lhs.host < rhs.host }
+        if lhs.username != rhs.username { return lhs.username < rhs.username }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private static func displayOrder(_ lhs: String, _ rhs: String) -> Bool {
+        let comparison = lhs.localizedCaseInsensitiveCompare(rhs)
+        if comparison != .orderedSame {
+            return comparison == .orderedAscending
+        }
+        return lhs < rhs
+    }
+}
+
 @MainActor
 @Observable
 class ConnectionManager {

@@ -169,6 +169,7 @@ struct ConnectionFormView: View {
     @State private var sshAuthMethod: AuthenticationMethod = .password
     @State private var sshKeyID: UUID?
     @State private var colorTag: ConnectionColorTag = .none
+    @State private var tagsText: String = ""
     @State private var showPassword = false
     @State private var showSSHPassword = false
     @State private var showingAddSSHKey = false
@@ -337,6 +338,7 @@ struct ConnectionFormView: View {
             _sshCredentialPolicy = State(initialValue: connection.sshCredentialPolicy)
             _sshKeyID = State(initialValue: connection.sshKeyID)
             _colorTag = State(initialValue: connection.colorTag)
+            _tagsText = State(initialValue: connection.tags.joined(separator: ", "))
         }
     }
 
@@ -629,6 +631,12 @@ struct ConnectionFormView: View {
                 .labelsHidden()
                 .frame(width: 340, alignment: .leading)
                 .help("Color used to identify this connection in the sidebar.")
+            }
+            LabeledContent("Collections") {
+                TextField("Production, Client A", text: $tagsText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 340, alignment: .leading)
+                    .help("Comma-separated collections used to organize and find this connection.")
             }
         }
     }
@@ -923,6 +931,12 @@ struct ConnectionFormView: View {
                         .foregroundStyle(tag.color)
                         .tag(tag)
                 }
+            }
+            LabeledContent("Collections") {
+                TextField("Production, Client A", text: $tagsText)
+                    .multilineTextAlignment(.leading)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
             }
         }
     }
@@ -1242,7 +1256,11 @@ struct ConnectionFormView: View {
             colorTag: colorTag,
             dateAdded: editingConnection?.dateAdded ?? Date(),
             lastConnected: editingConnection?.lastConnected,
-            tags: editingConnection?.tags ?? []
+            tags: DatabaseConnectionLibraryProjection.normalizedTags(
+                tagsText
+                    .split(separator: ",", omittingEmptySubsequences: false)
+                    .map(String.init)
+            )
         )
     }
 
