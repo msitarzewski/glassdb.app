@@ -343,8 +343,10 @@ actor PostgreSQLDatabaseConnection: DatabaseConnection {
         let result = try await performQuery(
             """
             SELECT table_class.relname,
-                   COALESCE(stats.n_live_tup, table_class.reltuples)::bigint,
-                   pg_total_relation_size(table_class.oid)
+                   GREATEST(COALESCE(stats.n_live_tup, table_class.reltuples), 0)::bigint,
+                   pg_total_relation_size(table_class.oid),
+                   GREATEST(stats.last_analyze, stats.last_autoanalyze),
+                   stats.n_mod_since_analyze
             FROM pg_catalog.pg_class table_class
             JOIN pg_catalog.pg_namespace namespace
               ON namespace.oid = table_class.relnamespace
@@ -357,20 +359,33 @@ actor PostgreSQLDatabaseConnection: DatabaseConnection {
             parameters: [.string(database)]
         )
         return result.rows.map { row in
-            TableStatus(
+            let statisticsUpdatedAt: Date? = if case .date(let value)? = row[safe: 3] {
+                value
+            } else {
+                nil
+            }
+            return TableStatus(
                 name: row[safe: 0]?.displayString ?? "",
                 engine: "PostgreSQL",
                 rowCount: Int(row[safe: 1]?.displayString ?? "0") ?? 0,
                 dataLength: Int(row[safe: 2]?.displayString ?? "0") ?? 0,
-                collation: nil
+                collation: nil,
+                rowCountAccuracy: .estimated,
+                statisticsUpdatedAt: statisticsUpdatedAt,
+                modifiedRowsSinceAnalysis: Int(row[safe: 4]?.displayString ?? "")
             )
         }
     }
 
     func rowCount(table: String, database: String) async throws -> Int {
-        let result = try await performQuery(
+        try await rowCount(table: table, database: database, timeout: nil)
+    }
+
+    func rowCount(table: String, database: String, timeout: Duration?) async throws -> Int {
+        let result = try await execute(
             "SELECT COUNT(*) FROM \(quotedIdentifier(database)).\(quotedIdentifier(table))",
-            parameters: []
+            parameters: [],
+            timeout: timeout
         )
         guard let value = result.rows.first?.first,
               let count = Int(value.displayString) else {

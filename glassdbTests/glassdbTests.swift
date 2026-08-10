@@ -156,19 +156,125 @@ struct glassdbTests {
         #expect(appearance.surfaceAlpha(strength: 2) == 1)
     }
 
-    @Test func workspaceTabsStartWithPermanentOverviewAndQueryAndDeduplicateTables() {
+    @Test func workspaceTabsStartWithOverviewAndOneQueryAndDeduplicateTables() throws {
         var state = WorkspaceTabState()
         let table = WorkspaceSelection.table(database: "analytics", table: "events")
+        let initialQuery = try #require(state.tabs.dropFirst().first)
 
-        #expect(state.tabs == [.connection, .query])
+        guard case .query = initialQuery else {
+            Issue.record("The second workspace tab must be an SQL document")
+            return
+        }
+        #expect(state.tabs == [.connection, initialQuery])
         #expect(state.selected == .connection)
 
         state.open(table)
-        state.open(.query)
+        state.open(initialQuery)
         state.open(table)
 
-        #expect(state.tabs == [.connection, .query, table])
+        #expect(state.tabs == [.connection, initialQuery, table])
         #expect(state.selected == table)
+    }
+
+    @Test func commandWTargetsTheSelectedTopLevelWorkspace() throws {
+        var state = WorkspaceTabState()
+        let table = WorkspaceSelection.table(database: "analytics", table: "events")
+        let query = try #require(state.tabs.dropFirst().first)
+
+        #expect(state.selected.commandWEditorTarget == .none)
+        state.open(query)
+        #expect(state.selected.commandWEditorTarget == .workspace)
+        state.open(table)
+        #expect(state.tabs.contains(query))
+        #expect(state.selected.commandWEditorTarget == .workspace)
+    }
+
+    @Test func workspaceTabsKeepMultipleSQLDocumentsAtTheTopLevel() {
+        var state = WorkspaceTabState()
+        let first = WorkspaceSelection.query(id: UUID())
+        let second = WorkspaceSelection.query(id: UUID())
+
+        state.open(first)
+        state.open(second)
+
+        #expect(first != second)
+        #expect(state.tabs.suffix(2) == [first, second])
+        #expect(state.selected == second)
+        let didCloseFirst = state.close(first)
+        #expect(didCloseFirst)
+        #expect(state.selected == second)
+    }
+
+    #if os(macOS)
+    @Test @MainActor func commandWMenuRouterConsumesOnlyRegisteredWorkspaceWindows() {
+        let workspaceWindow = NSWindow()
+        let otherWindow = NSWindow()
+        let router = MacDatabaseCommandWRouter()
+        let workspaceID = UUID()
+        var workspaceCloseCount = 0
+
+        router.update(
+            id: workspaceID,
+            window: workspaceWindow,
+            priority: DatabaseCommandWTargetPriority.workspace.rawValue,
+            isEnabled: true
+        ) {
+            workspaceCloseCount += 1
+        }
+
+        #expect(router.routeClose(targetWindow: workspaceWindow))
+        #expect(workspaceCloseCount == 1)
+        #expect(!router.routeClose(targetWindow: otherWindow))
+
+        router.update(
+            id: workspaceID,
+            window: workspaceWindow,
+            priority: DatabaseCommandWTargetPriority.workspace.rawValue,
+            isEnabled: false
+        ) {
+            workspaceCloseCount += 1
+        }
+        #expect(router.routeClose(targetWindow: workspaceWindow))
+        #expect(workspaceCloseCount == 1)
+    }
+
+    @Test @MainActor func commandWMenuRouterInstallsOnTheNativeFileMenuItem() {
+        let mainMenu = NSMenu()
+        let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        let closeItem = NSMenuItem(
+            title: "Close",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"
+        )
+        closeItem.keyEquivalentModifierMask = .command
+        fileMenu.addItem(closeItem)
+        fileItem.submenu = fileMenu
+        mainMenu.addItem(fileItem)
+
+        let router = MacDatabaseCommandWRouter()
+        router.installCloseCommandInterceptor(in: mainMenu)
+
+        #expect(closeItem.target === router)
+        #expect(closeItem.action != #selector(NSWindow.performClose(_:)))
+    }
+    #endif
+
+    @Test func queryTabsPromptOnlyWhenClosingWouldDiscardChanges() {
+        var untitled = QueryDocumentTab()
+        #expect(!untitled.hasUnsavedChanges)
+
+        untitled.text = "SELECT * FROM events"
+        #expect(untitled.hasUnsavedChanges)
+
+        untitled.markSaved()
+        #expect(!untitled.hasUnsavedChanges)
+
+        untitled.text += " WHERE severity = 'critical'"
+        #expect(untitled.hasUnsavedChanges)
+
+        let imported = QueryDocumentTab(text: "SELECT 1", isSaved: true)
+        #expect(!imported.hasUnsavedChanges)
     }
 
     @Test func workspaceWindowRequestsKeepPrimaryStableAndAdditionalWindowsUnique() throws {
@@ -221,11 +327,16 @@ struct glassdbTests {
         #expect(fallback.initialSelection == .connection)
     }
 
-    @Test func workspaceTabsStartAtRequestedDatabaseWithoutLosingPermanentTabs() {
+    @Test func workspaceTabsStartAtRequestedDatabaseWithoutLosingTheInitialQuery() throws {
         let database = WorkspaceSelection.database("analytics")
         let state = WorkspaceTabState(initialSelection: database)
+        let query = try #require(state.tabs.dropFirst().first)
 
-        #expect(state.tabs == [.connection, .query, database])
+        guard case .query = query else {
+            Issue.record("The second workspace tab must be an SQL document")
+            return
+        }
+        #expect(state.tabs == [.connection, query, database])
         #expect(state.selected == database)
     }
 
@@ -233,11 +344,12 @@ struct glassdbTests {
         #expect(WorkspaceSelection.connection.usesOverviewRefreshAction)
         #expect(WorkspaceSelection.database("analytics").usesOverviewRefreshAction)
         #expect(!WorkspaceSelection.table(database: "analytics", table: "events").usesOverviewRefreshAction)
-        #expect(!WorkspaceSelection.query.usesOverviewRefreshAction)
+        #expect(!WorkspaceSelection.query(id: UUID()).usesOverviewRefreshAction)
     }
 
-    @Test func workspaceTabsUseFullDatabaseAndTableIdentity() {
+    @Test func workspaceTabsUseFullDatabaseAndTableIdentity() throws {
         var state = WorkspaceTabState()
+        let query = try #require(state.tabs.dropFirst().first)
         let first = WorkspaceSelection.table(database: "ab", table: "c")
         let second = WorkspaceSelection.table(database: "a", table: "bc")
         let sameNameOtherDatabase = WorkspaceSelection.table(database: "archive", table: "c")
@@ -247,23 +359,25 @@ struct glassdbTests {
         state.open(sameNameOtherDatabase)
 
         #expect(first != second)
-        #expect(state.tabs == [.connection, .query, first, second, sameNameOtherDatabase])
+        #expect(state.tabs == [.connection, query, first, second, sameNameOtherDatabase])
         #expect(state.selected == sameNameOtherDatabase)
     }
 
-    @Test func workspaceTabsKeepOneReplaceableDatabasePreview() {
+    @Test func workspaceTabsKeepOneReplaceableDatabasePreview() throws {
         var state = WorkspaceTabState()
+        let query = try #require(state.tabs.dropFirst().first)
         let table = WorkspaceSelection.table(database: "analytics", table: "events")
         state.open(table)
         state.open(.database("analytics"))
         state.open(.database("archive"))
 
-        #expect(state.tabs == [.connection, .query, table, .database("archive")])
+        #expect(state.tabs == [.connection, query, table, .database("archive")])
         #expect(state.selected == .database("archive"))
     }
 
-    @Test func workspaceTabsCloseSelectedUsingRightThenLeftThenQueryFallback() {
+    @Test func workspaceTabsCloseSelectedUsingRightThenLeftThenOverviewFallback() throws {
         var state = WorkspaceTabState()
+        let query = try #require(state.tabs.dropFirst().first)
         let first = WorkspaceSelection.table(database: "db", table: "first")
         let middle = WorkspaceSelection.table(database: "db", table: "middle")
         let last = WorkspaceSelection.table(database: "db", table: "last")
@@ -274,22 +388,28 @@ struct glassdbTests {
 
         let closedMiddle = state.close(middle)
         #expect(closedMiddle)
-        #expect(state.tabs == [.connection, .query, first, last])
+        #expect(state.tabs == [.connection, query, first, last])
         #expect(state.selected == last)
 
         let closedLast = state.close(last)
         #expect(closedLast)
-        #expect(state.tabs == [.connection, .query, first])
+        #expect(state.tabs == [.connection, query, first])
         #expect(state.selected == first)
 
         let closedFirst = state.close(first)
         #expect(closedFirst)
-        #expect(state.tabs == [.connection, .query])
-        #expect(state.selected == .query)
+        #expect(state.tabs == [.connection, query])
+        #expect(state.selected == query)
+
+        let closedQuery = state.close(query)
+        #expect(closedQuery)
+        #expect(state.tabs == [.connection])
+        #expect(state.selected == .connection)
     }
 
-    @Test func workspaceTabsCloseInactiveWithoutChangingSelectionAndRejectInvalidCloses() {
+    @Test func workspaceTabsCloseInactiveWithoutChangingSelectionAndRejectInvalidCloses() throws {
         var state = WorkspaceTabState()
+        let query = try #require(state.tabs.dropFirst().first)
         let first = WorkspaceSelection.table(database: "db", table: "first")
         let selected = WorkspaceSelection.table(database: "db", table: "selected")
         let missing = WorkspaceSelection.table(database: "db", table: "missing")
@@ -298,37 +418,68 @@ struct glassdbTests {
 
         let closedInactive = state.close(first)
         #expect(closedInactive)
-        #expect(state.tabs == [.connection, .query, selected])
+        #expect(state.tabs == [.connection, query, selected])
         #expect(state.selected == selected)
 
         let beforeRejectedCloses = state
         let closedOverview = state.close(.connection)
-        let closedQuery = state.close(.query)
         let closedMissing = state.close(missing)
         #expect(!closedOverview)
-        #expect(!closedQuery)
         #expect(!closedMissing)
         #expect(state == beforeRejectedCloses)
     }
 
     @Test func connectionOverviewSummarizesOnlyLiveTableStatusValues() {
+        let capturedAt = Date(timeIntervalSince1970: 1_775_000_000)
         let summary = ConnectionDatabaseSummary(
             name: "analytics",
-            statuses: [
-                TableStatus(name: "events", engine: "InnoDB", rowCount: 120, dataLength: 2_048, collation: nil),
-                TableStatus(name: "users", engine: "InnoDB", rowCount: 30, dataLength: 1_024, collation: nil)
-            ]
+            snapshot: DatabaseStatisticsSnapshot(
+                database: "analytics",
+                statuses: [
+                    TableStatus(name: "events", engine: "InnoDB", rowCount: 120, dataLength: 2_048, collation: nil),
+                    TableStatus(name: "users", engine: "InnoDB", rowCount: 30, dataLength: 1_024, collation: nil)
+                ],
+                capturedAt: capturedAt
+            )
         )
 
         #expect(summary.name == "analytics")
         #expect(summary.tableCount == 2)
         #expect(summary.estimatedRows == 150)
         #expect(summary.storageBytes == 3_072)
+        #expect(summary.statisticsCapturedAt == capturedAt)
 
         let unavailable = ConnectionDatabaseSummary(name: "restricted")
         #expect(unavailable.tableCount == nil)
         #expect(unavailable.estimatedRows == nil)
         #expect(unavailable.storageBytes == nil)
+        #expect(unavailable.statisticsCapturedAt == nil)
+    }
+
+    @Test func databaseStatisticsSnapshotsEnforceTheirFreshnessBoundaryAndTableLookup() throws {
+        let capturedAt = Date(timeIntervalSince1970: 1_775_000_000)
+        let status = TableStatus(
+            name: "events",
+            engine: "PostgreSQL",
+            rowCount: 120,
+            dataLength: 2_048,
+            collation: nil
+        )
+        let snapshot = DatabaseStatisticsSnapshot(
+            database: "analytics",
+            statuses: [status],
+            capturedAt: capturedAt
+        )
+
+        #expect(snapshot.isFresh(at: capturedAt))
+        #expect(snapshot.isFresh(at: capturedAt.addingTimeInterval(
+            DatabaseStatisticsSnapshot.timeToLive - 1
+        )))
+        #expect(!snapshot.isFresh(at: capturedAt.addingTimeInterval(
+            DatabaseStatisticsSnapshot.timeToLive
+        )))
+        #expect(snapshot.status(for: "events")?.rowCount == 120)
+        #expect(snapshot.status(for: "missing") == nil)
     }
 
     #if os(macOS)
@@ -2131,6 +2282,45 @@ struct glassdbTests {
         #expect(query.parameters == [.string(attack), .int(21)])
     }
 
+    @Test func tablePagerUsesOneSentinelRowWithoutExposingIt() throws {
+        let displayed = try GridServerQueryBuilder.select(
+            database: "main",
+            table: "events",
+            columns: [ColumnInfo(name: "id", type: "int")],
+            filters: [],
+            sorts: [],
+            page: 2,
+            pageSize: 2,
+            identifierQuote: "`"
+        )
+        let fetched = try GridServerQueryBuilder.select(
+            database: "main",
+            table: "events",
+            columns: [ColumnInfo(name: "id", type: "int")],
+            filters: [],
+            sorts: [],
+            page: 2,
+            pageSize: 2,
+            identifierQuote: "`",
+            fetchSentinel: true
+        )
+        #expect(displayed.sql.hasSuffix("LIMIT 2 OFFSET 2"))
+        #expect(fetched.sql.hasSuffix("LIMIT 3 OFFSET 2"))
+        #expect(!fetched.sql.contains("COUNT("))
+
+        let raw = QueryResult(
+            query: fetched.sql,
+            columns: [ColumnInfo(name: "id", type: "int")],
+            rows: [[.int(3)], [.int(4)], [.int(5)]],
+            executionTime: 0.01
+        )
+        let window = GridPageWindow.bounded(raw, pageSize: 2, displayedQuery: displayed.sql)
+        #expect(window.hasNextPage)
+        #expect(window.result.rows == [[.int(3)], [.int(4)]])
+        #expect(window.result.query == displayed.sql)
+        #expect(window.result.appliedRowLimit == 2)
+    }
+
     @Test func displayOnlyRowFiltersKeepOriginalRowIndicesAndUseTypedComparison() {
         let columns = [
             ColumnInfo(name: "id", type: "bigint", isNullable: false),
@@ -2169,6 +2359,27 @@ struct glassdbTests {
 
         #expect(matching == [1])
         #expect(GridFilterApplicationMode.allCases.first == .updateQuery)
+    }
+
+    @Test func loadedResultSortsAreStableTypedAndTolerateDuplicateLabels() {
+        let columns = [
+            ColumnInfo(name: "score", type: "int"),
+            ColumnInfo(name: "score", type: "varchar")
+        ]
+        let rows: [[DatabaseValue]] = [
+            [.int(10), .string("z")],
+            [.int(2), .string("a")],
+            [.int(10), .string("b")]
+        ]
+
+        let sorted = GridDisplaySortEvaluator.sortedRowIndices(
+            rows: rows,
+            columns: columns,
+            rowIndices: Array(rows.indices),
+            sorts: [GridSortDescriptor(columnName: "score", direction: .ascending)]
+        )
+
+        #expect(sorted == [1, 0, 2])
     }
 
     @Test func rowSelectionMatchesMacPlainShiftAndCommandSemantics() {
@@ -2754,6 +2965,89 @@ struct glassdbTests {
         #expect(result == .connected)
         #expect(!session.requiresTransportValidation)
         #expect(session.state == .connected)
+    }
+
+    @MainActor
+    @Test func tableStatisticsCacheReusesRefreshesAndInvalidatesSessionMetadata() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        defer { Task { try? await connection.close() } }
+        _ = try await connection.execute("CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT)")
+        _ = try await connection.execute("INSERT INTO projects (name) VALUES ('one'), ('two')")
+
+        let suiteName = "app.glassdb.tests.statistics.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let manager = DatabaseSessionManager(loadImmediately: false, defaults: defaults)
+        let sessionID = UUID()
+        let session = DatabaseSession(connectionConfig: DatabaseConnectionConfig(
+            name: "Statistics cache",
+            engine: .sqlite,
+            host: ":memory:",
+            port: 0,
+            username: ""
+        ))
+        session.connection = connection
+        session.engine = SQLiteEngine()
+        session.state = .connected
+        manager.sessions[sessionID] = session
+
+        let initialDate = Date(timeIntervalSince1970: 1_775_000_000)
+        let initial = try await manager.tableStatistics(
+            sessionID: sessionID,
+            database: "main",
+            now: initialDate
+        )
+        #expect(initial.capturedAt == initialDate)
+        #expect(initial.status(for: "projects")?.rowCount == 2)
+
+        let reused = try await manager.tableStatistics(
+            sessionID: sessionID,
+            database: "main",
+            now: initialDate.addingTimeInterval(60)
+        )
+        #expect(reused.capturedAt == initialDate)
+
+        _ = try await manager.executeQuery(
+            "INSERT INTO projects (name) VALUES ('three')",
+            sessionID: sessionID
+        )
+        #expect(manager.cachedTableStatistics(sessionID: sessionID, database: "main") == nil)
+
+        let refreshedDate = initialDate.addingTimeInterval(120)
+        let refreshed = try await manager.tableStatistics(
+            sessionID: sessionID,
+            database: "main",
+            now: refreshedDate
+        )
+        #expect(refreshed.capturedAt == refreshedDate)
+        #expect(refreshed.status(for: "projects")?.rowCount == 3)
+
+        let forcedDate = initialDate.addingTimeInterval(180)
+        let forced = try await manager.tableStatistics(
+            sessionID: sessionID,
+            database: "main",
+            forceRefresh: true,
+            now: forcedDate
+        )
+        #expect(forced.capturedAt == forcedDate)
+
+        do {
+            _ = try await manager.executeQuery(
+                "INSERT INTO missing_table (name) VALUES ('unknown')",
+                sessionID: sessionID
+            )
+            Issue.record("A failed mutation should surface its database error.")
+        } catch {
+            #expect(manager.cachedTableStatistics(sessionID: sessionID, database: "main") == nil)
+        }
+
+        _ = try await manager.tableStatistics(
+            sessionID: sessionID,
+            database: "main",
+            now: initialDate.addingTimeInterval(240)
+        )
+        manager.invalidateTableStatistics(sessionID: sessionID, database: "main")
+        #expect(manager.cachedTableStatistics(sessionID: sessionID, database: "main") == nil)
     }
 
     @MainActor

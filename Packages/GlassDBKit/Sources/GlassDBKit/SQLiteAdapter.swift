@@ -418,16 +418,22 @@ final class SQLiteDatabaseConnection: DatabaseConnection, @unchecked Sendable {
                 engine: "SQLite",
                 rowCount: try await rowCount(table: table, database: database),
                 dataLength: 0,
-                collation: nil
+                collation: nil,
+                rowCountAccuracy: .exact
             ))
         }
         return statuses
     }
 
     func rowCount(table: String, database: String) async throws -> Int {
+        try await rowCount(table: table, database: database, timeout: nil)
+    }
+
+    func rowCount(table: String, database: String, timeout: Duration?) async throws -> Int {
         let result = try await execute(
             "SELECT COUNT(*) FROM \(quotedIdentifier(database)).\(quotedIdentifier(table))",
-            parameters: []
+            parameters: [],
+            timeout: timeout
         )
         guard let value = result.rows.first?.first,
               let count = Int(value.displayString) else {

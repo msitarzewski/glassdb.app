@@ -133,6 +133,7 @@ public protocol DatabaseConnection: Sendable {
     func foreignKeys(in table: String, database: String) async throws -> [ForeignKeyInfo]
     func tableStatus(in database: String) async throws -> [TableStatus]
     func rowCount(table: String, database: String) async throws -> Int
+    func rowCount(table: String, database: String, timeout: Duration?) async throws -> Int
     func serverVersion() async throws -> String
     func explain(_ query: String, parameters: [DatabaseValue]) async throws -> QueryResult
 }
@@ -210,6 +211,13 @@ public extension DatabaseConnection {
 
     func explain(_ query: String, parameters: [DatabaseValue] = []) async throws -> QueryResult {
         throw DatabaseError.unsupportedCapability(.explain, engine: engineName)
+    }
+
+    func rowCount(table: String, database: String, timeout: Duration?) async throws -> Int {
+        guard timeout == nil else {
+            throw DatabaseError.unsupportedCapability(.queryTimeout, engine: engineName)
+        }
+        return try await rowCount(table: table, database: database)
     }
 
     /// Quotes one logical identifier. Dotted paths must be quoted component by

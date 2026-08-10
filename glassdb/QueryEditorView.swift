@@ -290,22 +290,34 @@ struct QueryErrorCard: View {
     }
 }
 
-private struct QueryDocumentTab: Identifiable {
+struct QueryDocumentTab: Identifiable {
     let id: UUID
     var text: String
+    private(set) var savedText: String
     var selectedRange: NSRange
     var result: QueryResult?
+    var isExecuting: Bool
 
     init(
         id: UUID = UUID(),
         text: String = "",
+        isSaved: Bool = false,
         selectedRange: NSRange = NSRange(location: 0, length: 0),
-        result: QueryResult? = nil
+        result: QueryResult? = nil,
+        isExecuting: Bool = false
     ) {
         self.id = id
         self.text = text
+        self.savedText = isSaved ? text : ""
         self.selectedRange = selectedRange
         self.result = result
+        self.isExecuting = isExecuting
+    }
+
+    var hasUnsavedChanges: Bool { text != savedText }
+
+    mutating func markSaved() {
+        savedText = text
     }
 
     var title: String {
@@ -314,27 +326,23 @@ private struct QueryDocumentTab: Identifiable {
             .first
             .map(String.init)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let firstLine, !firstLine.isEmpty else { return "Untitled" }
+        guard let firstLine, !firstLine.isEmpty else { return "Untitled SQL" }
         return String(firstLine.prefix(32))
     }
 }
 
 struct QueryEditorView: View {
     let sessionID: UUID
+    @Binding var document: QueryDocumentTab
     var isWorkspaceActive = true
     var onOpenSQLEditor: (() -> Void)?
+    var onRequestClose: (() -> Void)?
+    var onCreateDocument: ((QueryDocumentTab) -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
 
-    @State private var queryText = ""
-    @State private var selectedRange = NSRange(location: 0, length: 0)
-    @State private var currentResult: QueryResult?
-    @State private var tabs: [QueryDocumentTab] = [QueryDocumentTab()]
-    @State private var selectedTabID: UUID?
-    @State private var tabPendingClose: UUID?
-    @State private var isExecuting = false
     @State private var showingHistory = false
     @State private var showingSavedQueries = false
     @State private var showingSaveQuery = false
@@ -345,12 +353,31 @@ struct QueryEditorView: View {
     @State private var documentError: String?
     @State private var schemaCompletionIdentifiers: [String] = []
     @State private var completionLoadError: String?
-    @State private var aiErrorSchemaContext: SchemaContext?
     @State private var statementsAwaitingConfirmation: [SQLStatement] = []
     @State private var showingExecutionConfirmation = false
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
+    }
+
+    private var queryText: String {
+        get { document.text }
+        nonmutating set { document.text = newValue }
+    }
+
+    private var selectedRange: NSRange {
+        get { document.selectedRange }
+        nonmutating set { document.selectedRange = newValue }
+    }
+
+    private var currentResult: QueryResult? {
+        get { document.result }
+        nonmutating set { document.result = newValue }
+    }
+
+    private var isExecuting: Bool {
+        get { document.isExecuting }
+        nonmutating set { document.isExecuting = newValue }
     }
 
     private var normalizedSavedQueryName: String {
@@ -362,14 +389,20 @@ struct QueryEditorView: View {
             && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var canCloseCurrentTab: Bool {
+        !isExecuting
+    }
+
     var body: some View {
         Group {
             if session != nil {
-                VStack(spacing: 0) {
-                    editorArea
-                    Divider()
-                    resultsArea
-                }
+                DataTabView(
+                    sessionID: sessionID,
+                    document: $document,
+                    isWorkspaceActive: isWorkspaceActive,
+                    completionIdentifiers: schemaCompletionIdentifiers,
+                    completionError: completionLoadError
+                )
             } else {
                 ContentUnavailableView(
                     "Session Disconnected",
@@ -440,7 +473,7 @@ struct QueryEditorView: View {
                             showingSQLImporter = true
                         }
                         Button("Save SQL Document", systemImage: "square.and.arrow.down") {
-                            showingSQLExporter = true
+                            exportCurrentTab()
                         }
                         .disabled(queryText.isEmpty)
                         Divider()
@@ -463,6 +496,15 @@ struct QueryEditorView: View {
                         Label("Queries", systemImage: "books.vertical")
                     }
 
+                    if let result = currentResult, result.error == nil {
+                        Button {
+                            openWindow(id: "results", value: result.id)
+                        } label: {
+                            Label("Detach Results", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                        .help("Open this result in a separate window")
+                    }
+
                     Button {
                         queryText = ""
                         currentResult = nil
@@ -475,7 +517,6 @@ struct QueryEditorView: View {
                         let formatted = SQLHighlighter.formatted(queryText)
                         queryText = formatted
                         selectedRange = NSRange(location: (formatted as NSString).length, length: 0)
-                        saveActiveTab()
                     } label: {
                         Label("Format SQL", systemImage: "text.alignleft")
                     }
@@ -485,7 +526,7 @@ struct QueryEditorView: View {
                     Divider()
 
                     Button {
-                        createTab()
+                        onCreateDocument?(QueryDocumentTab())
                     } label: {
                         Label("New Query Tab", systemImage: "plus.square.on.square")
                     }
@@ -493,12 +534,11 @@ struct QueryEditorView: View {
                     .keyboardShortcut("t", modifiers: .command)
 
                     Button {
-                        requestCloseCurrentTab()
+                        onRequestClose?()
                     } label: {
                         Label("Close Query Tab", systemImage: "xmark.square")
                     }
-                    .disabled(tabs.count == 1 || isExecuting)
-                    .keyboardShortcut("w", modifiers: [.command, .shift])
+                    .disabled(!canCloseCurrentTab)
                 }
             }
         }
@@ -506,16 +546,6 @@ struct QueryEditorView: View {
             \.databaseCommandActions,
             isWorkspaceActive ? commandActions : nil
         )
-        .onAppear {
-            if selectedTabID == nil {
-                selectedTabID = tabs[0].id
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .glassdbOpenSQLDraft)) { notification in
-            guard let request = notification.object as? SQLDraftRequest,
-                  request.sessionID == sessionID else { return }
-            createTab(with: request.sql)
-        }
         .task(id: session?.currentDatabase) {
             await loadCompletionIdentifiers()
         }
@@ -524,7 +554,6 @@ struct QueryEditorView: View {
             if let error = currentResult?.error,
                DatabaseSessionManager.isTerminalConnectionError(error) {
                 currentResult = nil
-                saveActiveTab()
             }
         }
         .fileImporter(
@@ -540,9 +569,7 @@ struct QueryEditorView: View {
             contentType: .plainText,
             defaultFilename: documentFilename
         ) { result in
-            if case .failure(let error) = result {
-                documentError = error.localizedDescription
-            }
+            completeExport(result)
         }
         .sheet(isPresented: $showingHistory) {
             QueryHistoryView(
@@ -592,21 +619,6 @@ struct QueryEditorView: View {
         } message: {
             let classifications = Set(statementsAwaitingConfirmation.map(\.safety.displayName)).sorted()
             Text("This script contains SQL classified as \(classifications.joined(separator: ", ")). Review it carefully before continuing.")
-        }
-        .alert("Close Query Tab?", isPresented: .init(
-            get: { tabPendingClose != nil },
-            set: { if !$0 { tabPendingClose = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { tabPendingClose = nil }
-                .keyboardShortcut(.cancelAction)
-            Button("Close", role: .destructive) {
-                if let tabPendingClose {
-                    closeTab(tabPendingClose)
-                }
-                tabPendingClose = nil
-            }
-        } message: {
-            Text("This tab contains SQL that is only stored in the current workspace session.")
         }
         .alert("SQL Document Error", isPresented: .init(
             get: { documentError != nil },
@@ -682,163 +694,27 @@ struct QueryEditorView: View {
             canExecute: hasQuery && !isExecuting,
             canCancel: isExecuting && session?.connection?.capabilities.contains(.cancellation) == true,
             canSave: !queryText.isEmpty,
-            canCloseTab: tabs.count > 1 && !isExecuting,
+            canCloseTab: canCloseCurrentTab,
             executeStatement: prepareCurrentStatementExecution,
             executeScript: prepareScriptExecution,
             explainPlan: prepareExplainExecution,
             cancel: { Task { await cancelExecution() } },
             openDocument: { showingSQLImporter = true },
-            saveDocument: { showingSQLExporter = true },
+            saveDocument: exportCurrentTab,
             showHistory: { showingHistory = true },
             showSavedQueries: { showingSavedQueries = true },
             formatSQL: {
                 let formatted = SQLHighlighter.formatted(queryText)
                 queryText = formatted
                 selectedRange = NSRange(location: (formatted as NSString).length, length: 0)
-                saveActiveTab()
             },
-            newTab: { createTab() },
-            closeTab: requestCloseCurrentTab
+            newTab: { onCreateDocument?(QueryDocumentTab()) },
+            closeTab: { onRequestClose?() }
         )
-    }
-
-    // MARK: - Editor
-
-    private var editorArea: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            queryTabBar
-
-            HStack {
-                Text("Query")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if let session, let db = session.currentDatabase {
-                    Text(db)
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.ultraThinMaterial, in: Capsule())
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-
-            HighlightedTextEditor(
-                text: $queryText,
-                fontSize: CGFloat(settingsManager.editorFontSize),
-                showLineNumbers: settingsManager.showLineNumbers,
-                selection: $selectedRange,
-                isActive: isWorkspaceActive
-            )
-            .frame(minHeight: 200)
-            .accessibilityLabel("SQL query editor")
-
-            completionBar
-        }
-    }
-
-    @ViewBuilder
-    private var completionBar: some View {
-        let suggestions = SQLHighlighter.completions(
-            in: queryText,
-            selectedRange: selectedRange,
-            schemaIdentifiers: schemaCompletionIdentifiers
-        )
-        if !suggestions.isEmpty {
-            ScrollView(.horizontal) {
-                HStack(spacing: 6) {
-                    Text("Complete")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ForEach(suggestions, id: \.self) { suggestion in
-                        Button(suggestion) {
-                            applyCompletion(suggestion)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-            }
-            .scrollIndicators(.hidden)
-        } else if let completionLoadError {
-            Label(completionLoadError, systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .accessibilityLabel("Schema completion unavailable. \(completionLoadError)")
-        }
-    }
-
-    private var queryTabBar: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 6) {
-                ForEach(tabs) { tab in
-                    let isSelected = tab.id == selectedTabID
-                    HStack(spacing: 2) {
-                        Button {
-                            switchToTab(tab.id)
-                        } label: {
-                            HStack(spacing: 6) {
-                            Image(systemName: "text.page")
-                            Text(isSelected ? activeTabTitle : tab.title)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .frame(maxWidth: 200)
-                            }
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                        }
-                        .buttonStyle(.plain)
-                        .databaseWorkspaceTabControlTarget()
-                        .disabled(isExecuting)
-                        .accessibilityLabel("Query tab \(isSelected ? activeTabTitle : tab.title)")
-                        .accessibilityAddTraits(isSelected ? .isSelected : [])
-
-                        if tabs.count > 1 {
-                            Button {
-                                requestCloseTab(tab.id)
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.borderless)
-                            .databaseWorkspaceTabControlTarget()
-                            .disabled(isExecuting)
-                            .accessibilityLabel("Close \(isSelected ? activeTabTitle : tab.title)")
-                        }
-                    }
-                    .padding(.horizontal, 4)
-                    .background(
-                        isSelected ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear),
-                        in: Capsule()
-                    )
-                }
-
-                Button {
-                    createTab()
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .buttonStyle(.borderless)
-                .databaseWorkspaceTabControlTarget()
-                .disabled(isExecuting)
-                .accessibilityLabel("New query tab")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-        }
-        .scrollIndicators(.hidden)
-        .databaseLookScrollEnabled()
     }
 
     private var activeTabTitle: String {
-        QueryDocumentTab(text: queryText).title
+        document.title
     }
 
     private static var sqlDocumentTypes: [UTType] {
@@ -864,9 +740,26 @@ struct QueryEditorView: View {
 
     private var documentFilename: String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let sanitized = activeTabTitle.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "-" }
+        let title = activeTabTitle
+        let sanitized = title.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "-" }
         let basename = String(sanitized).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return (basename.isEmpty ? "query" : basename) + ".sql"
+    }
+
+    private func exportCurrentTab() {
+        showingSQLExporter = true
+    }
+
+    private func completeExport(_ result: Result<URL, Error>) {
+        switch result {
+        case .success:
+            document.markSaved()
+        case .failure(let error):
+            let cocoaError = error as? CocoaError
+            if cocoaError?.code != .userCancelled {
+                documentError = error.localizedDescription
+            }
+        }
     }
 
     private func importSQLDocument(_ result: Result<[URL], Error>) {
@@ -882,164 +775,9 @@ struct QueryEditorView: View {
             }
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             let text = try Self.decodedSQLDocumentText(data)
-            createTab(with: text)
+            onCreateDocument?(QueryDocumentTab(text: text, isSaved: true))
         } catch {
             documentError = error.localizedDescription
-        }
-    }
-
-    // MARK: - Results
-
-    @ViewBuilder
-    private var resultsArea: some View {
-        if isExecuting {
-            VStack(spacing: 12) {
-                ProgressView()
-                Text("Executing query...")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, minHeight: 200)
-        } else if let result = currentResult {
-            if let error = result.error {
-                ScrollView {
-                    QueryErrorCard(
-                        error: error,
-                        query: result.query,
-                        schemaContext: aiErrorSchemaContext ?? SchemaContext(
-                            databaseName: session?.currentDatabase ?? "Current database",
-                            tables: []
-                        ),
-                        aiAssistant: session?.aiAssistant,
-                        onUseSuggestedSQL: { suggestedSQL in
-                            queryText = suggestedSQL
-                            selectedRange = NSRange(
-                                location: (suggestedSQL as NSString).length,
-                                length: 0
-                            )
-                            currentResult = nil
-                            saveActiveTab()
-                        },
-                        onDismiss: {
-                            currentResult = nil
-                            saveActiveTab()
-                        }
-                    )
-                }
-                .frame(maxWidth: .infinity, minHeight: 200)
-            } else {
-                inlineResultsGrid(result)
-            }
-        } else {
-            ContentUnavailableView(
-                "No Results",
-                systemImage: "text.page",
-                description: Text("Write a query and press Execute.")
-            )
-            .frame(minHeight: 200)
-        }
-    }
-
-    private func inlineResultsGrid(_ result: QueryResult) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("\(result.rowCount) rows")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if result.isTruncated, let limit = result.appliedRowLimit {
-                    Text("more rows available — limited to \(limit)")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                Text("in \(String(format: "%.3f", result.executionTime))s")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    openWindow(id: "results", value: result.id)
-                } label: {
-                    Label("Detach", systemImage: "rectangle.portrait.and.arrow.right")
-                        .font(.caption)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .accessibilityElement(children: .combine)
-
-            GeometryReader { geometry in
-                let widths = inlineColumnWidths(result: result)
-                let totalDataWidth = widths.reduce(0, +)
-                let fillerWidth = max(0, geometry.size.width - totalDataWidth)
-                let rowHeight: CGFloat = 30
-
-                ScrollView([.horizontal, .vertical]) {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
-                        Section {
-                            ForEach(Array(result.rows.enumerated()), id: \.offset) { rowIndex, row in
-                                HStack(spacing: 0) {
-                                    ForEach(Array(row.enumerated()), id: \.offset) { colIndex, value in
-                                        Text(value.displayString)
-                                            .font(.system(size: settingsManager.dataGridFontSize, design: .monospaced))
-                                            .lineLimit(1)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .frame(width: widths[colIndex], height: rowHeight, alignment: .leading)
-                                            .foregroundStyle(value.isNull ? .tertiary : .primary)
-                                            .accessibilityLabel("\(result.columns[colIndex].name): \(value.isNull ? "null" : value.displayString)")
-                                    }
-                                    if fillerWidth > 0 {
-                                        Color.clear.frame(width: fillerWidth, height: rowHeight)
-                                    }
-                                }
-                                .background(
-                                    rowIndex.isMultiple(of: 2)
-                                        ? Color.clear
-                                        : Color.primary.opacity(
-                                            DatabaseGlassAppearance(
-                                                opacity: settingsManager.windowOpacity,
-                                                blur: 0
-                                            ).surfaceAlpha(strength: 0.02)
-                                        )
-                                )
-                            }
-                        } header: {
-                            HStack(spacing: 0) {
-                                ForEach(Array(result.columns.enumerated()), id: \.offset) { colIndex, col in
-                                    Text(col.name)
-                                        .font(.system(size: settingsManager.dataGridFontSize, weight: .bold, design: .monospaced))
-                                        .lineLimit(1)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 8)
-                                        .frame(width: widths[colIndex], alignment: .leading)
-                                        .accessibilityAddTraits(.isHeader)
-                                }
-                                if fillerWidth > 0 {
-                                    Spacer().frame(width: fillerWidth)
-                                }
-                            }
-                            .databaseCanvasSurface(opacity: settingsManager.windowOpacity)
-                        }
-                    }
-                }
-                .scrollIndicators(.visible)
-                .databaseLookScrollEnabled()
-            }
-        }
-    }
-
-    private func inlineColumnWidths(result: QueryResult) -> [CGFloat] {
-        guard !result.columns.isEmpty else { return [] }
-        return result.columns.enumerated().map { colIndex, col -> CGFloat in
-            let headerLen = CGFloat(col.name.count)
-            var maxDataLen: CGFloat = 0
-            for row in result.rows.prefix(50) {
-                if colIndex < row.count {
-                    maxDataLen = max(maxDataLen, CGFloat(row[colIndex].displayString.count))
-                }
-            }
-            let charWidth = settingsManager.dataGridFontSize * 0.65
-            let computed = max(headerLen, maxDataLen) * charWidth + 24
-            return max(80, min(computed, 400))
         }
     }
 
@@ -1091,7 +829,6 @@ struct QueryEditorView: View {
                 error: error.localizedDescription
             )
         }
-        saveActiveTab()
     }
 
     private func explain(_ statement: String) async {
@@ -1106,7 +843,6 @@ struct QueryEditorView: View {
                 error: error.localizedDescription
             )
         }
-        saveActiveTab()
     }
 
     private func cancelExecution() async {
@@ -1130,7 +866,6 @@ struct QueryEditorView: View {
             if let database = session?.currentDatabase, !database.isEmpty {
                 let tables = try await connection.tables(in: database)
                 identifiers.formUnion(tables)
-                var tableInfos: [SchemaContext.TableInfo] = []
                 await withTaskGroup(of: SchemaContext.TableInfo?.self) { group in
                     for table in tables.prefix(50) {
                         group.addTask {
@@ -1148,23 +883,11 @@ struct QueryEditorView: View {
                     }
                     for await tableInfo in group {
                         guard let tableInfo else { continue }
-                        tableInfos.append(tableInfo)
                         identifiers.formUnion(tableInfo.columns.flatMap { column in
                             [column.name, "\(tableInfo.name).\(column.name)"]
                         })
                     }
                 }
-                aiErrorSchemaContext = SchemaContext(
-                    databaseName: database,
-                    tables: tableInfos.sorted {
-                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-                    }
-                )
-            } else {
-                aiErrorSchemaContext = SchemaContext(
-                    databaseName: "Current database",
-                    tables: []
-                )
             }
             schemaCompletionIdentifiers = identifiers.sorted {
                 $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
@@ -1172,90 +895,10 @@ struct QueryEditorView: View {
             completionLoadError = nil
         } catch {
             schemaCompletionIdentifiers = []
-            aiErrorSchemaContext = SchemaContext(
-                databaseName: session?.currentDatabase ?? "Current database",
-                tables: []
-            )
             completionLoadError = error.localizedDescription
         }
     }
 
-    private func applyCompletion(_ suggestion: String) {
-        let applied = SQLHighlighter.applyingCompletion(
-            suggestion,
-            to: queryText,
-            selectedRange: selectedRange
-        )
-        queryText = applied.sql
-        selectedRange = applied.selection
-        saveActiveTab()
-    }
-
-    // MARK: - Query Tabs
-
-    private func saveActiveTab() {
-        guard let selectedTabID,
-              let index = tabs.firstIndex(where: { $0.id == selectedTabID }) else { return }
-        tabs[index].text = queryText
-        tabs[index].selectedRange = selectedRange
-        tabs[index].result = currentResult
-    }
-
-    private func switchToTab(_ id: UUID) {
-        guard !isExecuting, id != selectedTabID else { return }
-        saveActiveTab()
-        guard let tab = tabs.first(where: { $0.id == id }) else { return }
-        selectedTabID = id
-        queryText = tab.text
-        selectedRange = tab.selectedRange
-        currentResult = tab.result
-    }
-
-    private func createTab(with text: String = "") {
-        guard !isExecuting else { return }
-        saveActiveTab()
-        let tab = QueryDocumentTab(
-            text: text,
-            selectedRange: NSRange(location: (text as NSString).length, length: 0)
-        )
-        tabs.append(tab)
-        selectedTabID = tab.id
-        queryText = text
-        selectedRange = tab.selectedRange
-        currentResult = nil
-    }
-
-    private func requestCloseCurrentTab() {
-        guard let selectedTabID else { return }
-        requestCloseTab(selectedTabID)
-    }
-
-    private func requestCloseTab(_ id: UUID) {
-        guard tabs.count > 1, !isExecuting else { return }
-        if id == selectedTabID {
-            saveActiveTab()
-        }
-        guard let tab = tabs.first(where: { $0.id == id }) else { return }
-        if tab.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            closeTab(id)
-        } else {
-            tabPendingClose = id
-        }
-    }
-
-    private func closeTab(_ id: UUID) {
-        guard tabs.count > 1,
-              let index = tabs.firstIndex(where: { $0.id == id }) else { return }
-        let wasSelected = id == selectedTabID
-        tabs.remove(at: index)
-        guard wasSelected else { return }
-        let nextIndex = min(index, tabs.count - 1)
-        let nextTab = tabs[nextIndex]
-        selectedTabID = nextTab.id
-        queryText = nextTab.text
-        selectedRange = nextTab.selectedRange
-        currentResult = nextTab.result
-    }
 }
 
 // MARK: - Durable History

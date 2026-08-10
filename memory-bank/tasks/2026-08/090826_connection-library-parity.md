@@ -1,8 +1,9 @@
 # Connection Library Parity
 
 **Date:** 2026-08-09
-**Status:** Implementation and automated QA approved
-**Branch:** `agent/connection-library-parity`
+**Status:** Implementation, automated QA, and post-release UX refinement approved
+**Branch:** `agent/connection-library-parity`; follow-up integration on
+`agent/unified-workspace-connection-ux`
 
 ## Objective
 
@@ -85,6 +86,28 @@ security policies across iPhone, iPad, Mac, and Vision Pro.
 - Existing GlasSecretStore UUID identity, atomic glassdb/glas.sh compatibility
   publication, rollback, host-trust, and SSH/database isolation tests remain green.
 
+## Post-Release UX Refinement (2026-08-10)
+
+- Made the complete Mac result row the selection target and retained double-click
+  as the direct Connect/Open Workspace gesture; the inline overflow submenu was
+  removed while the existing context menu remains available.
+- Matched the established glas.sh information hierarchy more closely: connection
+  name, favorite, and endpoint lead; engine or active-session state and relative
+  last-used time remain visible without opening a submenu.
+- Condensed the detail pane to connection, protection, activity, and organization
+  facts; database credential policy, TLS, and SSH tunnel state are summarized
+  without revealing secret material.
+- Restored the Mac Settings toolbar action and aligned bottom actions so Edit and
+  Disconnect remain secondary while Connect/Open Workspace is the clear primary
+  action. Compact layouts continue to adapt through the same shared view.
+- Reused `ConnectionManagerView` and its existing connection/session actions. No
+  source file, connection model, persistence path, or credential authority was
+  added.
+- Human visual approval was recorded against the combined unified-workspace and
+  connection-library preview. The follow-up passed 115/115 macOS application
+  tests, Mac/iPhone/iPad/Vision Pro builds, and `git diff --check`; Xcode emitted
+  only the known non-blocking AppIntents metadata-extraction notice.
+
 ## Scope Boundary
 
 This is the database connection-library presentation and organization slice. It
@@ -95,5 +118,6 @@ claim is authorized by this work.
 
 ## Artifacts
 
-- Branch: `agent/connection-library-parity`
-- Pull request: draft publication from this branch after the approved commit.
+- Original branch: `agent/connection-library-parity`
+- Original pull request: #7 (merged)
+- Post-release integration branch: `agent/unified-workspace-connection-ux`

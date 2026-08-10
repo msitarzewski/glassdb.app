@@ -20,6 +20,7 @@ class DatabaseSessionManager {
 
     private var hasLoaded = false
     private let defaults: UserDefaults
+    private var statisticsLoads: [DatabaseStatisticsLoadKey: DatabaseStatisticsLoad] = [:]
 
     struct TransportPlan: Equatable, Sendable {
         let databaseHost: String
@@ -432,6 +433,7 @@ class DatabaseSessionManager {
 
     func disconnect(sessionID: UUID) async {
         guard let session = sessions[sessionID] else { return }
+        cancelStatisticsLoads(sessionID: sessionID)
         do {
             try await session.connection?.close()
         } catch {
@@ -486,6 +488,7 @@ class DatabaseSessionManager {
             )
         }
         let executionSQL = boundedPlan?.executionSQL ?? sql
+        let querySafety = SQLHighlighter.safetyClassification(of: sql)
         let startedAt = Date()
         let result: QueryResult
         do {
@@ -510,6 +513,11 @@ class DatabaseSessionManager {
                 result = rawResult
             }
         } catch {
+            if querySafety.requiresConfirmation {
+                // A transport failure can arrive after a write reached the server.
+                // Never retain statistics when the resulting server state is unknown.
+                invalidateTableStatistics(sessionID: sessionID)
+            }
             recordHistory(
                 sql: sql,
                 session: session,
@@ -552,7 +560,91 @@ class DatabaseSessionManager {
             error: result.error
         )
 
+        if result.error == nil, querySafety.requiresConfirmation {
+            // Arbitrary SQL can qualify an object outside the active database.
+            // Conservatively discard every cached namespace for this session.
+            invalidateTableStatistics(sessionID: sessionID)
+        }
+
         return result
+    }
+
+    // MARK: - Table Statistics
+
+    func cachedTableStatistics(
+        sessionID: UUID,
+        database: String
+    ) -> DatabaseStatisticsSnapshot? {
+        sessions[sessionID]?.databaseStatistics[database]
+    }
+
+    func tableStatistics(
+        sessionID: UUID,
+        database: String,
+        forceRefresh: Bool = false,
+        now: Date = Date()
+    ) async throws -> DatabaseStatisticsSnapshot {
+        guard let session = sessions[sessionID],
+              session.state.isConnected,
+              let connection = session.connection else {
+            throw SessionError.connectionLost
+        }
+
+        if !forceRefresh,
+           let cached = session.databaseStatistics[database],
+           cached.isFresh(at: now) {
+            return cached
+        }
+
+        let key = DatabaseStatisticsLoadKey(sessionID: sessionID, database: database)
+        if let existing = statisticsLoads[key] {
+            return try await existing.task.value
+        }
+
+        let loadID = UUID()
+        let task = Task {
+            let statuses = try await connection.tableStatus(in: database)
+            try Task.checkCancellation()
+            return DatabaseStatisticsSnapshot(
+                database: database,
+                statuses: statuses,
+                capturedAt: now
+            )
+        }
+        statisticsLoads[key] = DatabaseStatisticsLoad(id: loadID, task: task)
+
+        do {
+            let snapshot = try await task.value
+            guard statisticsLoads[key]?.id == loadID else { throw CancellationError() }
+            statisticsLoads.removeValue(forKey: key)
+            guard sessions[sessionID] === session else { throw SessionError.connectionLost }
+            session.databaseStatistics[database] = snapshot
+            return snapshot
+        } catch {
+            if statisticsLoads[key]?.id == loadID {
+                statisticsLoads.removeValue(forKey: key)
+            }
+            throw error
+        }
+    }
+
+    func invalidateTableStatistics(sessionID: UUID, database: String? = nil) {
+        guard let session = sessions[sessionID] else { return }
+        if let database {
+            session.databaseStatistics.removeValue(forKey: database)
+            let key = DatabaseStatisticsLoadKey(sessionID: sessionID, database: database)
+            statisticsLoads.removeValue(forKey: key)?.task.cancel()
+        } else {
+            session.databaseStatistics.removeAll()
+            cancelStatisticsLoads(sessionID: sessionID)
+        }
+    }
+
+    private func cancelStatisticsLoads(sessionID: UUID) {
+        let keys = statisticsLoads.keys.filter { $0.sessionID == sessionID }
+        for key in keys {
+            statisticsLoads.removeValue(forKey: key)?.task.cancel()
+        }
     }
 
     func explainQuery(_ sql: String, sessionID: UUID) async throws -> QueryResult {
@@ -814,6 +906,9 @@ class DatabaseSessionManager {
         reason: String
     ) async {
         guard session.state.isConnected || session.connection != nil else { return }
+        if let sessionID = sessions.first(where: { $0.value === session })?.key {
+            invalidateTableStatistics(sessionID: sessionID)
+        }
         let connection = session.connection
         let tunnel = session.tunnel
 
@@ -866,6 +961,7 @@ class DatabaseSession {
     var currentDatabase: String?
     var lastConnectionError: String?
     var requiresTransportValidation = false
+    var databaseStatistics: [String: DatabaseStatisticsSnapshot] = [:]
     let aiAssistant = AIAssistant()
 
     init(connectionConfig: DatabaseConnectionConfig) {
@@ -874,6 +970,32 @@ class DatabaseSession {
             ? "main"
             : connectionConfig.defaultDatabase
     }
+}
+
+struct DatabaseStatisticsSnapshot: Sendable {
+    static let timeToLive: TimeInterval = 15 * 60
+
+    let database: String
+    let statuses: [TableStatus]
+    let capturedAt: Date
+
+    func isFresh(at date: Date = Date()) -> Bool {
+        date.timeIntervalSince(capturedAt) < Self.timeToLive
+    }
+
+    func status(for table: String) -> TableStatus? {
+        statuses.first { $0.name == table }
+    }
+}
+
+private struct DatabaseStatisticsLoadKey: Hashable {
+    let sessionID: UUID
+    let database: String
+}
+
+private struct DatabaseStatisticsLoad {
+    let id: UUID
+    let task: Task<DatabaseStatisticsSnapshot, any Error>
 }
 
 enum QueryHistoryStatus: String, CaseIterable, Hashable, Identifiable, Sendable {

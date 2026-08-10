@@ -16,6 +16,16 @@ private struct SchemaMutationTarget: Identifiable {
     var id: String { "\(database.utf8.count):\(database)\(table)" }
 }
 
+private struct SchemaTableKey: Hashable {
+    let database: String
+    let table: String
+}
+
+private struct ExactRowCountSnapshot {
+    let value: Int
+    let capturedAt: Date
+}
+
 private enum SchemaMutationOperation: String {
     case truncate
     case drop
@@ -46,13 +56,16 @@ struct SchemaBrowserView: View {
     @State private var databases: [String] = []
     @State private var expandedDatabases: Set<String> = []
     @State private var tablesCache: [String: [String]] = [:]
-    @State private var rowCountCache: [String: Int] = [:]
+    @State private var exactRowCounts: [SchemaTableKey: ExactRowCountSnapshot] = [:]
     @State private var loadErrors: [String: String] = [:]
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var filterText = ""
     @State private var confirmingTruncate: SchemaMutationTarget?
     @State private var confirmingDrop: SchemaMutationTarget?
+    @State private var confirmingExactCount: SchemaMutationTarget?
+    @State private var exactCountTarget: SchemaMutationTarget?
+    @State private var exactCountTask: Task<Void, Never>?
     @State private var destructiveOperation: String?
     @State private var operationError: String?
 
@@ -100,7 +113,7 @@ struct SchemaBrowserView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    Task { await loadDatabases() }
+                    Task { await refreshExpandedSchema() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
@@ -113,7 +126,7 @@ struct SchemaBrowserView: View {
         .onChange(of: session?.state) {
             guard session?.state.isConnected == true else { return }
             tablesCache.removeAll()
-            rowCountCache.removeAll()
+            exactRowCounts.removeAll()
             loadErrors.removeAll()
             Task { await loadDatabases() }
         }
@@ -122,7 +135,28 @@ struct SchemaBrowserView: View {
                 ProgressView(destructiveOperation)
                     .padding(20)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            } else if let exactCountTarget {
+                VStack(spacing: 12) {
+                    ProgressView("Counting \(exactCountTarget.table)…")
+                    Button("Cancel", role: .cancel) { cancelExactRowCount() }
+                }
+                .padding(20)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
+        }
+        .alert("Calculate Exact Row Count?", isPresented: .init(
+            get: { confirmingExactCount != nil },
+            set: { if !$0 { confirmingExactCount = nil } }
+        )) {
+            Button("Calculate") {
+                if let target = confirmingExactCount {
+                    exactCountTask = Task { await calculateExactRowCount(target) }
+                }
+                confirmingExactCount = nil
+            }
+            Button("Cancel", role: .cancel) { confirmingExactCount = nil }
+        } message: {
+            Text("This runs SELECT COUNT(*) against the entire table. On a large production table it may scan an index or the table itself. Prefer a read replica when available; glassdb will stop the query after 30 seconds.")
         }
         .alert("Truncate Table?", isPresented: .init(
             get: { confirmingTruncate != nil },
@@ -207,11 +241,10 @@ struct SchemaBrowserView: View {
                     onSelectionChanged?(.database(database))
                 }
                 Button("Open SQL Editor", systemImage: "text.page") {
-                    onSelectionChanged?(.query)
+                    onSelectionChanged?(.query(id: UUID()))
                 }
                 Button("Refresh Tables", systemImage: "arrow.clockwise") {
-                    tablesCache.removeValue(forKey: database)
-                    Task { await loadTables(for: database) }
+                    Task { await refreshDatabase(database) }
                 }
             }
         }
@@ -246,15 +279,13 @@ struct SchemaBrowserView: View {
                     onSelectionChanged?(.database(database))
                 }
                 Button("Refresh Tables", systemImage: "arrow.clockwise") {
-                    tablesCache.removeValue(forKey: database)
-                    Task { await loadTables(for: database) }
+                    Task { await refreshDatabase(database) }
                 }
             }
         }
     }
 
     private func compactTableRow(_ table: String, database: String) -> some View {
-        let cacheKey = "\(database).\(table)"
         return HStack(spacing: 8) {
             Button {
                 onSelectionChanged?(.table(database: database, table: table))
@@ -262,11 +293,7 @@ struct SchemaBrowserView: View {
                 HStack {
                     Label(table, systemImage: "tablecells")
                     Spacer()
-                    if let count = rowCountCache[cacheKey] {
-                        Text(count.formatted())
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    rowCountLabel(table: table, database: database, font: .caption)
                 }
                 .contentShape(Rectangle())
             }
@@ -277,7 +304,6 @@ struct SchemaBrowserView: View {
             }
             .labelStyle(.iconOnly)
         }
-        .task { await loadRowCount(for: table, database: database) }
         .accessibilityElement(children: .contain)
     }
     #endif
@@ -328,23 +354,34 @@ struct SchemaBrowserView: View {
     }
 
     private func tableRow(_ table: String, database: String) -> some View {
-        let cacheKey = "\(database).\(table)"
         return HStack {
             Label(table, systemImage: "tablecells")
             Spacer()
-            if let count = rowCountCache[cacheKey] {
-                Text(count.formatted())
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+            rowCountLabel(table: table, database: database, font: .caption2)
         }
         .contentShape(Rectangle())
         .tag(WorkspaceSelection.table(database: database, table: table))
         .contextMenu {
             tableActionMenu(table, database: database)
         }
-        .task {
-            await loadRowCount(for: table, database: database)
+    }
+
+    @ViewBuilder
+    private func rowCountLabel(table: String, database: String, font: Font) -> some View {
+        let key = SchemaTableKey(database: database, table: table)
+        if let exact = exactRowCounts[key] {
+            Text(exact.value.formatted())
+                .font(font)
+                .foregroundStyle(.secondary)
+                .help("Exact count calculated \(exact.capturedAt.formatted(date: .abbreviated, time: .shortened))")
+        } else if let snapshot = session?.databaseStatistics[database],
+                  let status = snapshot.status(for: table) {
+            Text(status.rowCountAccuracy == .estimated
+                ? "~\(status.rowCount.formatted())"
+                : status.rowCount.formatted())
+                .font(font)
+                .foregroundStyle(.tertiary)
+                .help("\(status.rowCountAccuracy == .estimated ? "Server estimate" : "Exact server statistic") cached \(snapshot.capturedAt.formatted(date: .abbreviated, time: .shortened))")
         }
     }
 
@@ -369,7 +406,7 @@ struct SchemaBrowserView: View {
             }
         }
         Button("Open SQL Editor", systemImage: "text.page") {
-            onSelectionChanged?(.query)
+            onSelectionChanged?(.query(id: UUID()))
         }
         Button("Open in New Window", systemImage: "macwindow.badge.plus") {
             let request = DatabaseWorkspaceWindowRequest.additional(
@@ -384,8 +421,7 @@ struct SchemaBrowserView: View {
         .help("Open \(database) in another window on this connection")
         Divider()
         Button("Refresh", systemImage: "arrow.clockwise") {
-            tablesCache.removeValue(forKey: database)
-            Task { await loadTables(for: database) }
+            Task { await refreshDatabase(database) }
         }
     }
 
@@ -406,9 +442,11 @@ struct SchemaBrowserView: View {
             PlatformClipboard.copy("SELECT * FROM \(object) LIMIT 100;")
         }
         Divider()
+        Button("Calculate Exact Row Count…", systemImage: "number") {
+            confirmingExactCount = SchemaMutationTarget(database: database, table: table)
+        }
         Button("Refresh", systemImage: "arrow.clockwise") {
-            tablesCache.removeValue(forKey: database)
-            Task { await loadTables(for: database) }
+            Task { await refreshDatabase(database) }
         }
         Divider()
         if session?.connection?.capabilities.contains(.truncateTable) == true {
@@ -457,11 +495,17 @@ struct SchemaBrowserView: View {
             ))
             if operation == .drop {
                 tablesCache.removeValue(forKey: target.database)
+                exactRowCounts.removeValue(forKey: SchemaTableKey(database: target.database, table: target.table))
                 await loadTables(for: target.database)
             } else {
-                rowCountCache["\(target.database).\(target.table)"] = 0
+                exactRowCounts[SchemaTableKey(database: target.database, table: target.table)] =
+                    ExactRowCountSnapshot(value: 0, capturedAt: Date())
             }
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: target.database)
+            await loadStatistics(for: target.database, forceRefresh: true)
         } catch {
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: target.database)
+            exactRowCounts.removeValue(forKey: SchemaTableKey(database: target.database, table: target.table))
             MutationAuditStore.append(MutationAuditRecord(
                 connectionID: config.id,
                 database: target.database,
@@ -488,28 +532,84 @@ struct SchemaBrowserView: View {
         isLoading = false
     }
 
-    private func loadTables(for database: String) async {
+    private func loadTables(for database: String, forceStatisticsRefresh: Bool = false) async {
         guard let connection = session?.connection else { return }
-        guard tablesCache[database] == nil else { return }
-        loadErrors.removeValue(forKey: database)
+        if tablesCache[database] == nil {
+            loadErrors.removeValue(forKey: database)
+            do {
+                tablesCache[database] = try await connection.tables(in: database)
+            } catch {
+                await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
+                loadErrors[database] = error.localizedDescription
+                Logger.database.error("Failed to load tables for \(database): \(error)")
+                return
+            }
+        }
+        await loadStatistics(for: database, forceRefresh: forceStatisticsRefresh)
+    }
+
+    private func loadStatistics(for database: String, forceRefresh: Bool = false) async {
+        guard let connection = session?.connection else { return }
+        guard connection.capabilities.contains(.tableStatistics), connection.dialect != .sqlite else { return }
         do {
-            tablesCache[database] = try await connection.tables(in: database)
+            _ = try await sessionManager.tableStatistics(
+                sessionID: sessionID,
+                database: database,
+                forceRefresh: forceRefresh
+            )
         } catch {
             await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
-            loadErrors[database] = error.localizedDescription
-            Logger.database.error("Failed to load tables for \(database): \(error)")
+            Logger.database.error("Failed to load table statistics for \(database): \(error)")
         }
     }
 
-    private func loadRowCount(for table: String, database: String) async {
+    private func refreshDatabase(_ database: String) async {
+        tablesCache.removeValue(forKey: database)
+        exactRowCounts = exactRowCounts.filter { $0.key.database != database }
+        sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
+        await loadTables(for: database, forceStatisticsRefresh: true)
+    }
+
+    private func refreshExpandedSchema() async {
+        await loadDatabases()
+        for database in expandedDatabases {
+            await refreshDatabase(database)
+        }
+    }
+
+    private func calculateExactRowCount(_ target: SchemaMutationTarget) async {
         guard let connection = session?.connection else { return }
-        let cacheKey = "\(database).\(table)"
-        guard rowCountCache[cacheKey] == nil else { return }
+        exactCountTarget = target
+        defer {
+            exactCountTarget = nil
+            exactCountTask = nil
+        }
         do {
-            rowCountCache[cacheKey] = try await connection.rowCount(table: table, database: database)
+            let count = try await connection.rowCount(
+                table: target.table,
+                database: target.database,
+                timeout: .seconds(30)
+            )
+            try Task.checkCancellation()
+            exactRowCounts[SchemaTableKey(database: target.database, table: target.table)] =
+                ExactRowCountSnapshot(value: count, capturedAt: Date())
+        } catch is CancellationError {
+            return
         } catch {
             await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
-            Logger.database.error("Failed to load row count for \(database).\(table): \(error)")
+            operationError = "Exact row count failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func cancelExactRowCount() {
+        exactCountTask?.cancel()
+        exactCountTask = nil
+        Task {
+            do {
+                try await sessionManager.cancelQuery(sessionID: sessionID)
+            } catch {
+                operationError = "Could not cancel the exact row count: \(error.localizedDescription)"
+            }
         }
     }
 }

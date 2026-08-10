@@ -177,6 +177,28 @@ extension View {
         #endif
     }
 
+    /// Registers a window-scoped Command-W action with the macOS application
+    /// dispatcher. The registration remains present while disabled so a
+    /// database workspace never falls through to native Close Window.
+    @ViewBuilder
+    func databaseCommandWTarget(
+        priority: DatabaseCommandWTargetPriority,
+        isEnabled: Bool,
+        perform action: @escaping @MainActor () -> Void
+    ) -> some View {
+        #if os(macOS)
+        background {
+            MacDatabaseCommandWTarget(
+                priority: priority.rawValue,
+                isEnabled: isEnabled,
+                action: action
+            )
+        }
+        #else
+        self
+        #endif
+    }
+
     @ViewBuilder
     func databaseWorkspaceTabControlTarget() -> some View {
         #if os(macOS)
@@ -230,7 +252,213 @@ extension View {
     }
 }
 
+enum DatabaseCommandWTargetPriority: Int {
+    case workspace = 100
+}
+
 #if os(macOS)
+@MainActor
+final class MacDatabaseCommandWRouter: NSObject, NSMenuItemValidation {
+    static let shared = MacDatabaseCommandWRouter()
+
+    private static let semanticModifiers: NSEvent.ModifierFlags = [
+        .command,
+        .option,
+        .control,
+        .shift,
+    ]
+
+    private final class Registration {
+        weak var window: NSWindow?
+        var priority: Int
+        var isEnabled: Bool
+        var action: @MainActor () -> Void
+
+        init(
+            window: NSWindow?,
+            priority: Int,
+            isEnabled: Bool,
+            action: @escaping @MainActor () -> Void
+        ) {
+            self.window = window
+            self.priority = priority
+            self.isEnabled = isEnabled
+            self.action = action
+        }
+    }
+
+    private var registrations: [UUID: Registration] = [:]
+
+    /// SwiftUI's macOS lifecycle owns the application object, so the reliable
+    /// interception point is the File menu command that AppKit invokes for both
+    /// its Command-W key equivalent and a direct menu selection.
+    func installCloseCommandInterceptor(in mainMenu: NSMenu? = NSApp.mainMenu) {
+        guard let closeItem = mainMenu.flatMap(Self.commandWItem) else { return }
+        closeItem.target = self
+        closeItem.action = #selector(performCloseCommand(_:))
+    }
+
+    func update(
+        id: UUID,
+        window: NSWindow?,
+        priority: Int,
+        isEnabled: Bool,
+        action: @escaping @MainActor () -> Void
+    ) {
+        if let registration = registrations[id] {
+            registration.window = window
+            registration.priority = priority
+            registration.isEnabled = isEnabled
+            registration.action = action
+        } else {
+            registrations[id] = Registration(
+                window: window,
+                priority: priority,
+                isEnabled: isEnabled,
+                action: action
+            )
+        }
+        installCloseCommandInterceptor()
+    }
+
+    func remove(id: UUID) {
+        registrations[id] = nil
+    }
+
+    /// Returns true when the target window belongs to a database workspace.
+    /// Even with no enabled editor action, consuming Close prevents the
+    /// permanent Overview/SQL workspace from being closed accidentally.
+    func routeClose(targetWindow: NSWindow?) -> Bool {
+        guard let targetWindow else { return false }
+        registrations = registrations.filter { $0.value.window != nil }
+        let windowRegistrations = registrations.values.filter {
+            $0.window === targetWindow
+        }
+        guard !windowRegistrations.isEmpty else { return false }
+
+        let action = windowRegistrations
+            .filter(\.isEnabled)
+            .max { $0.priority < $1.priority }?
+            .action
+        action?()
+        return true
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        menuItem.action != #selector(performCloseCommand(_:))
+            || NSApp.keyWindow != nil
+    }
+
+    @objc private func performCloseCommand(_ sender: NSMenuItem) {
+        guard NSApp.currentEvent?.isARepeat != true else { return }
+        let targetWindow = NSApp.keyWindow ?? NSApp.mainWindow
+        guard !routeClose(targetWindow: targetWindow) else { return }
+        targetWindow?.performClose(sender)
+    }
+
+    private static func commandWItem(in mainMenu: NSMenu) -> NSMenuItem? {
+        mainMenu.items
+            .compactMap(\.submenu)
+            .flatMap(\.items)
+            .first { item in
+                item.keyEquivalent.lowercased() == "w"
+                    && item.keyEquivalentModifierMask
+                        .intersection(semanticModifiers) == .command
+                    && !item.isAlternate
+            }
+    }
+}
+
+struct MacDatabaseCommandWTarget: NSViewRepresentable {
+    let priority: Int
+    let isEnabled: Bool
+    let action: @MainActor () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> WindowReaderView {
+        let view = WindowReaderView(frame: .zero)
+        view.windowDidChange = { [weak coordinator = context.coordinator] window in
+            coordinator?.attach(to: window)
+        }
+        context.coordinator.update(
+            priority: priority,
+            isEnabled: isEnabled,
+            action: action
+        )
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowReaderView, context: Context) {
+        context.coordinator.update(
+            priority: priority,
+            isEnabled: isEnabled,
+            action: action
+        )
+        context.coordinator.attach(to: nsView.window)
+    }
+
+    static func dismantleNSView(_ nsView: WindowReaderView, coordinator: Coordinator) {
+        nsView.windowDidChange = nil
+        coordinator.removeRegistration()
+    }
+
+    @MainActor
+    final class Coordinator {
+        private let id = UUID()
+        private weak var window: NSWindow?
+        private var priority = 0
+        private var isEnabled = false
+        private var action: @MainActor () -> Void = {}
+
+        func attach(to window: NSWindow?) {
+            self.window = window
+            publish()
+        }
+
+        func update(
+            priority: Int,
+            isEnabled: Bool,
+            action: @escaping @MainActor () -> Void
+        ) {
+            self.priority = priority
+            self.isEnabled = isEnabled
+            self.action = action
+            publish()
+        }
+
+        func removeRegistration() {
+            MacDatabaseCommandWRouter.shared.remove(id: id)
+        }
+
+        private func publish() {
+            MacDatabaseCommandWRouter.shared.update(
+                id: id,
+                window: window,
+                priority: priority,
+                isEnabled: isEnabled,
+                action: action
+            )
+        }
+    }
+
+    @MainActor
+    final class WindowReaderView: NSView {
+        var windowDidChange: ((NSWindow?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            windowDidChange?(window)
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+    }
+}
+
 /// Uses AppKit's behind-window compositor without changing the opacity of SQL,
 /// grid text, selection, or toolbar content.
 struct MacDatabaseCanvasVisualEffect: NSViewRepresentable {

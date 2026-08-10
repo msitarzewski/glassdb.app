@@ -15,6 +15,12 @@
 - C5-C8: professional query tooling, desktop grid, engines/platforms, and safe AI
 - C9: release validation and evidence-backed completion
 
+## Intents — System Actions and Apple Platform Integration — Planned Future, Non-Gating
+
+- [Release Tracker](intents/README.md) — foreground-first Siri, Shortcuts, Spotlight, widget/control, and Apple Intelligence integration across iPhone, iPad, Mac, and Vision Pro
+- Reuses existing connection, saved-query, workspace-routing, session, and SQL-safety owners; no parallel database or credential architecture
+- Explicitly independent of the active release candidate; unrestricted SQL, secret indexing, and silent background production access are out of scope
+
 ## v0.1 — MVP (MySQL on visionOS) — M4 in-progress
 - [Release Plan](v0.1/release.md)
 - [M0: Clean Build](v0.1/M0-clean-build.md) — done

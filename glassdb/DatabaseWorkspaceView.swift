@@ -8,6 +8,7 @@
 
 import SwiftUI
 import GlassDBKit
+import UniformTypeIdentifiers
 #if os(iOS)
 import UIKit
 #endif
@@ -18,7 +19,7 @@ enum WorkspaceSelection: Hashable, Codable {
     case connection
     case database(String)
     case table(database: String, table: String)
-    case query
+    case query(id: UUID)
 
     var title: String {
         switch self {
@@ -49,8 +50,15 @@ enum WorkspaceSelection: Hashable, Codable {
 
     var isClosable: Bool {
         switch self {
-        case .connection, .query: false
-        case .database, .table: true
+        case .connection: false
+        case .database, .table, .query: true
+        }
+    }
+
+    var commandWEditorTarget: DatabaseCommandWEditorTarget {
+        switch self {
+        case .connection: .none
+        case .query, .database, .table: .workspace
         }
     }
 
@@ -60,6 +68,11 @@ enum WorkspaceSelection: Hashable, Codable {
         case .table, .query: false
         }
     }
+}
+
+enum DatabaseCommandWEditorTarget: Equatable {
+    case none
+    case workspace
 }
 
 /// Scene value for a database workspace. The session identifies the shared
@@ -87,7 +100,13 @@ struct WorkspaceTabState: Equatable {
     private(set) var selected: WorkspaceSelection
 
     init(initialSelection: WorkspaceSelection = .connection) {
-        let permanentTabs: [WorkspaceSelection] = [.connection, .query]
+        let initialQuery: WorkspaceSelection
+        if case .query = initialSelection {
+            initialQuery = initialSelection
+        } else {
+            initialQuery = .query(id: UUID())
+        }
+        let permanentTabs: [WorkspaceSelection] = [.connection, initialQuery]
         tabs = permanentTabs.contains(initialSelection)
             ? permanentTabs
             : permanentTabs + [initialSelection]
@@ -143,8 +162,14 @@ struct DatabaseWorkspaceView: View {
     #endif
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var tabState: WorkspaceTabState
+    @State private var queryDocuments: [UUID: QueryDocumentTab]
     @State private var databases: [String] = []
     @State private var overviewRefreshTrigger = 0
+    @State private var queryPendingClose: UUID?
+    @State private var queryPendingExport: UUID?
+    @State private var closeQueryAfterExport = false
+    @State private var showingQueryExporter = false
+    @State private var queryDocumentError: String?
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
@@ -152,7 +177,12 @@ struct DatabaseWorkspaceView: View {
 
     init(sessionID: UUID, initialSelection: WorkspaceSelection = .connection) {
         self.sessionID = sessionID
-        _tabState = State(initialValue: WorkspaceTabState(initialSelection: initialSelection))
+        let initialTabState = WorkspaceTabState(initialSelection: initialSelection)
+        _tabState = State(initialValue: initialTabState)
+        _queryDocuments = State(initialValue: Dictionary(uniqueKeysWithValues: initialTabState.tabs.compactMap {
+            guard case .query(let id) = $0 else { return nil }
+            return (id, QueryDocumentTab(id: id))
+        }))
     }
 
     var body: some View {
@@ -161,7 +191,11 @@ struct DatabaseWorkspaceView: View {
                 sessionID: sessionID,
                 selection: tabState.selected
             ) { newSelection in
-                openWorkspace(newSelection)
+                if case .query(let id) = newSelection {
+                    openQueryDocument(QueryDocumentTab(id: id))
+                } else {
+                    openWorkspace(newSelection)
+                }
             }
             .databaseSidebarColumnWidth()
             .databaseWorkspaceSidebarMaterial()
@@ -171,6 +205,12 @@ struct DatabaseWorkspaceView: View {
         }
         .databaseWorkspaceWindowBackground()
         .databaseWorkspaceWindowChrome()
+        .databaseCommandWTarget(
+            priority: .workspace,
+            isEnabled: true
+        ) {
+            closeFocusedEditor()
+        }
         .overlay {
             connectionRecoveryOverlay
         }
@@ -208,7 +248,7 @@ struct DatabaseWorkspaceView: View {
             #if !os(macOS)
             ToolbarItemGroup(placement: databaseToolbarPlacement) {
                 Button {
-                    openWorkspace(.query)
+                    openQueryDocument()
                 } label: {
                     Label("SQL Editor", systemImage: "chevron.left.forwardslash.chevron.right")
                 }
@@ -253,6 +293,52 @@ struct DatabaseWorkspaceView: View {
             if !settingsManager.showSidebarByDefault {
                 columnVisibility = .detailOnly
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .glassdbOpenSQLDraft)) { notification in
+            guard let request = notification.object as? SQLDraftRequest,
+                  request.sessionID == sessionID else { return }
+            openQueryDocument(QueryDocumentTab(text: request.sql))
+        }
+        .fileExporter(
+            isPresented: $showingQueryExporter,
+            document: queryPendingExport.flatMap { queryDocuments[$0] }.map {
+                SQLTextDocument(text: $0.text)
+            },
+            contentType: .plainText,
+            defaultFilename: queryExportFilename
+        ) { result in
+            completeQueryExport(result)
+        }
+        .alert("Save Changes Before Closing?", isPresented: .init(
+            get: { queryPendingClose != nil },
+            set: { if !$0 { queryPendingClose = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { queryPendingClose = nil }
+                .keyboardShortcut(.cancelAction)
+            Button("Don't Save", role: .destructive) {
+                guard let id = queryPendingClose else { return }
+                queryPendingClose = nil
+                closeQueryDocument(id)
+            }
+            Button("Save…") {
+                guard let id = queryPendingClose else { return }
+                queryPendingClose = nil
+                queryPendingExport = id
+                closeQueryAfterExport = true
+                showingQueryExporter = true
+            }
+            .keyboardShortcut(.defaultAction)
+        } message: {
+            Text("This editor contains changes that are only stored in the current workspace session.")
+        }
+        .alert("SQL Document Error", isPresented: .init(
+            get: { queryDocumentError != nil },
+            set: { if !$0 { queryDocumentError = nil } }
+        )) {
+            Button("OK", role: .cancel) { queryDocumentError = nil }
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text(queryDocumentError ?? "")
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
@@ -510,7 +596,7 @@ struct DatabaseWorkspaceView: View {
                         Button {
                             openWorkspace(destination)
                         } label: {
-                            Label(destination.title, systemImage: destination.systemImage)
+                            Label(workspaceTitle(for: destination), systemImage: destination.systemImage)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .frame(maxWidth: 200)
@@ -520,12 +606,12 @@ struct DatabaseWorkspaceView: View {
                         }
                         .buttonStyle(.plain)
                         .databaseWorkspaceTabControlTarget()
-                        .accessibilityLabel(destination.helpText)
+                        .accessibilityLabel(workspaceHelpText(for: destination))
                         .accessibilityAddTraits(isSelected ? .isSelected : [])
 
                         if destination.isClosable {
                             Button {
-                                closeWorkspace(destination)
+                                requestCloseWorkspace(destination)
                             } label: {
                                 Image(systemName: "xmark")
                                     .font(.caption2)
@@ -533,7 +619,7 @@ struct DatabaseWorkspaceView: View {
                             }
                             .buttonStyle(.borderless)
                             .databaseWorkspaceTabControlTarget()
-                            .accessibilityLabel("Close \(destination.helpText)")
+                            .accessibilityLabel("Close \(workspaceHelpText(for: destination))")
                         }
                     }
                     .padding(.horizontal, 4)
@@ -541,11 +627,11 @@ struct DatabaseWorkspaceView: View {
                         isSelected ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear),
                         in: Capsule()
                     )
-                    .help(destination.helpText)
+                    .help(workspaceHelpText(for: destination))
                     .contextMenu {
                         if destination.isClosable {
                             Button("Close Tab", systemImage: "xmark") {
-                                closeWorkspace(destination)
+                                requestCloseWorkspace(destination)
                             }
                         }
                     }
@@ -575,7 +661,7 @@ struct DatabaseWorkspaceView: View {
                     openWorkspace(.database(database))
                 },
                 onOpenSQLEditor: {
-                    openWorkspace(.query)
+                    openQueryDocument()
                 }
             )
         case .table(let database, let table):
@@ -584,7 +670,7 @@ struct DatabaseWorkspaceView: View {
                 database: database,
                 table: table,
                 isWorkspaceActive: isActive,
-                onOpenSQLEditor: { openWorkspace(.query) }
+                onOpenSQLEditor: { openQueryDocument() }
             )
         case .database(let database):
             DatabaseDetailView(
@@ -596,13 +682,16 @@ struct DatabaseWorkspaceView: View {
                     openWorkspace(.table(database: database, table: table))
                 }
             ) {
-                openWorkspace(.query)
+                openQueryDocument()
             }
-        case .query:
+        case .query(let id):
             QueryEditorView(
                 sessionID: sessionID,
+                document: queryDocumentBinding(for: id),
                 isWorkspaceActive: isActive,
-                onOpenSQLEditor: { openWorkspace(.query) }
+                onOpenSQLEditor: { openQueryDocument() },
+                onRequestClose: { requestCloseWorkspace(.query(id: id)) },
+                onCreateDocument: { openQueryDocument($0) }
             )
         }
     }
@@ -615,23 +704,48 @@ struct DatabaseWorkspaceView: View {
             return "\(database) · \(table)"
         case .database(let database):
             return database
-        case .query:
-            return session?.connectionConfig.name ?? "Database"
+        case .query(let id):
+            return queryDocuments[id]?.title ?? "Untitled SQL"
         }
     }
 
     private var workspaceCommandActions: DatabaseWorkspaceCommandActions {
         DatabaseWorkspaceCommandActions(
-            canCloseTab: tabState.selected.isClosable,
-            closeTab: { closeWorkspace(tabState.selected) }
+            canCloseTab: canCloseWorkspace(tabState.selected),
+            closeTab: { requestCloseWorkspace(tabState.selected) }
         )
     }
 
-    private func closeWorkspace(_ destination: WorkspaceSelection) {
+    private func requestCloseWorkspace(_ destination: WorkspaceSelection) {
+        guard canCloseWorkspace(destination) else { return }
+        if case .query(let id) = destination,
+           queryDocuments[id]?.hasUnsavedChanges == true {
+            queryPendingClose = id
+            return
+        }
+        performCloseWorkspace(destination)
+    }
+
+    private func performCloseWorkspace(_ destination: WorkspaceSelection) {
         withAnimation(.snappy) {
             var updatedState = tabState
             guard updatedState.close(destination) else { return }
             tabState = updatedState
+        }
+        if case .query(let id) = destination {
+            queryDocuments.removeValue(forKey: id)
+        }
+    }
+
+    /// Command-W has exactly one window-level registration. Hidden workspace
+    /// content remains alive in the ZStack, so child registrations would be
+    /// able to shadow the selected table or database editor with stale state.
+    private func closeFocusedEditor() {
+        switch tabState.selected.commandWEditorTarget {
+        case .none:
+            break
+        case .workspace:
+            requestCloseWorkspace(tabState.selected)
         }
     }
 
@@ -643,6 +757,70 @@ struct DatabaseWorkspaceView: View {
         updatedState.open(destination)
         withAnimation(.snappy) {
             tabState = updatedState
+        }
+    }
+
+    private func openQueryDocument(_ document: QueryDocumentTab = QueryDocumentTab()) {
+        queryDocuments[document.id] = document
+        openWorkspace(.query(id: document.id))
+    }
+
+    private func queryDocumentBinding(for id: UUID) -> Binding<QueryDocumentTab> {
+        Binding(
+            get: { queryDocuments[id] ?? QueryDocumentTab(id: id) },
+            set: { queryDocuments[id] = $0 }
+        )
+    }
+
+    private func canCloseWorkspace(_ destination: WorkspaceSelection) -> Bool {
+        guard destination.isClosable else { return false }
+        guard case .query(let id) = destination else { return true }
+        return queryDocuments[id]?.isExecuting != true
+    }
+
+    private func closeQueryDocument(_ id: UUID) {
+        performCloseWorkspace(.query(id: id))
+    }
+
+    private func workspaceTitle(for destination: WorkspaceSelection) -> String {
+        guard case .query(let id) = destination else { return destination.title }
+        return queryDocuments[id]?.title ?? "Untitled SQL"
+    }
+
+    private func workspaceHelpText(for destination: WorkspaceSelection) -> String {
+        guard case .query = destination else { return destination.helpText }
+        return "SQL editor \(workspaceTitle(for: destination))"
+    }
+
+    private var queryExportFilename: String {
+        guard let id = queryPendingExport,
+              let document = queryDocuments[id] else { return "query.sql" }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let sanitized = document.title.unicodeScalars.map {
+            allowed.contains($0) ? Character(String($0)) : "-"
+        }
+        let basename = String(sanitized).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return (basename.isEmpty ? "query" : basename) + ".sql"
+    }
+
+    private func completeQueryExport(_ result: Result<URL, Error>) {
+        defer {
+            queryPendingExport = nil
+            closeQueryAfterExport = false
+        }
+        switch result {
+        case .success:
+            guard let id = queryPendingExport,
+                  queryDocuments[id] != nil else { return }
+            queryDocuments[id]?.markSaved()
+            if closeQueryAfterExport {
+                closeQueryDocument(id)
+            }
+        case .failure(let error):
+            let cocoaError = error as? CocoaError
+            if cocoaError?.code != .userCancelled {
+                queryDocumentError = error.localizedDescription
+            }
         }
     }
 

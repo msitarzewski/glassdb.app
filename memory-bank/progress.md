@@ -184,6 +184,7 @@
 - [x] iPhone uses scope → results → detail `NavigationStack`; iPad and Mac use a regular-width split view; Vision Pro uses mode tabs with two- and three-column spatial layouts
 - [x] Existing connection tags are editable as normalized Collections on every target; grouped details expose credential policy but no credential material
 - [x] Final regressions passed 105/105 on Mac and 103/103 each on iPhone, iPad, and Vision Pro with zero failures or skips
+- [x] 2026-08-10 follow-up adopted glas.sh-style direct row interaction, denser rows/details, clearer action hierarchy, and restored Mac Settings access; the human-approved combined preview passed 115/115 Mac tests and all four platform builds
 
 ### In Progress
 - [ ] C3 cross-device Glass-family credential catalog and eligible-secret synchronization; shared access group/App Group behavior is currently same-device only
@@ -204,6 +205,7 @@
 - [ ] Explicitly approve any TestFlight submission
 
 ### Future Platform/Product Releases
+- [ ] App Intents system integration — planned as an independent, non-gating release in `memory-bank/releases/intents/README.md`; foreground navigation and system discovery come first, while arbitrary SQL and secret indexing remain prohibited
 - [ ] View support in sidebar
 - [ ] Table creation GUI
 - [ ] Stored procedure/function viewer
