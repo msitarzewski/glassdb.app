@@ -384,6 +384,12 @@ import Testing
         #expect(projects.engine == "SQLite")
         #expect(projects.rowCount == 2)
         #expect(projects.dataLength == 0)
+        #expect(projects.rowCountAccuracy == .exact)
+        #expect(try await connection.rowCount(
+            table: "projects",
+            database: "main",
+            timeout: .seconds(1)
+        ) == 2)
     }
 
     @Test func managedSnapshotCapturesCommittedWALPages() async throws {

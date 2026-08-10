@@ -749,22 +749,38 @@ final class MySQLDatabaseConnection: DatabaseConnection, @unchecked Sendable {
             }
             let engine = row.column("Engine")?.string
             let rowCount = Int(row.column("Rows")?.string ?? "0") ?? 0
-            let dataLength = Int(row.column("Data_length")?.string ?? "0") ?? 0
+            let tableDataLength = Int(row.column("Data_length")?.string ?? "0") ?? 0
+            let indexLength = Int(row.column("Index_length")?.string ?? "0") ?? 0
+            let (combinedLength, overflowed) = tableDataLength.addingReportingOverflow(indexLength)
+            let dataLength = overflowed ? Int.max : combinedLength
             let collation = row.column("Collation")?.string
             return TableStatus(
                 name: name,
                 engine: engine,
                 rowCount: rowCount,
                 dataLength: dataLength,
-                collation: collation
+                collation: collation,
+                // MySQL documents exact SHOW TABLE STATUS counts for MyISAM;
+                // other storage engines may expose optimizer estimates.
+                rowCountAccuracy: engine?.localizedCaseInsensitiveCompare("MyISAM") == .orderedSame
+                    ? .exact
+                    : .estimated
             )
         }
     }
 
     func rowCount(table: String, database: String) async throws -> Int {
+        try await rowCount(table: table, database: database, timeout: nil)
+    }
+
+    func rowCount(table: String, database: String, timeout: Duration?) async throws -> Int {
         let safeDB = Self.escapeIdentifier(database)
         let safeTable = Self.escapeIdentifier(table)
-        let result = try await execute("SELECT COUNT(*) FROM `\(safeDB)`.`\(safeTable)`")
+        let result = try await execute(
+            "SELECT COUNT(*) FROM `\(safeDB)`.`\(safeTable)`",
+            parameters: [],
+            timeout: timeout
+        )
         guard let firstRow = result.rows.first,
               let firstValue = firstRow.first else {
             return 0

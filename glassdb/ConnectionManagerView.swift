@@ -228,6 +228,17 @@ struct ConnectionManagerView: View {
         } detail: {
             detailView(connectionLibrary: connectionLibrary)
         }
+        #if os(macOS)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Settings", systemImage: "gearshape") {
+                    showSettings()
+                }
+                .accessibilityIdentifier("database-connection-library-settings")
+                .help("Open glassdb settings")
+            }
+        }
+        #endif
     }
 
     #if os(visionOS)
@@ -606,13 +617,19 @@ struct ConnectionManagerView: View {
         connectionRowLabel(connection)
             .contentShape(Rectangle())
             .tag(connection.id)
-            .connectionRowDoubleClick {
-                if let sessionID = activeSessionID(for: connection) {
-                    openPrimaryWorkspace(sessionID: sessionID)
-                } else {
-                    initiateConnection(connection)
-                }
+            .onTapGesture {
+                selectedConnectionID = connection.id
             }
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    selectedConnectionID = connection.id
+                    if let sessionID = activeSessionID(for: connection) {
+                        openPrimaryWorkspace(sessionID: sessionID)
+                    } else {
+                        initiateConnection(connection)
+                    }
+                }
+            )
             .contextMenu {
                 connectionActions(for: connection)
             }
@@ -639,9 +656,18 @@ struct ConnectionManagerView: View {
                 .accessibilityHidden(connection.colorTag == .none)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(connection.name)
-                    .font(.headline)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(connection.name)
+                        .font(.headline)
+                        .lineLimit(1)
+
+                    if connection.isFavorite {
+                        Image(systemName: "star.fill")
+                            .foregroundStyle(.yellow)
+                            .font(.caption)
+                            .accessibilityLabel("Favorite")
+                    }
+                }
                 Text(connection.displaySubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -656,27 +682,31 @@ struct ConnectionManagerView: View {
                     .foregroundStyle(.green)
                     .font(.caption)
                     .accessibilityLabel("Active connection")
-            }
-
-            if connection.isFavorite {
-                Image(systemName: "star.fill")
-                    .foregroundStyle(.yellow)
+            } else {
+                Image(systemName: connection.engine.iconName)
+                    .foregroundStyle(.secondary)
                     .font(.caption)
-                    .accessibilityLabel("Favorite")
+                    .accessibilityLabel(connection.engine.displayName)
             }
 
-            #if os(macOS)
-            Menu {
-                connectionActions(for: connection)
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .accessibilityLabel("Actions for \(connection.name)")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Connection actions")
-            #endif
+            relativeLastConnectedLabel(for: connection)
+                .lineLimit(1)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+    }
+
+    private func relativeLastConnectedLabel(
+        for connection: DatabaseConnectionConfig
+    ) -> Text {
+        guard let lastConnected = connection.lastConnected else {
+            return Text("Never")
+        }
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        formatter.unitsStyle = .abbreviated
+        return Text(formatter.localizedString(for: lastConnected, relativeTo: Date()))
     }
 
     @ViewBuilder
@@ -765,56 +795,20 @@ struct ConnectionManagerView: View {
                             value: URL(fileURLWithPath: connection.host).lastPathComponent
                         )
                     } else {
-                        LabeledContent("Host", value: connection.host)
-                        LabeledContent("Port", value: String(connection.port))
-                        LabeledContent("Username", value: connection.username)
-                        LabeledContent(
-                            "Default Database",
-                            value: connection.defaultDatabase.map {
-                                $0.isEmpty ? "Not set" : $0
-                            } ?? "Not set"
-                        )
+                        LabeledContent("Host", value: "\(connection.host):\(connection.port)")
+                        LabeledContent("User", value: connection.username)
+                        if let database = connection.defaultDatabase, !database.isEmpty {
+                            LabeledContent("Database", value: database)
+                        }
                     }
                 }
 
-                Section("Security") {
-                    if connection.engine.supportsCredentials {
+                if connection.engine.supportsCredentials {
+                    Section("Security") {
                         LabeledContent(
-                            "Database Password",
-                            value: connection.databaseCredentialPolicy.displayName
+                            "Protection",
+                            value: securitySummary(for: connection)
                         )
-                    }
-                    if connection.engine.supportsTLS {
-                        LabeledContent(
-                            "TLS",
-                            value: connection.useTLS ? "Required" : "Off"
-                        )
-                    }
-                    LabeledContent(
-                        "SSH Tunnel",
-                        value: connection.useSSHTunnel ? "On" : "Off"
-                    )
-                    if connection.useSSHTunnel {
-                        LabeledContent(
-                            "SSH Server",
-                            value: "\(connection.sshHost ?? "Not set"):\(connection.sshPort ?? 22)"
-                        )
-                        LabeledContent(
-                            "SSH Username",
-                            value: connection.sshUsername.map {
-                                $0.isEmpty ? "Not set" : $0
-                            } ?? "Not set"
-                        )
-                        LabeledContent(
-                            "SSH Authentication",
-                            value: connection.sshAuthMethod?.displayName ?? "Password"
-                        )
-                        if connection.sshAuthMethod != .sshKey {
-                            LabeledContent(
-                                "SSH Password",
-                                value: connection.sshCredentialPolicy.displayName
-                            )
-                        }
                     }
                 }
 
@@ -828,20 +822,9 @@ struct ConnectionManagerView: View {
                                 .foregroundStyle(.green)
                         }
                     }
-                    LabeledContent(
-                        "Last Connected",
-                        value: connection.lastConnected?.formatted(
-                            date: .abbreviated,
-                            time: .shortened
-                        ) ?? "Never"
-                    )
-                    LabeledContent(
-                        "Added",
-                        value: connection.dateAdded.formatted(
-                            date: .abbreviated,
-                            time: .omitted
-                        )
-                    )
+                    LabeledContent("Last Connected") {
+                        relativeLastConnectedLabel(for: connection)
+                    }
                 }
 
                 if !connection.tags.isEmpty || connection.colorTag != .none {
@@ -886,17 +869,22 @@ struct ConnectionManagerView: View {
 
     private func connectionDetailActions(_ connection: DatabaseConnectionConfig) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 16) {
-                connectionDetailActionButtons(connection)
+            HStack(spacing: 12) {
+                connectionDetailSecondaryActions(connection)
+                Spacer()
+                connectionDetailPrimaryAction(connection)
             }
             VStack(spacing: 12) {
-                connectionDetailActionButtons(connection)
+                connectionDetailPrimaryAction(connection)
+                HStack(spacing: 12) {
+                    connectionDetailSecondaryActions(connection)
+                }
             }
         }
     }
 
     @ViewBuilder
-    private func connectionDetailActionButtons(_ connection: DatabaseConnectionConfig) -> some View {
+    private func connectionDetailPrimaryAction(_ connection: DatabaseConnectionConfig) -> some View {
         if let sessionID = activeSessionID(for: connection) {
             Button {
                 openPrimaryWorkspace(sessionID: sessionID)
@@ -905,13 +893,6 @@ struct ConnectionManagerView: View {
             }
             .buttonStyle(.borderedProminent)
             .help("Open the SQL editor for this active connection")
-
-            Button(role: .destructive) {
-                Task { await sessionManager.disconnect(sessionID: sessionID) }
-            } label: {
-                Label("Disconnect", systemImage: "xmark.circle")
-            }
-            .help("Close this database session")
         } else {
             Button {
                 initiateConnection(connection)
@@ -926,7 +907,10 @@ struct ConnectionManagerView: View {
             .disabled(connectingConnectionID != nil)
             .help("Connect and open the SQL workspace")
         }
+    }
 
+    @ViewBuilder
+    private func connectionDetailSecondaryActions(_ connection: DatabaseConnectionConfig) -> some View {
         Button {
             editingConnection = connection
         } label: {
@@ -934,6 +918,26 @@ struct ConnectionManagerView: View {
         }
         .disabled(connectingConnectionID == connection.id)
         .help("Edit connection, authentication, TLS, and SSH settings")
+
+        if let sessionID = activeSessionID(for: connection) {
+            Button(role: .destructive) {
+                Task { await sessionManager.disconnect(sessionID: sessionID) }
+            } label: {
+                Label("Disconnect", systemImage: "xmark.circle")
+            }
+            .help("Close this database session")
+        }
+    }
+
+    private func securitySummary(
+        for connection: DatabaseConnectionConfig
+    ) -> String {
+        var parts = [connection.databaseCredentialPolicy.displayName]
+        if connection.engine.supportsTLS {
+            parts.append(connection.useTLS ? "TLS required" : "TLS off")
+        }
+        parts.append(connection.useSSHTunnel ? "SSH tunnel" : "Direct")
+        return parts.joined(separator: " · ")
     }
 
     private func deletionConfirmationMessage(for connection: DatabaseConnectionConfig) -> String {
@@ -1109,15 +1113,6 @@ private extension View {
     func managerNewConnectionShortcut() -> some View {
         #if os(macOS)
         self.keyboardShortcut("n", modifiers: [.command])
-        #else
-        self
-        #endif
-    }
-
-    @ViewBuilder
-    func connectionRowDoubleClick(perform action: @escaping () -> Void) -> some View {
-        #if os(macOS)
-        self.onTapGesture(count: 2, perform: action)
         #else
         self
         #endif

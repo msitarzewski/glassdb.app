@@ -15,9 +15,12 @@
 ## Tasks
 - [August 2026](tasks/2026-08/README.md) — Current task index
   - [Connection Library Parity](tasks/2026-08/090826_connection-library-parity.md) — adaptive single-catalog connection UX
+- [Unified SQL Workspace](tasks/unified-sql-workspace.md) — Approved plan for one top-level tab system and one table-browser-derived SQL editor/results implementation
+- [Immediate Audit Remediation](tasks/immediate-audit-remediation.md) — Completed immediate repository and codebase remediation ledger
 
 ## Releases
 - [releases/README.md](releases/README.md) — Release index
+- [Intents Release](releases/intents/README.md) — Planned, non-gating Apple system actions and discovery across supported platforms
 - [v0.1 Release Plan](releases/v0.1/release.md) — MVP (MySQL) — **M4 in-progress**
   - [M0: Clean Build](releases/v0.1/M0-clean-build.md) — done
   - [M1: End-to-End Flow](releases/v0.1/M1-end-to-end.md) — done

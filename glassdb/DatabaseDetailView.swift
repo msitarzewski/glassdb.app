@@ -75,7 +75,7 @@ struct ConnectionOverviewView: View {
                 }
                 ToolbarItem(placement: databaseToolbarPlacement) {
                     Button {
-                        Task { await loadOverview() }
+                        Task { await loadOverview(forceRefresh: true) }
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
@@ -93,7 +93,7 @@ struct ConnectionOverviewView: View {
         }
         .onChange(of: refreshTrigger) {
             guard isWorkspaceActive else { return }
-            Task { await loadOverview() }
+            Task { await loadOverview(forceRefresh: true) }
         }
         .onChange(of: session?.state) {
             guard isWorkspaceActive, session?.state.isConnected == true else { return }
@@ -349,7 +349,7 @@ struct ConnectionOverviewView: View {
                                     .font(.system(.body, design: .monospaced, weight: .medium))
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 overviewValue(summary.tableCount, suffix: "tables")
-                                overviewValue(summary.estimatedRows, suffix: "rows")
+                                overviewValue(summary.estimatedRows, suffix: "rows", isEstimate: true)
                                 Text(summary.storageDescription)
                                     .monospacedDigit()
                                     .frame(width: 100, alignment: .trailing)
@@ -372,8 +372,8 @@ struct ConnectionOverviewView: View {
         }
     }
 
-    private func overviewValue(_ value: Int?, suffix: String) -> some View {
-        Text(value.map { "\($0.formatted()) \(suffix)" } ?? "Unavailable")
+    private func overviewValue(_ value: Int?, suffix: String, isEstimate: Bool = false) -> some View {
+        Text(value.map { "\(isEstimate ? "~" : "")\($0.formatted()) \(suffix)" } ?? "Unavailable")
             .foregroundStyle(value == nil ? .secondary : .primary)
             .monospacedDigit()
             .frame(width: 120, alignment: .trailing)
@@ -406,7 +406,7 @@ struct ConnectionOverviewView: View {
     }
 
     @MainActor
-    private func loadOverview() async {
+    private func loadOverview(forceRefresh: Bool = false) async {
         guard !isLoading else { return }
         guard let connection = session?.connection else {
             errorMessage = "The database session is no longer available."
@@ -428,22 +428,38 @@ struct ConnectionOverviewView: View {
         do {
             let databases = try await connection.databases()
             namespaceCount = databases.count
-            databaseSummaries = []
             var summaries: [ConnectionDatabaseSummary] = []
             var unavailableCount = 0
 
             for database in databases {
                 try Task.checkCancellation()
-                let summary: ConnectionDatabaseSummary
+                var summary: ConnectionDatabaseSummary?
 
                 if connection.capabilities.contains(.tableStatistics) {
+                    if let cached = sessionManager.cachedTableStatistics(
+                        sessionID: sessionID,
+                        database: database
+                    ) {
+                        let cachedSummary = ConnectionDatabaseSummary(name: database, snapshot: cached)
+                        summary = cachedSummary
+                        summaries.append(cachedSummary)
+                        databaseSummaries = summaries.sorted {
+                            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                        }
+                    }
                     do {
-                        let statuses = try await connection.tableStatus(in: database)
-                        summary = ConnectionDatabaseSummary(name: database, statuses: statuses)
+                        let snapshot = try await sessionManager.tableStatistics(
+                            sessionID: sessionID,
+                            database: database,
+                            forceRefresh: forceRefresh
+                        )
+                        summary = ConnectionDatabaseSummary(name: database, snapshot: snapshot)
                     } catch {
                         if await connection.isConnected == false { throw error }
                         unavailableCount += 1
-                        summary = ConnectionDatabaseSummary(name: database)
+                        if summary == nil {
+                            summary = ConnectionDatabaseSummary(name: database)
+                        }
                     }
                 } else if connection.capabilities.contains(.metadata) {
                     do {
@@ -458,7 +474,12 @@ struct ConnectionOverviewView: View {
                     summary = ConnectionDatabaseSummary(name: database)
                 }
 
-                summaries.append(summary)
+                if let summary,
+                   let existingIndex = summaries.firstIndex(where: { $0.name == database }) {
+                    summaries[existingIndex] = summary
+                } else if let summary {
+                    summaries.append(summary)
+                }
                 loadedNamespaceCount = summaries.count
                 databaseSummaries = summaries.sorted {
                     $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -483,6 +504,7 @@ struct ConnectionDatabaseSummary: Identifiable, Sendable {
     let tableCount: Int?
     let estimatedRows: Int?
     let storageBytes: Int?
+    let statisticsCapturedAt: Date?
 
     var id: String { name }
 
@@ -491,6 +513,7 @@ struct ConnectionDatabaseSummary: Identifiable, Sendable {
         self.tableCount = tableCount
         estimatedRows = nil
         storageBytes = nil
+        statisticsCapturedAt = nil
     }
 
     init(name: String, statuses: [TableStatus]) {
@@ -498,6 +521,15 @@ struct ConnectionDatabaseSummary: Identifiable, Sendable {
         tableCount = statuses.count
         estimatedRows = statuses.reduce(0) { $0 + $1.rowCount }
         storageBytes = statuses.reduce(0) { $0 + $1.dataLength }
+        statisticsCapturedAt = nil
+    }
+
+    init(name: String, snapshot: DatabaseStatisticsSnapshot) {
+        self.name = name
+        tableCount = snapshot.statuses.count
+        estimatedRows = snapshot.statuses.reduce(0) { $0 + $1.rowCount }
+        storageBytes = snapshot.statuses.reduce(0) { $0 + $1.dataLength }
+        statisticsCapturedAt = snapshot.capturedAt
     }
 
     var storageDescription: String {
@@ -525,6 +557,7 @@ struct DatabaseDetailView: View {
     @State private var tableStatuses: [TableStatus] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var statisticsCapturedAt: Date?
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
@@ -538,6 +571,7 @@ struct DatabaseDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 headerSection
+                statisticsFreshnessSection
                 actionsSection
                 if isLoading {
                     ProgressView("Loading table status...")
@@ -568,7 +602,7 @@ struct DatabaseDetailView: View {
                 }
                 ToolbarItem(placement: databaseToolbarPlacement) {
                     Button {
-                        Task { await loadStatus() }
+                        Task { await loadStatus(forceRefresh: true) }
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
@@ -585,7 +619,7 @@ struct DatabaseDetailView: View {
         }
         .onChange(of: refreshTrigger) {
             guard isWorkspaceActive else { return }
-            Task { await loadStatus() }
+            Task { await loadStatus(forceRefresh: true) }
         }
         .onChange(of: session?.state) {
             guard isWorkspaceActive, session?.state.isConnected == true else { return }
@@ -616,6 +650,26 @@ struct DatabaseDetailView: View {
                 .font(.callout)
             }
             Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var statisticsFreshnessSection: some View {
+        if let statisticsCapturedAt {
+            VStack(alignment: .leading, spacing: 5) {
+                Label(
+                    "Server statistics cached \(statisticsCapturedAt.formatted(date: .abbreviated, time: .shortened))",
+                    systemImage: "clock.arrow.circlepath"
+                )
+                .foregroundStyle(.secondary)
+
+                let modifiedRows = tableStatuses.compactMap(\.modifiedRowsSinceAnalysis).reduce(0, +)
+                if modifiedRows > 0 {
+                    Text("PostgreSQL reports approximately \(modifiedRows.formatted()) row changes since these tables were last analyzed.")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.caption)
         }
     }
 
@@ -741,7 +795,7 @@ struct DatabaseDetailView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             Text(status.engine ?? "—")
                                 .frame(width: 110, alignment: .leading)
-                            Text(status.rowCount.formatted())
+                            Text(rowCountDescription(status))
                                 .monospacedDigit()
                                 .frame(width: 100, alignment: .trailing)
                             Text(ByteCountFormatter.string(fromByteCount: Int64(status.dataLength), countStyle: .file))
@@ -790,7 +844,7 @@ struct DatabaseDetailView: View {
         await loadStatus()
     }
 
-    private func loadStatus() async {
+    private func loadStatus(forceRefresh: Bool = false) async {
         guard !isLoading else { return }
         guard let connection = session?.connection else { return }
         guard connection.capabilities.contains(.tableStatistics) else {
@@ -798,15 +852,39 @@ struct DatabaseDetailView: View {
             errorMessage = nil
             return
         }
-        isLoading = true
+        if let cached = sessionManager.cachedTableStatistics(
+            sessionID: sessionID,
+            database: database
+        ) {
+            tableStatuses = cached.statuses
+            statisticsCapturedAt = cached.capturedAt
+            if cached.isFresh(), !forceRefresh {
+                errorMessage = nil
+                return
+            }
+        }
+        isLoading = tableStatuses.isEmpty
         errorMessage = nil
         do {
-            tableStatuses = try await connection.tableStatus(in: database)
+            let snapshot = try await sessionManager.tableStatistics(
+                sessionID: sessionID,
+                database: database,
+                forceRefresh: forceRefresh
+            )
+            tableStatuses = snapshot.statuses
+            statisticsCapturedAt = snapshot.capturedAt
         } catch {
             await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
-            errorMessage = error.localizedDescription
+            if tableStatuses.isEmpty {
+                errorMessage = error.localizedDescription
+            }
         }
         isLoading = false
+    }
+
+    private func rowCountDescription(_ status: TableStatus) -> String {
+        let value = status.rowCount.formatted()
+        return status.rowCountAccuracy == .estimated ? "~\(value)" : value
     }
 }
 

@@ -229,6 +229,11 @@ public struct ForeignKeyInfo: Identifiable, Sendable {
     }
 }
 
+public enum TableRowCountAccuracy: Sendable, Equatable {
+    case exact
+    case estimated
+}
+
 public struct TableStatus: Identifiable, Sendable {
     public let id = UUID()
     public let name: String
@@ -236,12 +241,27 @@ public struct TableStatus: Identifiable, Sendable {
     public let rowCount: Int
     public let dataLength: Int
     public let collation: String?
+    public let rowCountAccuracy: TableRowCountAccuracy
+    public let statisticsUpdatedAt: Date?
+    public let modifiedRowsSinceAnalysis: Int?
 
-    public init(name: String, engine: String?, rowCount: Int, dataLength: Int, collation: String?) {
+    public init(
+        name: String,
+        engine: String?,
+        rowCount: Int,
+        dataLength: Int,
+        collation: String?,
+        rowCountAccuracy: TableRowCountAccuracy = .estimated,
+        statisticsUpdatedAt: Date? = nil,
+        modifiedRowsSinceAnalysis: Int? = nil
+    ) {
         self.name = name
         self.engine = engine
         self.rowCount = rowCount
         self.dataLength = dataLength
         self.collation = collation
+        self.rowCountAccuracy = rowCountAccuracy
+        self.statisticsUpdatedAt = statisticsUpdatedAt
+        self.modifiedRowsSinceAnalysis = modifiedRowsSinceAnalysis
     }
 }

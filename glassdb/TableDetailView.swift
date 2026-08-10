@@ -446,9 +446,10 @@ enum GridDisplayFilterEvaluator {
         filters: [GridColumnFilter]
     ) -> [Int] {
         guard !filters.isEmpty else { return Array(rows.indices) }
-        let columnIndices = Dictionary(
-            uniqueKeysWithValues: columns.enumerated().map { ($0.element.name, $0.offset) }
-        )
+        var columnIndices: [String: Int] = [:]
+        for (index, column) in columns.enumerated() where columnIndices[column.name] == nil {
+            columnIndices[column.name] = index
+        }
         return rows.indices.filter { rowIndex in
             filters.allSatisfy { filter in
                 guard let columnIndex = columnIndices[filter.columnName],
@@ -477,7 +478,7 @@ enum GridDisplayFilterEvaluator {
         }
     }
 
-    private static func compare(_ lhs: DatabaseValue, _ rhs: DatabaseValue?) -> ComparisonResult {
+    static func compare(_ lhs: DatabaseValue, _ rhs: DatabaseValue?) -> ComparisonResult {
         guard let rhs else { return .orderedDescending }
         if lhs == rhs { return .orderedSame }
         if let leftNumber = decimalValue(lhs), let rightNumber = decimalValue(rhs) {
@@ -494,6 +495,37 @@ enum GridDisplayFilterEvaluator {
         case .decimal(let number): Decimal(string: number, locale: Locale(identifier: "en_US_POSIX"))
         case .double(let number): Decimal(string: String(number), locale: Locale(identifier: "en_US_POSIX"))
         default: nil
+        }
+    }
+}
+
+enum GridDisplaySortEvaluator {
+    static func sortedRowIndices(
+        rows: [[DatabaseValue]],
+        columns: [ColumnInfo],
+        rowIndices: [Int],
+        sorts: [GridSortDescriptor]
+    ) -> [Int] {
+        guard !sorts.isEmpty else { return rowIndices }
+        var columnIndices: [String: Int] = [:]
+        for (index, column) in columns.enumerated() where columnIndices[column.name] == nil {
+            columnIndices[column.name] = index
+        }
+        return rowIndices.sorted { leftIndex, rightIndex in
+            for sort in sorts {
+                guard let columnIndex = columnIndices[sort.columnName],
+                      rows[leftIndex].indices.contains(columnIndex),
+                      rows[rightIndex].indices.contains(columnIndex) else { continue }
+                let comparison = GridDisplayFilterEvaluator.compare(
+                    rows[leftIndex][columnIndex],
+                    rows[rightIndex][columnIndex]
+                )
+                guard comparison != .orderedSame else { continue }
+                return sort.direction == .ascending
+                    ? comparison == .orderedAscending
+                    : comparison == .orderedDescending
+            }
+            return leftIndex < rightIndex
         }
     }
 }
@@ -574,7 +606,8 @@ enum GridServerQueryBuilder {
         page: Int,
         pageSize: Int,
         identifierQuote: Character,
-        dialect: DatabaseDialect = .mysql
+        dialect: DatabaseDialect = .mysql,
+        fetchSentinel: Bool = false
     ) throws -> GridServerQuery {
         let predicate = try predicate(
             columns: columns,
@@ -585,9 +618,10 @@ enum GridServerQueryBuilder {
         let order = try orderClause(columns: columns, sorts: sorts, identifierQuote: identifierQuote)
         let boundedSize = max(1, min(pageSize, 10_000))
         let offset = max(0, page - 1) * boundedSize
+        let fetchLimit = boundedSize + (fetchSentinel ? 1 : 0)
         let qualified = "\(quote(database, with: identifierQuote)).\(quote(table, with: identifierQuote))"
         return GridServerQuery(
-            sql: "SELECT * FROM \(qualified)\(predicate.sql)\(order) LIMIT \(boundedSize) OFFSET \(offset)",
+            sql: "SELECT * FROM \(qualified)\(predicate.sql)\(order) LIMIT \(fetchLimit) OFFSET \(offset)",
             parameters: predicate.parameters
         )
     }
@@ -623,7 +657,8 @@ enum GridServerQueryBuilder {
         page: Int,
         pageSize: Int,
         identifierQuote: Character,
-        dialect: DatabaseDialect = .mysql
+        dialect: DatabaseDialect = .mysql,
+        fetchSentinel: Bool = false
     ) throws -> GridServerQuery {
         let selection = try aggregateSelection(
             columns: columns,
@@ -639,6 +674,7 @@ enum GridServerQueryBuilder {
         )
         let boundedSize = max(1, min(pageSize, 10_000))
         let offset = max(0, page - 1) * boundedSize
+        let fetchLimit = boundedSize + (fetchSentinel ? 1 : 0)
         let qualified = "\(quote(database, with: identifierQuote)).\(quote(table, with: identifierQuote))"
         let grouping = groupColumns.isEmpty ? "" : " GROUP BY " + groupColumns.map {
             quote($0, with: identifierQuote)
@@ -647,7 +683,7 @@ enum GridServerQueryBuilder {
             "\(quote($0, with: identifierQuote)) ASC"
         }.joined(separator: ", ")
         return GridServerQuery(
-            sql: "SELECT \(selection) FROM \(qualified)\(predicate.sql)\(grouping)\(ordering) LIMIT \(boundedSize) OFFSET \(offset)",
+            sql: "SELECT \(selection) FROM \(qualified)\(predicate.sql)\(grouping)\(ordering) LIMIT \(fetchLimit) OFFSET \(offset)",
             parameters: predicate.parameters
         )
     }
@@ -785,6 +821,38 @@ enum GridServerQueryBuilder {
 
     private static func placeholder(_ position: Int, dialect: DatabaseDialect) -> String {
         dialect == .postgresql ? "$\(position)" : "?"
+    }
+}
+
+struct GridPageWindow {
+    let result: QueryResult
+    let hasNextPage: Bool
+
+    static func bounded(
+        _ rawResult: QueryResult,
+        pageSize: Int,
+        displayedQuery: String
+    ) -> Self {
+        let boundedSize = max(1, min(pageSize, 10_000))
+        let hasNextPage = rawResult.rows.count > boundedSize
+        let visibleRows = Array(rawResult.rows.prefix(boundedSize))
+        return Self(
+            result: QueryResult(
+                id: rawResult.id,
+                query: displayedQuery,
+                columns: rawResult.columns,
+                rows: visibleRows,
+                affectedRows: rawResult.affectedRows,
+                lastInsertID: rawResult.lastInsertID,
+                warningCount: rawResult.warningCount,
+                executionTime: rawResult.executionTime,
+                timestamp: rawResult.timestamp,
+                error: rawResult.error,
+                appliedRowLimit: boundedSize,
+                isTruncated: hasNextPage
+            ),
+            hasNextPage: hasNextPage
+        )
     }
 }
 
@@ -1103,6 +1171,47 @@ struct DataTabView: View {
     let table: String
     let actionScope: UUID
     let isWorkspaceActive: Bool
+    private let document: Binding<QueryDocumentTab>?
+    private let completionIdentifiers: [String]
+    private let completionError: String?
+    private let displaysEditor: Bool
+
+    init(
+        sessionID: UUID,
+        database: String,
+        table: String,
+        actionScope: UUID,
+        isWorkspaceActive: Bool
+    ) {
+        self.sessionID = sessionID
+        self.database = database
+        self.table = table
+        self.actionScope = actionScope
+        self.isWorkspaceActive = isWorkspaceActive
+        document = nil
+        completionIdentifiers = []
+        completionError = nil
+        displaysEditor = true
+    }
+
+    init(
+        sessionID: UUID,
+        document: Binding<QueryDocumentTab>,
+        isWorkspaceActive: Bool,
+        completionIdentifiers: [String],
+        completionError: String? = nil,
+        displaysEditor: Bool = true
+    ) {
+        self.sessionID = sessionID
+        database = ""
+        table = ""
+        actionScope = document.wrappedValue.id
+        self.isWorkspaceActive = isWorkspaceActive
+        self.document = document
+        self.completionIdentifiers = completionIdentifiers
+        self.completionError = completionError
+        self.displaysEditor = displaysEditor
+    }
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
@@ -1112,10 +1221,11 @@ struct DataTabView: View {
     @Environment(\.editMode) private var editMode
     #endif
 
-    @State private var queryText = ""
-    @State private var result: QueryResult?
+    @State private var tableQueryText = ""
+    @State private var tableSelectedRange = NSRange(location: 0, length: 0)
+    @State private var tableResult: QueryResult?
     @State private var columnMeta: [ColumnInfo] = []
-    @State private var isLoading = false
+    @State private var tableIsLoading = false
     @State private var errorMessage: String?
     @State private var errorIsQueryFailure = false
     @State private var selectedRowIndex: Int?
@@ -1166,6 +1276,10 @@ struct DataTabView: View {
     @State private var pageSizeDraft = "100"
     @FocusState private var pageSizeFocused: Bool
     @State private var totalRowCount: Int?
+    @State private var hasNextPage = false
+    @State private var confirmingExactCount = false
+    @State private var exactCountTask: Task<Void, Never>?
+    @State private var isCalculatingExactCount = false
 
     // Auto-repeat
     @State private var autoRepeatInterval: TimeInterval = 10
@@ -1181,9 +1295,94 @@ struct DataTabView: View {
         sessionManager.session(for: sessionID)
     }
 
+    private var isTableContext: Bool { document == nil }
+
+    private var queryText: String {
+        get { document?.wrappedValue.text ?? tableQueryText }
+        nonmutating set {
+            guard let document else {
+                tableQueryText = newValue
+                return
+            }
+            var value = document.wrappedValue
+            value.text = newValue
+            document.wrappedValue = value
+        }
+    }
+
+    private var selectedRange: NSRange {
+        get { document?.wrappedValue.selectedRange ?? tableSelectedRange }
+        nonmutating set {
+            guard let document else {
+                tableSelectedRange = newValue
+                return
+            }
+            var value = document.wrappedValue
+            value.selectedRange = newValue
+            document.wrappedValue = value
+        }
+    }
+
+    private var result: QueryResult? {
+        get { document?.wrappedValue.result ?? tableResult }
+        nonmutating set {
+            guard let document else {
+                tableResult = newValue
+                return
+            }
+            var value = document.wrappedValue
+            value.result = newValue
+            document.wrappedValue = value
+        }
+    }
+
+    private var isLoading: Bool {
+        get { document?.wrappedValue.isExecuting ?? tableIsLoading }
+        nonmutating set {
+            guard let document else {
+                tableIsLoading = newValue
+                return
+            }
+            var value = document.wrappedValue
+            value.isExecuting = newValue
+            document.wrappedValue = value
+        }
+    }
+
+    private var queryTextBinding: Binding<String> {
+        Binding(get: { queryText }, set: { queryText = $0 })
+    }
+
+    private var selectedRangeBinding: Binding<NSRange> {
+        Binding(get: { selectedRange }, set: { selectedRange = $0 })
+    }
+
+    private var queryResultIdentity: UUID? { result?.id }
+
+    private var resultSchemaContext: SchemaContext {
+        SchemaContext(
+            databaseName: isTableContext
+                ? database
+                : (session?.currentDatabase ?? "Current database"),
+            tables: isTableContext && !columnMeta.isEmpty ? [
+                SchemaContext.TableInfo(
+                    name: table,
+                    columns: columnMeta.map {
+                        SchemaContext.ColumnInfo(name: $0.name, type: $0.type)
+                    }
+                )
+            ] : []
+        )
+    }
+
     private var totalPages: Int {
         guard let total = totalRowCount, pageSize > 0 else { return 1 }
         return max(1, Int(ceil(Double(total) / Double(pageSize))))
+    }
+
+    private var estimatedRowCount: Int? {
+        guard filters.isEmpty, !isAnalysisActive else { return nil }
+        return session?.databaseStatistics[database]?.status(for: table)?.rowCount
     }
 
     private var filterDraft: GridColumnFilter? {
@@ -1234,40 +1433,50 @@ struct DataTabView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // SQL editor area remains subordinate to the user-controlled canvas.
-            HighlightedTextEditor(
-                text: $queryText,
-                fontSize: CGFloat(settingsManager.editorFontSize),
-                isActive: isWorkspaceActive
-            )
-            .frame(height: editorHeight)
-            .databaseCanvasSurface(opacity: settingsManager.windowOpacity, strength: 0.045)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .padding(.horizontal, 12)
-            .padding(.top, 12)
-            .onChange(of: queryText) {
-                // User edited the query — disable auto-query sync
-                if !isLoading { isAutoQuery = false }
-            }
+        interactionView
+    }
 
-            // Drag handle to resize
-            HStack {
-                Spacer()
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.secondary.opacity(0.4))
-                    .frame(width: 40, height: 4)
-                Spacer()
+    private var presentedView: some View {
+        VStack(spacing: 0) {
+            if displaysEditor {
+                // SQL editor area remains subordinate to the user-controlled canvas.
+                HighlightedTextEditor(
+                    text: queryTextBinding,
+                    fontSize: CGFloat(settingsManager.editorFontSize),
+                    showLineNumbers: settingsManager.showLineNumbers,
+                    selection: selectedRangeBinding,
+                    isActive: isWorkspaceActive
+                )
+                .frame(height: editorHeight)
+                .databaseCanvasSurface(opacity: settingsManager.windowOpacity, strength: 0.045)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 12)
+                .padding(.top, 12)
+                .onChange(of: queryText) {
+                    // User edited the query — disable auto-query sync
+                    if !isLoading { isAutoQuery = false }
+                }
+
+                completionBar
+
+                // Drag handle to resize
+                HStack {
+                    Spacer()
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.secondary.opacity(0.4))
+                        .frame(width: 40, height: 4)
+                    Spacer()
+                }
+                .frame(height: 12)
+                .contentShape(Rectangle())
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { value in
+                            editorHeight = min(maxEditorHeight, max(minEditorHeight,
+                                editorHeight + value.translation.height))
+                        }
+                )
             }
-            .frame(height: 12)
-            .contentShape(Rectangle())
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        editorHeight = min(maxEditorHeight, max(minEditorHeight,
-                            editorHeight + value.translation.height))
-                    }
-            )
 
             if !columnMeta.isEmpty {
                 gridControlBar
@@ -1311,7 +1520,26 @@ struct DataTabView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let result {
-                if usesCompactRecordList {
+                if let error = result.error {
+                    ScrollView {
+                        QueryErrorCard(
+                            error: error,
+                            query: result.query,
+                            schemaContext: resultSchemaContext,
+                            aiAssistant: session?.aiAssistant,
+                            onUseSuggestedSQL: { suggestedSQL in
+                                queryText = suggestedSQL
+                                selectedRange = NSRange(
+                                    location: (suggestedSQL as NSString).length,
+                                    length: 0
+                                )
+                                self.result = nil
+                            },
+                            onDismiss: { self.result = nil }
+                        )
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if usesCompactRecordList {
                     compactRecordList(result)
                 } else {
                     dataGrid(result)
@@ -1468,6 +1696,18 @@ struct DataTabView: View {
         } message: {
             Text(inputErrorMessage ?? "")
         }
+        .alert("Calculate Exact Row Count?", isPresented: $confirmingExactCount) {
+            Button("Calculate") {
+                exactCountTask = Task { await calculateExactRowCount() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This runs SELECT COUNT(*) against the entire table. On a large production table it may scan an index or the table itself. Prefer a read replica when available; glassdb will stop the query after 30 seconds.")
+        }
+    }
+
+    private var interactionView: some View {
+        presentedView
         .onReceive(NotificationCenter.default.publisher(for: .glassdbExecuteQuery)) { notification in
             guard notification.object as? UUID == actionScope else { return }
             Task { await executeCurrentQuery() }
@@ -1480,6 +1720,7 @@ struct DataTabView: View {
             guard let scope = notification.object as? UUID,
                   scope == actionScope || scope == sessionID else { return }
             queryText = ""
+            totalRowCount = nil
             Task { await loadData() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .glassdbShowAI)) { notification in
@@ -1533,36 +1774,104 @@ struct DataTabView: View {
                 inputErrorMessage = "The import was not staged. \(error.localizedDescription)"
             }
         }
-        .onChange(of: currentPage) {
-            if isAutoQuery { Task { await loadData() } }
-        }
-        .onChange(of: pageSize) {
-            if !pageSizeFocused {
-                pageSizeDraft = String(pageSize)
-            }
-            if isAutoQuery {
-                persistGridQueryState()
-                currentPage = 1
-                Task { await loadData() }
-            }
-        }
-        .onChange(of: pageSizeFocused) {
-            if !pageSizeFocused, pageSizeDraft != String(pageSize) {
-                commitPageSizeDraft()
-            }
-        }
-        .task(id: "\(database).\(table)") {
+        .onChange(of: currentPage) { handleCurrentPageChange() }
+        .onChange(of: pageSize) { handlePageSizeChange() }
+        .onChange(of: pageSizeFocused) { handlePageSizeFocusChange() }
+        .task { await loadInitialWorkspaceContent() }
+        .onChange(of: queryResultIdentity) { handleQueryResultChange() }
+        .onChange(of: isWorkspaceActive) { handleWorkspaceActivityChange() }
+        .onDisappear(perform: handleWorkspaceDisappear)
+    }
+
+    private func loadInitialWorkspaceContent() async {
+        if isTableContext {
             loadColumnLayout()
             loadGridQueryState()
             await loadData()
+        } else {
+            isAutoQuery = false
+            filterApplicationMode = .displayOnly
+            reconcileFreeformResult()
         }
-        .onChange(of: isWorkspaceActive) {
-            if !isWorkspaceActive {
-                stopAutoRepeat()
-            }
-        }
-        .onDisappear {
+    }
+
+    private func handleQueryResultChange() {
+        guard !isTableContext else { return }
+        reconcileFreeformResult()
+    }
+
+    private func handleWorkspaceActivityChange() {
+        if !isWorkspaceActive {
             stopAutoRepeat()
+        }
+    }
+
+    private func handleCurrentPageChange() {
+        guard isAutoQuery else { return }
+        Task { await loadData() }
+    }
+
+    private func handlePageSizeChange() {
+        if !pageSizeFocused {
+            pageSizeDraft = String(pageSize)
+        }
+        guard isAutoQuery else { return }
+        persistGridQueryState()
+        currentPage = 1
+        Task { await loadData() }
+    }
+
+    private func handlePageSizeFocusChange() {
+        if !pageSizeFocused, pageSizeDraft != String(pageSize) {
+            commitPageSizeDraft()
+        }
+    }
+
+    private func handleWorkspaceDisappear() {
+        stopAutoRepeat()
+        exactCountTask?.cancel()
+        exactCountTask = nil
+    }
+
+    @ViewBuilder
+    private var completionBar: some View {
+        let identifiers = completionIdentifiers + columnMeta.map(\.name)
+        let suggestions = SQLHighlighter.completions(
+            in: queryText,
+            selectedRange: selectedRange,
+            schemaIdentifiers: identifiers
+        )
+        if !suggestions.isEmpty {
+            ScrollView(.horizontal) {
+                HStack(spacing: 6) {
+                    Text("Complete")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(suggestions, id: \.self) { suggestion in
+                        Button(suggestion) {
+                            let applied = SQLHighlighter.applyingCompletion(
+                                suggestion,
+                                to: queryText,
+                                selectedRange: selectedRange
+                            )
+                            queryText = applied.sql
+                            selectedRange = applied.selection
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+            }
+            .scrollIndicators(.hidden)
+        } else if let completionError {
+            Label(completionError, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .accessibilityLabel("Schema completion unavailable. \(completionError)")
         }
     }
 
@@ -1575,40 +1884,67 @@ struct DataTabView: View {
                 : "\(visibleRowCount) of \(result.rowCount) loaded rows")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if let totalRowCount {
-                Text(displayFilters.isEmpty
-                    ? "\(totalRowCount) matching total"
-                    : "\(totalRowCount) server-matched total")
+            if isTableContext {
+                if let totalRowCount {
+                    Text(displayFilters.isEmpty
+                        ? "\(totalRowCount) matching total"
+                        : "\(totalRowCount) server-matched total")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let estimatedRowCount {
+                    Text("~\(estimatedRowCount.formatted()) estimated total")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Text("total not calculated")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            } else if result.isTruncated, let limit = result.appliedRowLimit {
+                Text("more available — loaded result limited to \(limit)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("total unavailable")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.orange)
             }
             Text("in \(String(format: "%.3f", result.executionTime))s")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if isAutoRepeating {
+            if isTableContext, isAutoRepeating {
                 Label("Repeating \(Int(autoRepeatInterval))s", systemImage: "repeat")
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
 
+            if isTableContext, filters.isEmpty, !isAnalysisActive {
+                if isCalculatingExactCount {
+                    Button("Cancel Count", role: .cancel) {
+                        cancelExactRowCount()
+                    }
+                    .controlSize(.small)
+                } else {
+                    Button("Calculate Total…") {
+                        confirmingExactCount = true
+                    }
+                    .controlSize(.small)
+                    .help("Run an explicit exact count with a 30-second timeout")
+                }
+            }
+
             Spacer()
-            pageButtons
-            Text("Per page:")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField("Rows per page", text: $pageSizeDraft)
-                .frame(width: 60)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-                .focused($pageSizeFocused)
-                .onSubmit { commitPageSizeDraft() }
-                .accessibilityLabel("Rows per page")
-                .help("Enter a value from 1 through 10,000")
+            if isTableContext {
+                pageButtons
+                Text("Per page:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("Rows per page", text: $pageSizeDraft)
+                    .frame(width: 60)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .focused($pageSizeFocused)
+                    .onSubmit { commitPageSizeDraft() }
+                    .accessibilityLabel("Rows per page")
+                    .help("Enter a value from 1 through 10,000")
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
@@ -1621,7 +1957,9 @@ struct DataTabView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            pageButtons
+            if isTableContext {
+                pageButtons
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -1637,16 +1975,16 @@ struct DataTabView: View {
             .disabled(currentPage <= 1)
             .accessibilityLabel("Previous page")
 
-            Text("\(currentPage) of \(totalPages)")
+            Text(totalRowCount == nil ? "Page \(currentPage)" : "\(currentPage) of \(totalPages)")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
 
             Button {
-                currentPage = min(totalPages, currentPage + 1)
+                currentPage += 1
             } label: {
                 Image(systemName: "chevron.right")
             }
-            .disabled(currentPage >= totalPages)
+            .disabled(!hasNextPage)
             .accessibilityLabel("Next page")
         }
     }
@@ -1689,15 +2027,19 @@ struct DataTabView: View {
                     }
                 }
                 .contextMenu {
-                    Button("Edit Row", systemImage: "pencil") {
-                        openEditor(for: rowIndex)
+                    if isTableContext {
+                        Button("Edit Row", systemImage: "pencil") {
+                            openEditor(for: rowIndex)
+                        }
                     }
                     Button("Copy Row", systemImage: "doc.on.doc") {
                         selectedRowIndices = [rowIndex]
                         copySelectedRange()
                     }
                 }
-                .accessibilityHint("Tap to edit. Use Edit mode to select rows for export.")
+                .accessibilityHint(isTableContext
+                    ? "Tap to edit. Use Edit mode to select rows for export."
+                    : "Use Edit mode to select rows for export.")
             }
         }
         .listStyle(.insetGrouped)
@@ -1715,7 +2057,7 @@ struct DataTabView: View {
             gridControls
         }
         .scrollIndicators(.automatic)
-        .accessibilityLabel("Table data controls")
+        .accessibilityLabel("SQL result controls")
         #elseif os(iOS)
         if usesCompactRecordList {
             compactGridControls
@@ -1724,7 +2066,7 @@ struct DataTabView: View {
                 gridControls
             }
             .scrollIndicators(.automatic)
-            .accessibilityLabel("Table data controls")
+            .accessibilityLabel("SQL result controls")
         }
         #else
         gridControls
@@ -1734,7 +2076,9 @@ struct DataTabView: View {
     #if os(iOS)
     private var compactGridControls: some View {
         HStack {
-            EditButton()
+            if isTableContext {
+                EditButton()
+            }
             Spacer()
             Button {
                 beginFilterEditing()
@@ -1752,10 +2096,12 @@ struct DataTabView: View {
                 Button("Import TSV", systemImage: "square.and.arrow.down") {
                     showTSVImporter = true
                 }
+                .disabled(!isTableContext)
                 Divider()
                 Button("Count All Rows", systemImage: "function") {
                     addAggregate(.countAll, columnName: nil)
                 }
+                .disabled(!isTableContext)
                 if !groupColumns.isEmpty || !aggregates.isEmpty {
                     Button("Clear Analysis", systemImage: "xmark.circle") {
                         clearAnalysis()
@@ -1781,7 +2127,9 @@ struct DataTabView: View {
                 )
             }
             .help(activeFilterCount == 0
-                ? "Choose rows to show using a server query or the currently loaded page"
+                ? (isTableContext
+                    ? "Choose rows to show using a server query or the currently loaded page"
+                    : "Filter the bounded rows currently loaded in this SQL result")
                 : "Review \(activeFilterCount) active row filter\(activeFilterCount == 1 ? "" : "s")")
             if !sorts.isEmpty {
                 Text(sorts.enumerated().map { index, sort in
@@ -1824,6 +2172,10 @@ struct DataTabView: View {
                     systemImage: "function"
                 )
             }
+            .disabled(!isTableContext)
+            .help(isTableContext
+                ? "Group and aggregate this table through a bounded server query"
+                : "Server-backed analysis is available from a table tab")
 
             Button("Compare") { compareSelectedRows() }
                 .disabled(!canCompareSelectedRows)
@@ -1855,6 +2207,19 @@ struct DataTabView: View {
             }
             .disabled(selectedRectangle == nil && selectedRowIndices.isEmpty)
 
+            Menu {
+                ForEach(GridExportFormat.allCases) { format in
+                    Button(format.displayName) {
+                        exportFormat = format
+                        showExporter = true
+                    }
+                }
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+            }
+            .disabled(exportResult?.rows.isEmpty != false)
+            .help("Export the selected rows, or all displayed rows when nothing is selected")
+
             PasteButton(payloadType: String.self) { values in
                 guard let value = values.first, !value.isEmpty else { return }
                 do {
@@ -1867,20 +2232,20 @@ struct DataTabView: View {
             .labelStyle(.iconOnly)
             .accessibilityLabel("Paste tab-separated values")
             .help("Paste a tab-separated range at the selected cell")
-            .disabled(selectionAnchor == nil || isAnalysisActive)
+            .disabled(!isTableContext || selectionAnchor == nil || isAnalysisActive)
 
             Button { showTSVImporter = true } label: {
                 Label("Import TSV", systemImage: "square.and.arrow.down")
             }
             .help("Choose a UTF-8 TSV file to stage at the selected cell")
-            .disabled(selectionAnchor == nil || isAnalysisActive)
+            .disabled(!isTableContext || selectionAnchor == nil || isAnalysisActive)
 
             Toggle("Header", isOn: .init(
                 get: { pasteMappingMode == .headerRow },
                 set: { pasteMappingMode = $0 ? .headerRow : .positional }
             ))
             .help("Treat the first pasted row as exact table column names")
-            .disabled(isAnalysisActive)
+            .disabled(!isTableContext || isAnalysisActive)
         }
         .controlSize(.small)
         .padding(.horizontal, 12)
@@ -1892,7 +2257,7 @@ struct DataTabView: View {
             Form {
                 Section {
                     Picker("Filtering", selection: $filterApplicationMode) {
-                        ForEach(GridFilterApplicationMode.allCases) { mode in
+                        ForEach(isTableContext ? GridFilterApplicationMode.allCases : [.displayOnly]) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
@@ -2173,10 +2538,17 @@ struct DataTabView: View {
         filters filterSet: [GridColumnFilter]? = nil
     ) -> [Int] {
         guard !isAnalysisActive else { return Array(result.rows.indices) }
-        return GridDisplayFilterEvaluator.matchingRowIndices(
+        let matching = GridDisplayFilterEvaluator.matchingRowIndices(
             rows: result.rows,
             columns: result.columns,
             filters: filterSet ?? displayFilters
+        )
+        guard !isTableContext else { return matching }
+        return GridDisplaySortEvaluator.sortedRowIndices(
+            rows: result.rows,
+            columns: result.columns,
+            rowIndices: matching,
+            sorts: sorts
         )
     }
 
@@ -2495,7 +2867,7 @@ struct DataTabView: View {
     }
 
     private func openEditor(for rowIndex: Int) {
-        guard !isAnalysisActive else { return }
+        guard isTableContext, !isAnalysisActive else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
             selectedRowIndex = rowIndex
             selectedRowIndices = [rowIndex]
@@ -2625,7 +2997,7 @@ struct DataTabView: View {
     }
 
     private func beginFilterEditing() {
-        filterApplicationMode = .updateQuery
+        filterApplicationMode = isTableContext ? .updateQuery : .displayOnly
         stagedQueryFilters = filters
         stagedDisplayFilters = displayFilters
         filterValue = ""
@@ -2662,7 +3034,7 @@ struct DataTabView: View {
 
     private func commitFilterEditing() {
         let queryFiltersChanged = stagedQueryFilters != filters
-        filters = stagedQueryFilters
+        filters = isTableContext ? stagedQueryFilters : []
         displayFilters = stagedDisplayFilters
         selectionAnchor = nil
         selectionEnd = nil
@@ -2671,7 +3043,7 @@ struct DataTabView: View {
         rowSelectionAnchor = nil
         showFilterEditor = false
 
-        guard queryFiltersChanged else { return }
+        guard isTableContext, queryFiltersChanged else { return }
         persistGridQueryState()
         currentPage = 1
         Task { await loadData() }
@@ -2735,6 +3107,13 @@ struct DataTabView: View {
         pageSize = parsed
     }
 
+    private func clearGridSelection() {
+        selectionAnchor = nil
+        selectionEnd = nil
+        selectedRowIndices.removeAll()
+        rowSelectionAnchor = nil
+    }
+
     private func cycleSort(for columnName: String) {
         if let index = sorts.firstIndex(where: { $0.columnName == columnName }) {
             if sorts[index].direction == .ascending {
@@ -2744,6 +3123,10 @@ struct DataTabView: View {
             }
         } else {
             sorts.append(GridSortDescriptor(columnName: columnName, direction: .ascending))
+        }
+        guard isTableContext else {
+            clearGridSelection()
+            return
         }
         persistGridQueryState()
         currentPage = 1
@@ -2756,6 +3139,10 @@ struct DataTabView: View {
         } else {
             sorts.append(GridSortDescriptor(columnName: columnName, direction: direction))
         }
+        guard isTableContext else {
+            clearGridSelection()
+            return
+        }
         persistGridQueryState()
         currentPage = 1
         Task { await loadData() }
@@ -2763,6 +3150,10 @@ struct DataTabView: View {
 
     private func removeSort(_ columnName: String) {
         sorts.removeAll { $0.columnName == columnName }
+        guard isTableContext else {
+            clearGridSelection()
+            return
+        }
         persistGridQueryState()
         currentPage = 1
         Task { await loadData() }
@@ -2947,6 +3338,29 @@ struct DataTabView: View {
 
     // MARK: - Data Loading
 
+    private func reconcileFreeformResult() {
+        guard !isTableContext else { return }
+        let columns = result?.columns ?? []
+        let validColumnNames = Set(columns.map(\.name))
+        columnMeta = columns
+        filters = []
+        displayFilters.removeAll { !validColumnNames.contains($0.columnName) }
+        sorts.removeAll { !validColumnNames.contains($0.columnName) }
+        groupColumns = []
+        aggregates = []
+        columnLayout.reconcile(columns: columns)
+        if columnLayout.order.isEmpty {
+            columnLayout.order = columns.map(\.name)
+        }
+        currentPage = 1
+        totalRowCount = nil
+        hasNextPage = false
+        clearGridSelection()
+        if filterColumnName.isEmpty || !validColumnNames.contains(filterColumnName) {
+            filterColumnName = columns.first?.name ?? ""
+        }
+    }
+
     private func loadData() async {
         guard let connection = session?.connection else { return }
         let preservedIdentity = selectedRowIdentity()
@@ -2978,10 +3392,13 @@ struct DataTabView: View {
             if filterColumnName.isEmpty || !columnMeta.contains(where: { $0.name == filterColumnName }) {
                 filterColumnName = columnMeta.first?.name ?? ""
             }
-            let query: GridServerQuery
-            let countQuery: GridServerQuery
+            if !filters.isEmpty || isAnalysisActive {
+                totalRowCount = nil
+            }
+            let displayedQuery: GridServerQuery
+            let fetchQuery: GridServerQuery
             if isAnalysisActive {
-                query = try GridServerQueryBuilder.aggregate(
+                displayedQuery = try GridServerQueryBuilder.aggregate(
                     database: database,
                     table: table,
                     columns: columnMeta,
@@ -2993,18 +3410,21 @@ struct DataTabView: View {
                     identifierQuote: connection.identifierQuoteCharacter,
                     dialect: connection.dialect
                 )
-                countQuery = try GridServerQueryBuilder.aggregateCount(
+                fetchQuery = try GridServerQueryBuilder.aggregate(
                     database: database,
                     table: table,
                     columns: columnMeta,
                     filters: filters,
                     groupColumns: groupColumns,
                     aggregates: aggregates,
+                    page: currentPage,
+                    pageSize: pageSize,
                     identifierQuote: connection.identifierQuoteCharacter,
-                    dialect: connection.dialect
+                    dialect: connection.dialect,
+                    fetchSentinel: true
                 )
             } else {
-                query = try GridServerQueryBuilder.select(
+                displayedQuery = try GridServerQueryBuilder.select(
                     database: database,
                     table: table,
                     columns: columnMeta,
@@ -3015,38 +3435,77 @@ struct DataTabView: View {
                     identifierQuote: connection.identifierQuoteCharacter,
                     dialect: connection.dialect
                 )
-                countQuery = try GridServerQueryBuilder.count(
+                fetchQuery = try GridServerQueryBuilder.select(
                     database: database,
                     table: table,
                     columns: columnMeta,
                     filters: filters,
+                    sorts: sorts,
+                    page: currentPage,
+                    pageSize: pageSize,
                     identifierQuote: connection.identifierQuoteCharacter,
-                    dialect: connection.dialect
+                    dialect: connection.dialect,
+                    fetchSentinel: true
                 )
             }
-            queryText = query.sql
-            async let dataTask = sessionManager.executeQuery(
-                query.sql,
-                parameters: query.parameters,
+            queryText = displayedQuery.sql
+            let rawResult = try await sessionManager.executeQuery(
+                fetchQuery.sql,
+                parameters: fetchQuery.parameters,
                 sessionID: sessionID
             )
-            async let countTask = connection.execute(countQuery.sql, parameters: countQuery.parameters)
-            let loadedResult = try await dataTask
-            result = loadedResult
-            if let countResult = try? await countTask,
-               let value = countResult.rows.first?.first,
-               let count = Int(value.displayString) {
-                totalRowCount = count
-            } else {
-                totalRowCount = nil
-            }
-            restoreSelection(identity: preservedIdentity, in: loadedResult)
+            let window = GridPageWindow.bounded(
+                rawResult,
+                pageSize: pageSize,
+                displayedQuery: displayedQuery.sql
+            )
+            result = window.result
+            hasNextPage = window.hasNextPage
+            restoreSelection(identity: preservedIdentity, in: window.result)
         } catch {
             await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
             errorMessage = error.localizedDescription
             errorIsQueryFailure = true
+            hasNextPage = false
         }
         isLoading = false
+    }
+
+    private func calculateExactRowCount() async {
+        guard filters.isEmpty,
+              !isAnalysisActive,
+              let connection = session?.connection else { return }
+        isCalculatingExactCount = true
+        defer {
+            isCalculatingExactCount = false
+            exactCountTask = nil
+        }
+        do {
+            let count = try await connection.rowCount(
+                table: table,
+                database: database,
+                timeout: .seconds(30)
+            )
+            try Task.checkCancellation()
+            totalRowCount = count
+        } catch is CancellationError {
+            return
+        } catch {
+            await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
+            inputErrorMessage = "Exact row count failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func cancelExactRowCount() {
+        exactCountTask?.cancel()
+        exactCountTask = nil
+        Task {
+            do {
+                try await sessionManager.cancelQuery(sessionID: sessionID)
+            } catch {
+                inputErrorMessage = "Could not cancel the exact row count: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func selectedRowIdentity() -> [String: DatabaseValue]? {
@@ -3236,6 +3695,7 @@ struct DataTabView: View {
                 outcome: .committed,
                 affectedRows: updateResult.affectedRows
             ))
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             withAnimation { showEditor = false }
             await loadData()
         } catch {
@@ -3246,6 +3706,9 @@ struct DataTabView: View {
                 outcome = await rollback(connection) ? .rolledBack : .serverStateUnknown
             } else {
                 outcome = .notStarted
+            }
+            if outcome == .serverStateUnknown {
+                sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             }
             MutationAuditStore.append(MutationAuditRecord(
                 connectionID: session?.connectionConfig.id ?? sessionID,
@@ -3328,6 +3791,7 @@ struct DataTabView: View {
                 outcome: .committed,
                 affectedRows: affectedRows
             ))
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             await loadData()
         } catch {
             let outcome: MutationOutcome
@@ -3337,6 +3801,9 @@ struct DataTabView: View {
                 outcome = await rollback(connection) ? .rolledBack : .serverStateUnknown
             } else {
                 outcome = .notStarted
+            }
+            if outcome == .serverStateUnknown {
+                sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             }
             MutationAuditStore.append(MutationAuditRecord(
                 connectionID: session?.connectionConfig.id ?? sessionID,
@@ -3408,7 +3875,9 @@ struct DataTabView: View {
                 outcome: .committed,
                 affectedRows: insertResult.affectedRows
             ))
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             addingNewRow = false
+            totalRowCount = nil
             await loadData()
         } catch {
             let outcome: MutationOutcome
@@ -3418,6 +3887,9 @@ struct DataTabView: View {
                 outcome = await rollback(connection) ? .rolledBack : .serverStateUnknown
             } else {
                 outcome = .notStarted
+            }
+            if outcome == .serverStateUnknown {
+                sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             }
             MutationAuditStore.append(MutationAuditRecord(
                 connectionID: session?.connectionConfig.id ?? sessionID,
@@ -4435,8 +4907,10 @@ struct StructureTabView: View {
         errorMessage = nil
         do {
             try await applyTableSchemaChange(change, session: session, database: database, table: table)
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             await loadStructure()
         } catch {
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             changeFailure = TableSchemaChangeFailure(
                 error: "The server rejected the schema change. Refresh before retrying if its state may have changed. \(error.localizedDescription)",
                 sql: change.sql
@@ -4770,8 +5244,10 @@ struct IndexesTabView: View {
         errorMessage = nil
         do {
             try await applyTableSchemaChange(change, session: session, database: database, table: table)
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             await loadIndexes()
         } catch {
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             errorMessage = "The server may have changed. Refresh before retrying. \(error.localizedDescription)"
         }
         isApplyingChange = false
@@ -5027,8 +5503,10 @@ struct ForeignKeysTabView: View {
         errorMessage = nil
         do {
             try await applyTableSchemaChange(change, session: session, database: database, table: table)
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             await loadForeignKeys()
         } catch {
+            sessionManager.invalidateTableStatistics(sessionID: sessionID, database: database)
             errorMessage = "The server may have changed. Refresh before retrying. \(error.localizedDescription)"
         }
         isApplyingChange = false
