@@ -186,6 +186,12 @@
 - [x] Final regressions passed 105/105 on Mac and 103/103 each on iPhone, iPad, and Vision Pro with zero failures or skips
 - [x] 2026-08-10 follow-up adopted glas.sh-style direct row interaction, denser rows/details, clearer action hierarchy, and restored Mac Settings access; the human-approved combined preview passed 115/115 Mac tests and all four platform builds
 
+### Completed — Overview Statistics, File-Menu Lifecycle, and Editor Gutter (2026-08-11)
+- [x] Aggregate table statistics: one static metadata query per engine (MySQL INFORMATION_SCHEMA.TABLES, PostgreSQL pg_catalog) fans into the existing per-database snapshot cache; 391-database Overview loads in ~4 seconds with the sequential walk retained as capability-gated fallback
+- [x] Mac File menu owns SQL documents (New ⌘N, New Connections Window ⌘⇧N, Open ⌘O, Save ⌘S, Close Active Tab); workspace is the single command-action publisher, fixing the multi-editor ⌘O/⌘S defect; focus follows new documents
+- [x] Visible digit-sized editor gutter with hairline separator and asymmetric insets; draw-order and focus defects caught by live function testing and repaired in-loop
+- [x] Verified end to end on final code: function battery in the running app, 7 new unit tests, Mac 122/122, iPhone/iPad/Vision 118/118 each, GlassDBKit 28/28, security review with no findings, clean TODO/stub sweep
+
 ### Completed — Command-W Editor Close and Workspace Tab Seeding (2026-08-11)
 - [x] Command-W closes the selected top-level SQL or table tab through one window-level registration, honoring the unsaved-SQL save/don't-save/cancel prompt; Overview is the fallback after the last closable tab
 - [x] New workspace windows seed only the Overview tab; SQL documents are on-demand via the workspace-level New Query Tab action (⌘T), available with zero editors open

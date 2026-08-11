@@ -344,6 +344,87 @@ import Testing
         try await sqlite.close()
     }
 
+    @Test func aggregateStatisticsCapabilityIsExplicitAndGatedByDefault() async throws {
+        #expect(MySQLEngine().capabilities.contains(.aggregateTableStatistics))
+        #expect(PostgreSQLEngine().capabilities.contains(.aggregateTableStatistics))
+        #expect(!SQLiteEngine().capabilities.contains(.aggregateTableStatistics))
+
+        // Engines that do not advertise the capability inherit a fail-closed
+        // default instead of silently returning an empty aggregate.
+        do {
+            _ = try await TestConnection().tableStatusByNamespace()
+            Issue.record("The default tableStatusByNamespace must fail closed.")
+        } catch DatabaseError.unsupportedCapability(let capability, _) {
+            #expect(capability == .aggregateTableStatistics)
+        }
+    }
+
+    @Test func aggregateTableStatusQueriesCoverEveryNamespaceInOneStatement() {
+        // MySQL aliases information_schema columns to the SHOW TABLE STATUS
+        // names so both paths share one row mapping, and scans every schema
+        // (no WHERE) in a single deterministic ordering.
+        let mysql = MySQLDatabaseConnection.aggregateTableStatusQuery
+        #expect(mysql.contains("FROM INFORMATION_SCHEMA.TABLES"))
+        #expect(mysql.contains("TABLE_SCHEMA AS `Schema`"))
+        #expect(mysql.contains("TABLE_NAME AS `Name`"))
+        #expect(mysql.contains("ENGINE AS `Engine`"))
+        #expect(mysql.contains("TABLE_ROWS AS `Rows`"))
+        #expect(mysql.contains("DATA_LENGTH AS `Data_length`"))
+        #expect(mysql.contains("INDEX_LENGTH AS `Index_length`"))
+        #expect(mysql.contains("TABLE_COLLATION AS `Collation`"))
+        #expect(mysql.contains("ORDER BY TABLE_SCHEMA, TABLE_NAME"))
+        #expect(!mysql.contains("WHERE"))
+
+        // PostgreSQL keeps the same user-schema filter as databases() and
+        // takes no parameters: one unbound statement covers every schema.
+        let postgres = PostgreSQLDatabaseConnection.aggregateTableStatusQuery
+        #expect(postgres.contains("namespace.nspname <> 'information_schema'"))
+        #expect(postgres.contains("namespace.nspname NOT LIKE 'pg_%'"))
+        #expect(postgres.contains("table_class.relkind IN ('r', 'p')"))
+        #expect(postgres.contains("pg_total_relation_size(table_class.oid)"))
+        #expect(postgres.contains("ORDER BY namespace.nspname, table_class.relname"))
+        #expect(!postgres.contains("$1"))
+    }
+
+    @Test func postgresAggregateRowsMapFromTheSchemaPrefixedOffset() {
+        let analyzed = Date(timeIntervalSince1970: 1_750_000_000)
+        let prefixed: [DatabaseValue] = [
+            .string("analytics"),
+            .string("events"),
+            .int(42),
+            .int(8_192),
+            .date(analyzed),
+            .int(7),
+        ]
+
+        let status = PostgreSQLDatabaseConnection.tableStatus(from: prefixed, startingAt: 1)
+        #expect(status.name == "events")
+        #expect(status.engine == "PostgreSQL")
+        #expect(status.rowCount == 42)
+        #expect(status.dataLength == 8_192)
+        #expect(status.rowCountAccuracy == .estimated)
+        #expect(status.statisticsUpdatedAt == analyzed)
+        #expect(status.modifiedRowsSinceAnalysis == 7)
+
+        // The per-schema query has no schema prefix and maps from offset 0 to
+        // the same values.
+        let unprefixed = PostgreSQLDatabaseConnection.tableStatus(
+            from: Array(prefixed.dropFirst()),
+            startingAt: 0
+        )
+        #expect(unprefixed.name == "events")
+        #expect(unprefixed.rowCount == 42)
+        #expect(unprefixed.statisticsUpdatedAt == analyzed)
+
+        // Never-analyzed tables surface nil metadata instead of fake dates.
+        let unanalyzed = PostgreSQLDatabaseConnection.tableStatus(
+            from: [.string("bare"), .int(0), .int(0), .null, .null],
+            startingAt: 0
+        )
+        #expect(unanalyzed.statisticsUpdatedAt == nil)
+        #expect(unanalyzed.modifiedRowsSinceAnalysis == nil)
+    }
+
     @Test func postgresParameterBoundariesAreExplicit() throws {
         let signed = try PostgreSQLDatabaseConnection.postgresData(for: .int(Int64.min))
         #expect(signed.int64 == Int64.min)

@@ -21,6 +21,7 @@ class DatabaseSessionManager {
     private var hasLoaded = false
     private let defaults: UserDefaults
     private var statisticsLoads: [DatabaseStatisticsLoadKey: DatabaseStatisticsLoad] = [:]
+    private var aggregateStatisticsLoads: [UUID: AggregateStatisticsLoad] = [:]
 
     struct TransportPlan: Equatable, Sendable {
         let databaseHost: String
@@ -628,12 +629,110 @@ class DatabaseSessionManager {
         }
     }
 
+    /// Fills the per-database snapshot cache for every requested namespace from
+    /// one aggregate round trip. Existing per-database `tableStatistics(...)`
+    /// consumers keep reading the same cache with unchanged semantics.
+    func aggregateTableStatistics(
+        sessionID: UUID,
+        namespaces: [String],
+        forceRefresh: Bool = false,
+        now: Date = Date()
+    ) async throws -> [String: DatabaseStatisticsSnapshot] {
+        guard let session = sessions[sessionID],
+              session.state.isConnected,
+              let connection = session.connection else {
+            throw SessionError.connectionLost
+        }
+        guard connection.capabilities.contains(.aggregateTableStatistics) else {
+            throw DatabaseError.unsupportedCapability(
+                .aggregateTableStatistics,
+                engine: connection.engineName
+            )
+        }
+
+        if !forceRefresh {
+            var cached: [String: DatabaseStatisticsSnapshot] = [:]
+            for namespace in namespaces {
+                guard let snapshot = session.databaseStatistics[namespace],
+                      snapshot.isFresh(at: now) else { break }
+                cached[namespace] = snapshot
+            }
+            if cached.count == namespaces.count {
+                return cached
+            }
+        }
+
+        // Concurrent callers share one in-flight server query. Matching the
+        // per-database dedup, only the initiating caller writes the cache;
+        // joiners derive their own snapshots from the shared grouped result.
+        if let existing = aggregateStatisticsLoads[sessionID] {
+            let grouped = try await existing.task.value
+            return Self.statisticsSnapshots(
+                for: namespaces,
+                grouped: grouped,
+                capturedAt: existing.startedAt
+            )
+        }
+
+        let task = Task {
+            let grouped = try await connection.tableStatusByNamespace()
+            try Task.checkCancellation()
+            return grouped
+        }
+        let load = AggregateStatisticsLoad(id: UUID(), startedAt: now, task: task)
+        aggregateStatisticsLoads[sessionID] = load
+
+        do {
+            let grouped = try await task.value
+            guard aggregateStatisticsLoads[sessionID]?.id == load.id else { throw CancellationError() }
+            aggregateStatisticsLoads.removeValue(forKey: sessionID)
+            guard sessions[sessionID] === session else { throw SessionError.connectionLost }
+            let snapshots = Self.statisticsSnapshots(
+                for: namespaces,
+                grouped: grouped,
+                capturedAt: load.startedAt
+            )
+            for (namespace, snapshot) in snapshots {
+                session.databaseStatistics[namespace] = snapshot
+            }
+            return snapshots
+        } catch {
+            if aggregateStatisticsLoads[sessionID]?.id == load.id {
+                aggregateStatisticsLoads.removeValue(forKey: sessionID)
+            }
+            throw error
+        }
+    }
+
+    /// Fans one grouped aggregate result out into per-database snapshots. A
+    /// namespace with no tables yields no aggregate rows; it still gets an
+    /// empty snapshot so it reads as "statistics available", matching an empty
+    /// per-database status query.
+    private nonisolated static func statisticsSnapshots(
+        for namespaces: [String],
+        grouped: [String: [TableStatus]],
+        capturedAt: Date
+    ) -> [String: DatabaseStatisticsSnapshot] {
+        var snapshots: [String: DatabaseStatisticsSnapshot] = [:]
+        for namespace in namespaces {
+            snapshots[namespace] = DatabaseStatisticsSnapshot(
+                database: namespace,
+                statuses: grouped[namespace] ?? [],
+                capturedAt: capturedAt
+            )
+        }
+        return snapshots
+    }
+
     func invalidateTableStatistics(sessionID: UUID, database: String? = nil) {
         guard let session = sessions[sessionID] else { return }
         if let database {
             session.databaseStatistics.removeValue(forKey: database)
             let key = DatabaseStatisticsLoadKey(sessionID: sessionID, database: database)
             statisticsLoads.removeValue(forKey: key)?.task.cancel()
+            // An in-flight aggregate load would repopulate this namespace with
+            // data captured before the invalidating mutation; discard it too.
+            aggregateStatisticsLoads.removeValue(forKey: sessionID)?.task.cancel()
         } else {
             session.databaseStatistics.removeAll()
             cancelStatisticsLoads(sessionID: sessionID)
@@ -645,6 +744,7 @@ class DatabaseSessionManager {
         for key in keys {
             statisticsLoads.removeValue(forKey: key)?.task.cancel()
         }
+        aggregateStatisticsLoads.removeValue(forKey: sessionID)?.task.cancel()
     }
 
     func explainQuery(_ sql: String, sessionID: UUID) async throws -> QueryResult {
@@ -996,6 +1096,12 @@ private struct DatabaseStatisticsLoadKey: Hashable {
 private struct DatabaseStatisticsLoad {
     let id: UUID
     let task: Task<DatabaseStatisticsSnapshot, any Error>
+}
+
+private struct AggregateStatisticsLoad {
+    let id: UUID
+    let startedAt: Date
+    let task: Task<[String: [TableStatus]], any Error>
 }
 
 enum QueryHistoryStatus: String, CaseIterable, Hashable, Identifiable, Sendable {

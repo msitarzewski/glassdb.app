@@ -23,9 +23,9 @@ public final class MySQLEngine: DatabaseEngine, @unchecked Sendable {
     public var capabilities: Set<DatabaseCapability> {
         [
             .transactions, .parameterBinding, .transportTLS, .metadata,
-            .indexes, .foreignKeys, .tableStatistics, .createTableDefinition,
-            .explain, .serverVersion, .queryTimeout, .cancellation,
-            .truncateTable,
+            .indexes, .foreignKeys, .tableStatistics, .aggregateTableStatistics,
+            .createTableDefinition, .explain, .serverVersion, .queryTimeout,
+            .cancellation, .truncateTable,
         ]
     }
 
@@ -223,9 +223,9 @@ final class MySQLDatabaseConnection: DatabaseConnection, @unchecked Sendable {
     var capabilities: Set<DatabaseCapability> {
         [
             .transactions, .parameterBinding, .transportTLS, .metadata,
-            .indexes, .foreignKeys, .tableStatistics, .createTableDefinition,
-            .explain, .serverVersion, .queryTimeout, .cancellation,
-            .truncateTable,
+            .indexes, .foreignKeys, .tableStatistics, .aggregateTableStatistics,
+            .createTableDefinition, .explain, .serverVersion, .queryTimeout,
+            .cancellation, .truncateTable,
         ]
     }
 
@@ -743,30 +743,58 @@ final class MySQLDatabaseConnection: DatabaseConnection, @unchecked Sendable {
     func tableStatus(in database: String) async throws -> [TableStatus] {
         let safeDB = Self.escapeIdentifier(database)
         let rows = try await connection.simpleQuery("SHOW TABLE STATUS FROM `\(safeDB)`").get()
-        return rows.compactMap { row in
-            guard let name = row.column("Name")?.string else {
-                return nil
+        return rows.compactMap(Self.tableStatus(from:))
+    }
+
+    /// One statement over every namespace on the server. SHOW TABLE STATUS
+    /// reads from the same data dictionary as information_schema.TABLES;
+    /// aliasing to the SHOW column names keeps one shared mapping and
+    /// identical per-table values across both paths.
+    static let aggregateTableStatusQuery =
+        "SELECT TABLE_SCHEMA AS `Schema`, TABLE_NAME AS `Name`, ENGINE AS `Engine`, " +
+        "TABLE_ROWS AS `Rows`, DATA_LENGTH AS `Data_length`, INDEX_LENGTH AS `Index_length`, " +
+        "TABLE_COLLATION AS `Collation` " +
+        "FROM INFORMATION_SCHEMA.TABLES " +
+        "ORDER BY TABLE_SCHEMA, TABLE_NAME"
+
+    func tableStatusByNamespace() async throws -> [String: [TableStatus]] {
+        let rows = try await connection.simpleQuery(Self.aggregateTableStatusQuery).get()
+        var grouped: [String: [TableStatus]] = [:]
+        for row in rows {
+            guard let schema = row.column("Schema")?.string,
+                  let status = Self.tableStatus(from: row) else {
+                continue
             }
-            let engine = row.column("Engine")?.string
-            let rowCount = Int(row.column("Rows")?.string ?? "0") ?? 0
-            let tableDataLength = Int(row.column("Data_length")?.string ?? "0") ?? 0
-            let indexLength = Int(row.column("Index_length")?.string ?? "0") ?? 0
-            let (combinedLength, overflowed) = tableDataLength.addingReportingOverflow(indexLength)
-            let dataLength = overflowed ? Int.max : combinedLength
-            let collation = row.column("Collation")?.string
-            return TableStatus(
-                name: name,
-                engine: engine,
-                rowCount: rowCount,
-                dataLength: dataLength,
-                collation: collation,
-                // MySQL documents exact SHOW TABLE STATUS counts for MyISAM;
-                // other storage engines may expose optimizer estimates.
-                rowCountAccuracy: engine?.localizedCaseInsensitiveCompare("MyISAM") == .orderedSame
-                    ? .exact
-                    : .estimated
-            )
+            grouped[schema, default: []].append(status)
         }
+        return grouped
+    }
+
+    /// Shared mapping for `SHOW TABLE STATUS` rows and the aggregate
+    /// information_schema query, which aliases its columns to the SHOW names.
+    private static func tableStatus(from row: MySQLRow) -> TableStatus? {
+        guard let name = row.column("Name")?.string else {
+            return nil
+        }
+        let engine = row.column("Engine")?.string
+        let rowCount = Int(row.column("Rows")?.string ?? "0") ?? 0
+        let tableDataLength = Int(row.column("Data_length")?.string ?? "0") ?? 0
+        let indexLength = Int(row.column("Index_length")?.string ?? "0") ?? 0
+        let (combinedLength, overflowed) = tableDataLength.addingReportingOverflow(indexLength)
+        let dataLength = overflowed ? Int.max : combinedLength
+        let collation = row.column("Collation")?.string
+        return TableStatus(
+            name: name,
+            engine: engine,
+            rowCount: rowCount,
+            dataLength: dataLength,
+            collation: collation,
+            // MySQL documents exact SHOW TABLE STATUS counts for MyISAM;
+            // other storage engines may expose optimizer estimates.
+            rowCountAccuracy: engine?.localizedCaseInsensitiveCompare("MyISAM") == .orderedSame
+                ? .exact
+                : .estimated
+        )
     }
 
     func rowCount(table: String, database: String) async throws -> Int {

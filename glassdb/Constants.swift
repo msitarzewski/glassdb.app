@@ -595,35 +595,44 @@ extension ToolbarContent {
 
 // MARK: - Native command routing
 
-/// Routes menu-bar commands to the editor in the focused database window.
-/// Focused values prevent a command from accidentally affecting every open
-/// connection window.
-struct DatabaseCommandActions {
+/// Routes menu-bar commands to the focused database workspace. The workspace
+/// is the single publisher of this value: every SQL tab stays alive hidden in
+/// the workspace ZStack, and competing `focusedSceneValue` publishers resolve
+/// focus-dependently, so per-editor publication goes dead as soon as a second
+/// editor exists. Enablement flags are computed from workspace-owned document
+/// state; editor-internal verbs delegate to the active tab's registered
+/// `QueryEditorCommandHandlers`.
+struct DatabaseWorkspaceCommandActions {
     let canExecute: Bool
     let canCancel: Bool
     let canSave: Bool
+    let canUseQueryLibrary: Bool
     let canCloseTab: Bool
+    let newQueryTab: () -> Void
+    let closeTab: () -> Void
+    let openDocument: () -> Void
+    let saveDocument: () -> Void
     let executeStatement: () -> Void
     let executeScript: () -> Void
     let explainPlan: () -> Void
     let cancel: () -> Void
-    let openDocument: () -> Void
-    let saveDocument: () -> Void
+    let formatSQL: () -> Void
     let showHistory: () -> Void
     let showSavedQueries: () -> Void
-    let formatSQL: () -> Void
-    let newTab: () -> Void
-    let closeTab: () -> Void
 }
 
-struct DatabaseWorkspaceCommandActions {
-    let canCloseTab: Bool
-    let newQueryTab: () -> Void
-    let closeTab: () -> Void
-}
-
-private struct DatabaseCommandActionsKey: FocusedValueKey {
-    typealias Value = DatabaseCommandActions
+/// Verbs only an individual SQL editor can perform (execution pipeline and
+/// its presentation sheets). Each editor registers one bundle with its owning
+/// workspace for its whole lifetime, keyed by document id; the workspace
+/// consults only the active tab's bundle. Closures capture `@State` and
+/// `@Binding` storage, so a single registration stays current.
+struct QueryEditorCommandHandlers {
+    let executeStatement: () -> Void
+    let executeScript: () -> Void
+    let explainPlan: () -> Void
+    let cancel: () -> Void
+    let showHistory: () -> Void
+    let showSavedQueries: () -> Void
 }
 
 private struct DatabaseWorkspaceCommandActionsKey: FocusedValueKey {
@@ -631,12 +640,6 @@ private struct DatabaseWorkspaceCommandActionsKey: FocusedValueKey {
 }
 
 extension FocusedValues {
-    var databaseCommandActions: DatabaseCommandActions? {
-        get { self[DatabaseCommandActionsKey.self] }
-        set { self[DatabaseCommandActionsKey.self] = newValue }
-    }
-
-
     var databaseWorkspaceCommandActions: DatabaseWorkspaceCommandActions? {
         get { self[DatabaseWorkspaceCommandActionsKey.self] }
         set { self[DatabaseWorkspaceCommandActionsKey.self] = newValue }
@@ -645,66 +648,62 @@ extension FocusedValues {
 
 #if os(macOS)
 struct DatabaseCommands: Commands {
-    @FocusedValue(\.databaseCommandActions) private var actions
     @FocusedValue(\.databaseWorkspaceCommandActions) private var workspaceActions
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
-        CommandMenu("Query") {
-            Button("Execute Statement") { actions?.executeStatement() }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(actions?.canExecute != true)
-            Button("Execute Script") { actions?.executeScript() }
-                .keyboardShortcut(.return, modifiers: [.command, .shift])
-                .disabled(actions?.canExecute != true)
-            Button("Explain Plan") { actions?.explainPlan() }
-                .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(actions?.canExecute != true)
-            Button("Cancel Query") { actions?.cancel() }
-                .keyboardShortcut(".", modifiers: .command)
-                .disabled(actions?.canCancel != true)
-
-            Divider()
-
-            Button("Open SQL Document…") { actions?.openDocument() }
+        // File owns the SQL document lifecycle per the macOS HIG. Replacing
+        // .newItem removes the system-generated "New Connections Window ⌘N"
+        // for the primary WindowGroup, which otherwise captures ⌘N before the
+        // Query menu can see it.
+        CommandGroup(replacing: .newItem) {
+            Button("New SQL Document") { workspaceActions?.newQueryTab() }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(workspaceActions == nil)
+            Button("New Connections Window") { openWindow(id: "main") }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+        }
+        CommandGroup(after: .newItem) {
+            Button("Open SQL Document…") { workspaceActions?.openDocument() }
                 .keyboardShortcut("o", modifiers: .command)
-                .disabled(actions == nil)
-            Button("Save SQL Document…") { actions?.saveDocument() }
-                .keyboardShortcut("s", modifiers: .command)
-                .disabled(actions?.canSave != true)
-            Button("Format SQL") { actions?.formatSQL() }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-                .disabled(actions?.canExecute != true)
+                .disabled(workspaceActions == nil)
 
             Divider()
 
-            Button("Query History") { actions?.showHistory() }
-                .disabled(actions == nil)
-            Button("Saved Queries") { actions?.showSavedQueries() }
-                .disabled(actions == nil)
-            Button("New Query Tab") {
-                // The workspace action must own creation so the first SQL
-                // document can be spawned when no editor is publishing
-                // focused query actions.
-                if let workspaceActions {
-                    workspaceActions.newQueryTab()
-                } else {
-                    actions?.newTab()
-                }
-            }
-                .keyboardShortcut("t", modifiers: .command)
-                .disabled(workspaceActions == nil && actions == nil)
-            Button("Close Active Tab") {
-                if workspaceActions?.canCloseTab == true {
-                    workspaceActions?.closeTab()
-                } else {
-                    actions?.closeTab()
-                }
-            }
+            Button("Close Active Tab") { workspaceActions?.closeTab() }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
-                .disabled(
-                    workspaceActions?.canCloseTab != true
-                        && actions?.canCloseTab != true
-                )
+                .disabled(workspaceActions?.canCloseTab != true)
+            Button("Save SQL Document…") { workspaceActions?.saveDocument() }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(workspaceActions?.canSave != true)
+        }
+
+        CommandMenu("Query") {
+            Button("Execute Statement") { workspaceActions?.executeStatement() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(workspaceActions?.canExecute != true)
+            Button("Execute Script") { workspaceActions?.executeScript() }
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+                .disabled(workspaceActions?.canExecute != true)
+            Button("Explain Plan") { workspaceActions?.explainPlan() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(workspaceActions?.canExecute != true)
+            Button("Cancel Query") { workspaceActions?.cancel() }
+                .keyboardShortcut(".", modifiers: .command)
+                .disabled(workspaceActions?.canCancel != true)
+
+            Divider()
+
+            Button("Format SQL") { workspaceActions?.formatSQL() }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(workspaceActions?.canExecute != true)
+
+            Divider()
+
+            Button("Query History") { workspaceActions?.showHistory() }
+                .disabled(workspaceActions?.canUseQueryLibrary != true)
+            Button("Saved Queries") { workspaceActions?.showSavedQueries() }
+                .disabled(workspaceActions?.canUseQueryLibrary != true)
         }
     }
 }

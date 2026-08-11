@@ -1,6 +1,6 @@
 # Connection Overview Statistics Performance
 
-**Status:** To do — diagnosed 2026-08-11, not started; approved for filing only
+**Status:** Complete — implemented and human-approved 2026-08-11 on `agent/overview-stats-filemenu-gutter`. One aggregate round trip (MySQL INFORMATION_SCHEMA.TABLES; PostgreSQL pg_catalog across schemas) fans into the existing per-database snapshot cache; SQLite keeps the per-database fallback. Live: the 391-database local server Overview loads in ~4 seconds (was 40+). Mac 122/122; iPhone/iPad/Vision 118/118 each; security review clean.
 **Discovered on:** `agent/command-w-editor-close` (behavior exists in committed code from `c558eff`)
 **Scope:** Replace the per-database statistics walk in the connection Overview cold path with one aggregate metadata query per engine.
 

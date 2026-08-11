@@ -45,6 +45,7 @@ public enum DatabaseCapability: String, Sendable, Hashable, CaseIterable {
     case indexes
     case foreignKeys
     case tableStatistics
+    case aggregateTableStatistics
     case createTableDefinition
     case explain
     case serverVersion
@@ -132,6 +133,7 @@ public protocol DatabaseConnection: Sendable {
     func indexes(in table: String, database: String) async throws -> [IndexInfo]
     func foreignKeys(in table: String, database: String) async throws -> [ForeignKeyInfo]
     func tableStatus(in database: String) async throws -> [TableStatus]
+    func tableStatusByNamespace() async throws -> [String: [TableStatus]]
     func rowCount(table: String, database: String) async throws -> Int
     func rowCount(table: String, database: String, timeout: Duration?) async throws -> Int
     func serverVersion() async throws -> String
@@ -207,6 +209,14 @@ public extension DatabaseConnection {
 
     func serverVersion() async throws -> String {
         throw DatabaseError.unsupportedCapability(.serverVersion, engine: engineName)
+    }
+
+    /// Per-table statistics for every namespace on the server in one round
+    /// trip, keyed by database (MySQL) or schema (PostgreSQL). Namespaces with
+    /// no tables yield no key; callers treat missing keys as empty. Only
+    /// engines advertising `.aggregateTableStatistics` implement this.
+    func tableStatusByNamespace() async throws -> [String: [TableStatus]] {
+        throw DatabaseError.unsupportedCapability(.aggregateTableStatistics, engine: engineName)
     }
 
     func explain(_ query: String, parameters: [DatabaseValue] = []) async throws -> QueryResult {

@@ -44,6 +44,9 @@ struct glassdbApp: App {
         .commands {
             SidebarCommands()
             ToolbarCommands()
+            // DatabaseCommands replaces the system-generated File > New item
+            // for this primary WindowGroup: ⌘N creates a SQL document in the
+            // focused workspace and ⌘⇧N opens a Connections window.
             DatabaseCommands()
         }
         #endif

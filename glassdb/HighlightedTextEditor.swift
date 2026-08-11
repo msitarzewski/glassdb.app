@@ -6,6 +6,31 @@
 //
 
 import SwiftUI
+
+/// Pure gutter geometry shared by the AppKit and UIKit line-number editors so
+/// both platforms (and tests) agree on the digit-count-driven width formula.
+enum EditorGutterMetrics {
+    static let plainInset: CGFloat = 12
+    static let numberPadding: CGFloat = 8
+    static let textGap: CGFloat = 6
+
+    /// Width of the number gutter: enough monospaced digits for the current
+    /// line count (minimum two digits) plus symmetric number padding.
+    static func width(lineCount: Int, digitWidth: CGFloat) -> CGFloat {
+        let digits = max(2, String(max(1, lineCount)).count)
+        return ceil(CGFloat(digits) * digitWidth) + numberPadding * 2
+    }
+}
+
+extension EnvironmentValues {
+    /// Identity of the SQL document being edited. The Mac editor claims
+    /// keyboard focus the first time it appears for a given token, so a
+    /// document created from the File menu is ready to type into. Only the
+    /// query editor sets it, so opening a table never pulls focus out of the
+    /// sidebar.
+    @Entry var sqlEditorFocusToken: UUID?
+}
+
 #if canImport(UIKit)
 import UIKit
 
@@ -128,6 +153,13 @@ struct HighlightedTextEditor: UIViewRepresentable {
 /// Draws logical line numbers in the text view's existing scroll coordinate
 /// space, keeping the gutter aligned without a second synchronized scroll view.
 private final class LineNumberTextView: UITextView {
+    private var lineCount = 1
+    /// Width of the number gutter; text begins `textGap` points after it.
+    private var gutterWidth: CGFloat = 0
+    private static let plainInset = EditorGutterMetrics.plainInset
+    private static let numberPadding = EditorGutterMetrics.numberPadding
+    private static let textGap = EditorGutterMetrics.textGap
+
     var lineNumbersEnabled = false {
         didSet {
             updateTextInset()
@@ -136,15 +168,28 @@ private final class LineNumberTextView: UITextView {
     }
 
     var lineNumberFontSize: CGFloat = 14 {
-        didSet { setNeedsDisplay() }
+        didSet {
+            updateTextInset()
+            setNeedsDisplay()
+        }
+    }
+
+    private var numberFont: UIFont {
+        .monospacedDigitSystemFont(ofSize: max(10, lineNumberFontSize - 2), weight: .regular)
     }
 
     override var text: String! {
-        didSet { setNeedsDisplay() }
+        didSet {
+            refreshLineCount()
+            setNeedsDisplay()
+        }
     }
 
     override var attributedText: NSAttributedString! {
-        didSet { setNeedsDisplay() }
+        didSet {
+            refreshLineCount()
+            setNeedsDisplay()
+        }
     }
 
     override func draw(_ rect: CGRect) {
@@ -155,7 +200,7 @@ private final class LineNumberTextView: UITextView {
         let fullText = (text ?? "") as NSString
         let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: rect, in: textContainer)
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: max(10, lineNumberFontSize - 2), weight: .regular),
+            .font: numberFont,
             .foregroundColor: UIColor.secondaryLabel,
         ]
 
@@ -171,7 +216,7 @@ private final class LineNumberTextView: UITextView {
             let size = number.size(withAttributes: attributes)
             number.draw(
                 at: CGPoint(
-                    x: self.textContainerInset.left - size.width - 10,
+                    x: self.gutterWidth - Self.numberPadding - size.width,
                     y: usedRect.minY + self.textContainerInset.top
                 ),
                 withAttributes: attributes
@@ -180,10 +225,34 @@ private final class LineNumberTextView: UITextView {
         context.restoreGState()
     }
 
+    /// Sizes the gutter to the current digit count (minimum two digits),
+    /// mirroring the Mac metrics; the inset only moves when the width changes.
     private func updateTextInset() {
+        if lineNumbersEnabled {
+            let digitWidth = ("0" as NSString).size(withAttributes: [.font: numberFont]).width
+            gutterWidth = EditorGutterMetrics.width(lineCount: lineCount, digitWidth: digitWidth)
+        } else {
+            gutterWidth = 0
+        }
         var inset = textContainerInset
-        inset.left = lineNumbersEnabled ? 56 : 12
-        textContainerInset = inset
+        inset.left = lineNumbersEnabled ? gutterWidth + Self.textGap : Self.plainInset
+        if textContainerInset != inset {
+            textContainerInset = inset
+        }
+    }
+
+    private func refreshLineCount() {
+        let value = (text ?? "") as NSString
+        var count = 1
+        if value.length > 0 {
+            for index in 0..<value.length where value.character(at: index) == 10 {
+                count += 1
+            }
+        }
+        if count != lineCount {
+            lineCount = count
+            updateTextInset()
+        }
     }
 }
 #elseif canImport(AppKit)
@@ -195,6 +264,8 @@ struct HighlightedTextEditor: NSViewRepresentable {
     var showLineNumbers = false
     var selection: Binding<NSRange>?
     var isActive = true
+
+    @Environment(\.sqlEditorFocusToken) private var focusToken
 
     init(
         text: Binding<String>,
@@ -267,12 +338,22 @@ struct HighlightedTextEditor: NSViewRepresentable {
         if !isActive, textView.window?.firstResponder === textView {
             textView.window?.makeFirstResponder(nil)
         }
+        // A newly shown SQL document takes the keyboard once, so File > New SQL
+        // Document lands the caret in its editor instead of the sidebar filter.
+        if isActive,
+           let focusToken,
+           context.coordinator.claimedFocusToken != focusToken,
+           let window = textView.window {
+            context.coordinator.claimedFocusToken = focusToken
+            window.makeFirstResponder(textView)
+        }
         textView.lineNumbersEnabled = showLineNumbers
         textView.lineNumberFontSize = fontSize
 
         if textView.string != text || textView.appliedFontSize != fontSize {
             let selected = textView.selectedRange()
             context.coordinator.applyHighlight(text, to: textView, fontSize: fontSize)
+            textView.rebuildLineStarts()
             textView.appliedFontSize = fontSize
             textView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
             textView.setSelectedRange(Self.clamped(selected, maximum: textView.string.utf16.count))
@@ -291,6 +372,9 @@ struct HighlightedTextEditor: NSViewRepresentable {
     @MainActor
         final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: HighlightedTextEditor
+        /// Focus token this editor has already honored, so it claims the
+        /// keyboard once per document instead of on every update.
+        var claimedFocusToken: UUID?
         private var isApplyingHighlight = false
         private var highlightTask: Task<Void, Never>?
 
@@ -349,27 +433,62 @@ struct HighlightedTextEditor: NSViewRepresentable {
 private final class LineNumberTextView: NSTextView {
     var appliedFontSize: CGFloat = 14
     private var lineStarts: [Int] = [0]
+    /// Width of the tinted gutter band; text begins `textGap` points after it.
+    private var gutterWidth: CGFloat = 0
+    private static let plainInset = EditorGutterMetrics.plainInset
+    private static let numberPadding = EditorGutterMetrics.numberPadding
+    private static let textGap = EditorGutterMetrics.textGap
+
     var lineNumbersEnabled = false {
         didSet {
-            updateTextInset()
+            updateGutterMetrics()
             needsDisplay = true
         }
     }
 
     var lineNumberFontSize: CGFloat = 14 {
-        didSet { needsDisplay = true }
+        didSet {
+            updateGutterMetrics()
+            needsDisplay = true
+        }
     }
 
+    private var numberFont: NSFont {
+        .monospacedDigitSystemFont(ofSize: max(10, lineNumberFontSize - 2), weight: .regular)
+    }
+
+    /// NSTextView's inset is symmetric, so the gutter is laid out by keeping
+    /// the inset at the leading/trailing average and shifting the origin by
+    /// half their difference: the tracked container width still equals the
+    /// frame minus both edges, and caret/selection/hit-testing all follow the
+    /// origin, so the text wraps and hits exactly where it is drawn.
+    override var textContainerOrigin: NSPoint {
+        var origin = super.textContainerOrigin
+        if lineNumbersEnabled {
+            origin.x += (gutterWidth + Self.textGap - Self.plainInset) / 2
+        }
+        return origin
+    }
+
+    /// NSTextView's own drawing leaves the graphics state such that nothing
+    /// painted afterwards reaches the backing store, so the gutter is drawn
+    /// first. It never overlaps the glyphs: the text container starts
+    /// `textGap` points past the band.
     override func draw(_ dirtyRect: NSRect) {
+        if lineNumbersEnabled {
+            drawGutterBand(in: dirtyRect)
+            drawLineNumbers()
+        }
         super.draw(dirtyRect)
-        guard lineNumbersEnabled,
-              let layoutManager,
-              let textContainer else { return }
+    }
+
+    private func drawLineNumbers() {
+        guard let layoutManager, let textContainer else { return }
 
         let fullText = string as NSString
         let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: max(10, lineNumberFontSize - 2), weight: .regular),
+            .font: numberFont,
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
         let origin = textContainerOrigin
@@ -383,7 +502,7 @@ private final class LineNumberTextView: NSTextView {
             let size = number.size(withAttributes: attributes)
             number.draw(
                 at: NSPoint(
-                    x: self.textContainerInset.width - size.width - 10,
+                    x: self.gutterWidth - Self.numberPadding - size.width,
                     y: usedRect.minY + origin.y
                 ),
                 withAttributes: attributes
@@ -391,8 +510,48 @@ private final class LineNumberTextView: NSTextView {
         }
     }
 
-    private func updateTextInset() {
-        textContainerInset = NSSize(width: lineNumbersEnabled ? 56 : 12, height: 12)
+    /// Subtle tint plus a hairline separator so the gutter reads as an
+    /// intentional region, matching the results grid's frozen row-number
+    /// column. Dynamic colors resolve against the current appearance at draw
+    /// time; the rest of the view stays transparent.
+    private func drawGutterBand(in dirtyRect: NSRect) {
+        guard dirtyRect.minX < gutterWidth else { return }
+        NSColor.labelColor.withAlphaComponent(0.045).setFill()
+        NSRect(x: 0, y: dirtyRect.minY, width: gutterWidth, height: dirtyRect.height).fill()
+        let hairlineWidth = 1 / (window?.backingScaleFactor ?? 2)
+        NSColor.separatorColor.setFill()
+        NSRect(
+            x: gutterWidth - hairlineWidth,
+            y: dirtyRect.minY,
+            width: hairlineWidth,
+            height: dirtyRect.height
+        ).fill()
+    }
+
+    /// Sizes the gutter to the current digit count (minimum two digits) and
+    /// keeps the symmetric inset in sync. Setting the inset invalidates the
+    /// container origin, so layout and drawing stay agreed on the geometry.
+    private func updateGutterMetrics() {
+        let targetWidth: CGFloat
+        let targetInset: NSSize
+        if lineNumbersEnabled {
+            let digitWidth = ("0" as NSString).size(withAttributes: [.font: numberFont]).width
+            targetWidth = EditorGutterMetrics.width(lineCount: lineStarts.count, digitWidth: digitWidth)
+            targetInset = NSSize(
+                width: (targetWidth + Self.textGap + Self.plainInset) / 2,
+                height: Self.plainInset
+            )
+        } else {
+            targetWidth = 0
+            targetInset = NSSize(width: Self.plainInset, height: Self.plainInset)
+        }
+        if targetWidth != gutterWidth {
+            gutterWidth = targetWidth
+            needsDisplay = true
+        }
+        if textContainerInset != targetInset {
+            textContainerInset = targetInset
+        }
     }
 
     func rebuildLineStarts() {
@@ -405,6 +564,7 @@ private final class LineNumberTextView: NSTextView {
             }
         }
         lineStarts = starts
+        updateGutterMetrics()
     }
 
     private func lineNumber(containing characterIndex: Int) -> Int {

@@ -338,6 +338,7 @@ struct QueryEditorView: View {
     var onOpenSQLEditor: (() -> Void)?
     var onRequestClose: (() -> Void)?
     var onCreateDocument: ((QueryDocumentTab) -> Void)?
+    var onRegisterCommandHandlers: ((QueryEditorCommandHandlers?) -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
@@ -403,6 +404,7 @@ struct QueryEditorView: View {
                     completionIdentifiers: schemaCompletionIdentifiers,
                     completionError: completionLoadError
                 )
+                .environment(\.sqlEditorFocusToken, document.id)
             } else {
                 ContentUnavailableView(
                     "Session Disconnected",
@@ -531,7 +533,6 @@ struct QueryEditorView: View {
                         Label("New Query Tab", systemImage: "plus.square.on.square")
                     }
                     .disabled(isExecuting)
-                    .keyboardShortcut("t", modifiers: .command)
 
                     Button {
                         onRequestClose?()
@@ -542,10 +543,16 @@ struct QueryEditorView: View {
                 }
             }
         }
-        .focusedSceneValue(
-            \.databaseCommandActions,
-            isWorkspaceActive ? commandActions : nil
-        )
+        // The workspace publishes the single focused-scene command value, so
+        // this editor only registers its private verbs for its lifetime.
+        // Hidden ZStack members register too; the workspace consults only the
+        // active tab's bundle, so they can never clobber its routing.
+        .onAppear {
+            onRegisterCommandHandlers?(commandHandlers)
+        }
+        .onDisappear {
+            onRegisterCommandHandlers?(nil)
+        }
         .task(id: session?.currentDatabase) {
             await loadCompletionIdentifiers()
         }
@@ -688,28 +695,14 @@ struct QueryEditorView: View {
         showingSaveQuery = false
     }
 
-    private var commandActions: DatabaseCommandActions {
-        let hasQuery = !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return DatabaseCommandActions(
-            canExecute: hasQuery && !isExecuting,
-            canCancel: isExecuting && session?.connection?.capabilities.contains(.cancellation) == true,
-            canSave: !queryText.isEmpty,
-            canCloseTab: canCloseCurrentTab,
+    private var commandHandlers: QueryEditorCommandHandlers {
+        QueryEditorCommandHandlers(
             executeStatement: prepareCurrentStatementExecution,
             executeScript: prepareScriptExecution,
             explainPlan: prepareExplainExecution,
             cancel: { Task { await cancelExecution() } },
-            openDocument: { showingSQLImporter = true },
-            saveDocument: exportCurrentTab,
             showHistory: { showingHistory = true },
-            showSavedQueries: { showingSavedQueries = true },
-            formatSQL: {
-                let formatted = SQLHighlighter.formatted(queryText)
-                queryText = formatted
-                selectedRange = NSRange(location: (formatted as NSString).length, length: 0)
-            },
-            newTab: { onCreateDocument?(QueryDocumentTab()) },
-            closeTab: { onRequestClose?() }
+            showSavedQueries: { showingSavedQueries = true }
         )
     }
 
@@ -717,7 +710,7 @@ struct QueryEditorView: View {
         document.title
     }
 
-    private static var sqlDocumentTypes: [UTType] {
+    static var sqlDocumentTypes: [UTType] {
         if let sql = UTType(filenameExtension: "sql") {
             return [sql, .plainText]
         }
@@ -762,20 +755,27 @@ struct QueryEditorView: View {
         }
     }
 
+    /// Reads a user-selected SQL file into a fresh saved document tab. Shared
+    /// by the editor's toolbar importer and the workspace's File-menu ⌘O
+    /// importer, which must work even when no editor exists yet.
+    static func importedSQLDocument(from result: Result<[URL], Error>) throws -> QueryDocumentTab? {
+        guard let url = try result.get().first else { return nil }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard values.isRegularFile == true,
+              let size = values.fileSize,
+              size <= maximumSQLDocumentBytes else {
+            throw CocoaError(.fileReadTooLarge)
+        }
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        return QueryDocumentTab(text: try decodedSQLDocumentText(data), isSaved: true)
+    }
+
     private func importSQLDocument(_ result: Result<[URL], Error>) {
         do {
-            guard let url = try result.get().first else { return }
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            guard values.isRegularFile == true,
-                  let size = values.fileSize,
-                  size <= Self.maximumSQLDocumentBytes else {
-                throw CocoaError(.fileReadTooLarge)
-            }
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
-            let text = try Self.decodedSQLDocumentText(data)
-            onCreateDocument?(QueryDocumentTab(text: text, isSaved: true))
+            guard let document = try Self.importedSQLDocument(from: result) else { return }
+            onCreateDocument?(document)
         } catch {
             documentError = error.localizedDescription
         }
