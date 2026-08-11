@@ -46,6 +46,7 @@ struct SchemaBrowserView: View {
     let sessionID: UUID
     let selection: WorkspaceSelection
     var onSelectionChanged: ((WorkspaceSelection) -> Void)?
+    var onOpenSelection: ((WorkspaceSelection) -> Void)?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(\.openWindow) private var openWindow
@@ -240,8 +241,11 @@ struct SchemaBrowserView: View {
                 Button("Open Database Overview", systemImage: "info.circle") {
                     onSelectionChanged?(.database(database))
                 }
+                Button("Open Database in Tab", systemImage: "rectangle.on.rectangle") {
+                    onOpenSelection?(.database(database))
+                }
                 Button("Open SQL Editor", systemImage: "text.page") {
-                    onSelectionChanged?(.query(id: UUID()))
+                    onOpenSelection?(.query(id: UUID()))
                 }
                 Button("Refresh Tables", systemImage: "arrow.clockwise") {
                     Task { await refreshDatabase(database) }
@@ -304,7 +308,13 @@ struct SchemaBrowserView: View {
             }
             .labelStyle(.iconOnly)
         }
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            onOpenSelection?(.table(database: database, table: table))
+        })
         .accessibilityElement(children: .contain)
+        .accessibilityAction(named: "Open Table") {
+            onOpenSelection?(.table(database: database, table: table))
+        }
     }
     #endif
 
@@ -343,6 +353,16 @@ struct SchemaBrowserView: View {
                         Spacer(minLength: 8)
                     }
                     .contentShape(Rectangle())
+                    .onTapGesture {
+                        onSelectionChanged?(.database(database))
+                    }
+                    .simultaneousGesture(TapGesture(count: 2).onEnded {
+                        onOpenSelection?(.database(database))
+                    })
+                    .accessibilityAction(named: "Open Database in Tab") {
+                        onOpenSelection?(.database(database))
+                    }
+                    .help("Single-click for statistics; double-click to open a database tab")
                     .contextMenu {
                         databaseActionMenu(database)
                     }
@@ -361,6 +381,16 @@ struct SchemaBrowserView: View {
         }
         .contentShape(Rectangle())
         .tag(WorkspaceSelection.table(database: database, table: table))
+        .onTapGesture {
+            onSelectionChanged?(.table(database: database, table: table))
+        }
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            onOpenSelection?(.table(database: database, table: table))
+        })
+        .accessibilityAction(named: "Open Table") {
+            onOpenSelection?(.table(database: database, table: table))
+        }
+        .help("Single-click for statistics; double-click to open the Data workspace")
         .contextMenu {
             tableActionMenu(table, database: database)
         }
@@ -387,6 +417,9 @@ struct SchemaBrowserView: View {
 
     @ViewBuilder
     private func databaseActionMenu(_ database: String) -> some View {
+        Button("Open Database in Tab", systemImage: "rectangle.on.rectangle") {
+            onOpenSelection?(.database(database))
+        }
         if session?.connection?.dialect == .mysql {
             Button("Set as Active Database", systemImage: "checkmark.circle") {
                 Task {
@@ -406,7 +439,7 @@ struct SchemaBrowserView: View {
             }
         }
         Button("Open SQL Editor", systemImage: "text.page") {
-            onSelectionChanged?(.query(id: UUID()))
+            onOpenSelection?(.query(id: UUID()))
         }
         Button("Open in New Window", systemImage: "macwindow.badge.plus") {
             let request = DatabaseWorkspaceWindowRequest.additional(
@@ -428,7 +461,7 @@ struct SchemaBrowserView: View {
     @ViewBuilder
     private func tableActionMenu(_ table: String, database: String) -> some View {
         Button("Browse Data", systemImage: "tablecells") {
-            onSelectionChanged?(.table(database: database, table: table))
+            onOpenSelection?(.table(database: database, table: table))
         }
         Button("Copy Table Name", systemImage: "doc.on.doc") {
             guard let connection = session?.connection else { return }

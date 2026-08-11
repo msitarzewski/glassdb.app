@@ -2,6 +2,18 @@
 
 ## Tasks Completed
 
+### 2026-08-11: Command-W Editor Close and Workspace Tab Seeding
+
+- Command-W closes the selected top-level SQL/table tab with save prompts;
+  Overview is the non-document fallback.
+- Workspace windows seed only Overview; ⌘T creates SQL documents on demand
+  through a workspace-level action that works with zero editors open.
+- Passed Mac 118/118 and iPhone/iPad/Vision Pro 114/114 each with zero
+  failures or skips; Mac runtime warnings proven pre-existing.
+- Follow-ups filed: Overview statistics performance, Mac File-menu SQL
+  document lifecycle, editor gutter alignment.
+- See [../unified-sql-workspace.md](../unified-sql-workspace.md).
+
 ### 2026-08-09: Connection Library Parity
 
 - Added a single-catalog All/Favorites/Recent/Collections connection library with

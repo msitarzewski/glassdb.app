@@ -1,6 +1,6 @@
 # Unified SQL Workspace
 
-**Status:** Implementation in progress; automated platform QA green, loaded-result analysis and visual acceptance pending
+**Status:** Command-W close slice complete and human-approved 2026-08-11 (Mac 118/118; iPhone/iPad/Vision 114/114 each; seed-only-Overview and ⌘T workspace tab creation included). U3 generalization and the U7 loaded-result analysis items remain open.
 **Prepared on:** `agent/command-w-editor-close`
 **Scope:** Replace the nested SQL-document tabs and duplicate result grids with one top-level workspace tab system and one table-browser-derived SQL editor/results implementation.
 

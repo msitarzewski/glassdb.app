@@ -8,6 +8,14 @@ The four-platform implementation and automated simulator/package QA are complete
 
 ## Recent Changes
 
+### Command-W Editor Close and Workspace Tab Seeding (2026-08-11)
+- Routed Command-W through one window-level registration (`MacDatabaseCommandWRouter`) that closes the selected top-level SQL or table tab with the existing save prompt; the connection Overview is the non-document fallback after the last closable tab closes
+- New workspace windows seed only the Overview tab; the previous implicitly minted "Untitled SQL" document is gone, and windows opened to a table, database, or restored SQL document still get that tab beside Overview
+- SQL documents are created on demand through a workspace-level New Query Tab action (⌘T in the Query menu) that works with zero editors open; ⌘N remains captured by the system "New Connections Window" File item pending the filed File-menu task
+- Added Overview namespace-inspection progress reporting and sidebar single-click preview versus double-click activation refinements
+- QA: Mac 118/118, iPhone 114/114, iPad 114/114, and Vision Pro visionOS 27 114/114 with zero failures or skips; the five Mac "Invalid view geometry" runtime warnings were proven pre-existing against a clean HEAD worktree baseline; human visual approval covered connect, table browsing, ⌘T creation, and the ⌘W save/don't-save prompt
+- Filed Memory Bank tasks: connection Overview statistics performance (391 sequential `SHOW TABLE STATUS` round trips on the local server), Mac File-menu ownership of the SQL document lifecycle (system ⌘N capture plus the per-editor focused-value publication that kills ⌘O/⌘S once two editors are alive — pre-existing on main), and Mac SQL editor gutter alignment
+
 ### Connection Library Parity (2026-08-09)
 - Reused `ConnectionManager.connections` as the only saved database catalog and added a transient deterministic projection for All Connections, Favorites, Recent, Collections, and search
 - Replaced the duplicated connection presentations with an adaptive iPhone navigation stack, regular-width Mac/iPad split view, and Vision Pro mode tabs/spatial split views

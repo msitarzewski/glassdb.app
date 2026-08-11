@@ -618,6 +618,7 @@ struct DatabaseCommandActions {
 
 struct DatabaseWorkspaceCommandActions {
     let canCloseTab: Bool
+    let newQueryTab: () -> Void
     let closeTab: () -> Void
 }
 
@@ -680,9 +681,18 @@ struct DatabaseCommands: Commands {
                 .disabled(actions == nil)
             Button("Saved Queries") { actions?.showSavedQueries() }
                 .disabled(actions == nil)
-            Button("New Query Tab") { actions?.newTab() }
+            Button("New Query Tab") {
+                // The workspace action must own creation so the first SQL
+                // document can be spawned when no editor is publishing
+                // focused query actions.
+                if let workspaceActions {
+                    workspaceActions.newQueryTab()
+                } else {
+                    actions?.newTab()
+                }
+            }
                 .keyboardShortcut("t", modifiers: .command)
-                .disabled(actions == nil)
+                .disabled(workspaceActions == nil && actions == nil)
             Button("Close Active Tab") {
                 if workspaceActions?.canCloseTab == true {
                     workspaceActions?.closeTab()

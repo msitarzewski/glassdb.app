@@ -549,6 +549,8 @@ struct DatabaseDetailView: View {
     let database: String
     var isWorkspaceActive = true
     var refreshTrigger = 0
+    var activatesDatabaseOnLoad = true
+    var previewsTables = false
     var onOpenTable: ((String) -> Void)?
     var onOpenSQLEditor: (() -> Void)?
 
@@ -615,7 +617,11 @@ struct DatabaseDetailView: View {
         #endif
         .task(id: isWorkspaceActive) {
             guard isWorkspaceActive else { return }
-            await setActiveAndLoad()
+            if activatesDatabaseOnLoad {
+                await setActiveAndLoad()
+            } else {
+                await loadStatus()
+            }
         }
         .onChange(of: refreshTrigger) {
             guard isWorkspaceActive else { return }
@@ -623,7 +629,13 @@ struct DatabaseDetailView: View {
         }
         .onChange(of: session?.state) {
             guard isWorkspaceActive, session?.state.isConnected == true else { return }
-            Task { await setActiveAndLoad() }
+            Task {
+                if activatesDatabaseOnLoad {
+                    await setActiveAndLoad()
+                } else {
+                    await loadStatus()
+                }
+            }
         }
     }
 
@@ -776,7 +788,9 @@ struct DatabaseDetailView: View {
             HStack {
                 Text("Tables").font(.headline)
                 Spacer()
-                Text("Select a table to browse its data")
+                Text(previewsTables
+                    ? "Select a table to preview its statistics"
+                    : "Select a table to browse its data")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -811,7 +825,9 @@ struct DatabaseDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-                    .help("Open \(status.name) in the Data tool")
+                    .help(previewsTables
+                        ? "Preview statistics for \(status.name)"
+                        : "Open \(status.name) in the Data tool")
                 }
             }
             .padding(10)
@@ -876,6 +892,226 @@ struct DatabaseDetailView: View {
         } catch {
             await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
             if tableStatuses.isEmpty {
+                errorMessage = error.localizedDescription
+            }
+        }
+        isLoading = false
+    }
+
+    private func rowCountDescription(_ status: TableStatus) -> String {
+        let value = status.rowCount.formatted()
+        return status.rowCountAccuracy == .estimated ? "~\(value)" : value
+    }
+}
+
+struct TableStatisticsPreviewView: View {
+    let sessionID: UUID
+    let database: String
+    let table: String
+    var refreshTrigger = 0
+    var onOpenTable: (() -> Void)?
+    var onOpenSQLEditor: (() -> Void)?
+
+    @Environment(DatabaseSessionManager.self) private var sessionManager
+
+    @State private var status: TableStatus?
+    @State private var statisticsCapturedAt: Date?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    private var session: DatabaseSession? {
+        sessionManager.session(for: sessionID)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                headerSection
+                actionSection
+
+                if isLoading {
+                    ProgressView("Loading table statistics...")
+                        .padding(32)
+                } else if let errorMessage {
+                    ContentUnavailableView(
+                        "Statistics Unavailable",
+                        systemImage: "chart.bar.xaxis",
+                        description: Text(errorMessage)
+                    )
+                } else if let status {
+                    statisticsSection(status)
+                    freshnessSection(status)
+                }
+            }
+            .padding(28)
+        }
+        .databaseLookScrollEnabled()
+        #if os(macOS)
+        .toolbar {
+            ToolbarSpacer(.flexible, placement: databaseToolbarPlacement)
+            DatabasePersistentToolbar {
+                onOpenSQLEditor?()
+            }
+            ToolbarItem(placement: databaseToolbarPlacement) {
+                Button {
+                    Task { await loadStatus(forceRefresh: true) }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .help("Reload table statistics")
+                .accessibilityLabel("Reload Table Statistics")
+            }
+        }
+        #endif
+        .task(id: previewIdentity) {
+            await loadStatus()
+        }
+        .onChange(of: refreshTrigger) {
+            Task { await loadStatus(forceRefresh: true) }
+        }
+        .onChange(of: session?.state) {
+            guard session?.state.isConnected == true else { return }
+            Task { await loadStatus() }
+        }
+    }
+
+    private var previewIdentity: String {
+        "\(database.utf8.count):\(database)\(table)"
+    }
+
+    private var headerSection: some View {
+        HStack(spacing: 16) {
+            Image(systemName: "tablecells")
+                .font(.system(size: 34))
+                .foregroundStyle(.tint)
+                .frame(width: 54, height: 54)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(table)
+                    .font(.title.bold())
+                Text(database)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("Statistics preview — double-click the table in the sidebar to open its Data workspace.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    private var actionSection: some View {
+        HStack(spacing: 12) {
+            Button {
+                onOpenTable?()
+            } label: {
+                Label("Open Data Workspace", systemImage: "tablecells")
+            }
+            .buttonStyle(.borderedProminent)
+
+            Button {
+                onOpenSQLEditor?()
+            } label: {
+                Label("SQL Editor", systemImage: "text.page")
+            }
+        }
+    }
+
+    private func statisticsSection(_ status: TableStatus) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
+            OverviewMetricCard(
+                value: rowCountDescription(status),
+                label: status.rowCountAccuracy == .estimated ? "Estimated rows" : "Rows",
+                systemImage: "number"
+            )
+            OverviewMetricCard(
+                value: ByteCountFormatter.string(
+                    fromByteCount: Int64(status.dataLength),
+                    countStyle: .file
+                ),
+                label: "Table storage",
+                systemImage: "internaldrive"
+            )
+            OverviewMetricCard(
+                value: status.engine ?? "Unknown",
+                label: "Storage engine",
+                systemImage: "gearshape.2"
+            )
+            OverviewMetricCard(
+                value: status.collation ?? "Unavailable",
+                label: "Collation",
+                systemImage: "textformat"
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func freshnessSection(_ status: TableStatus) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let statisticsCapturedAt {
+                Label(
+                    "Server statistics cached \(statisticsCapturedAt.formatted(date: .abbreviated, time: .shortened))",
+                    systemImage: "clock.arrow.circlepath"
+                )
+            }
+            if let analyzedAt = status.statisticsUpdatedAt {
+                Label(
+                    "Server statistics last analyzed \(analyzedAt.formatted(date: .abbreviated, time: .shortened))",
+                    systemImage: "chart.bar.doc.horizontal"
+                )
+            }
+            if let modifiedRows = status.modifiedRowsSinceAnalysis, modifiedRows > 0 {
+                Label(
+                    "Approximately \(modifiedRows.formatted()) row changes since analysis",
+                    systemImage: "exclamationmark.arrow.triangle.2.circlepath"
+                )
+                .foregroundStyle(.orange)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
+    private func loadStatus(forceRefresh: Bool = false) async {
+        guard !isLoading else { return }
+        guard let connection = session?.connection else {
+            errorMessage = "The database session is no longer available."
+            return
+        }
+        guard connection.capabilities.contains(.tableStatistics) else {
+            status = nil
+            errorMessage = "\(connection.engineName) does not expose table-size statistics through glassdb yet."
+            return
+        }
+
+        if let cached = sessionManager.cachedTableStatistics(
+            sessionID: sessionID,
+            database: database
+        ) {
+            status = cached.status(for: table)
+            statisticsCapturedAt = cached.capturedAt
+            if cached.isFresh(), !forceRefresh, status != nil {
+                errorMessage = nil
+                return
+            }
+        }
+
+        isLoading = status == nil
+        errorMessage = nil
+        do {
+            let snapshot = try await sessionManager.tableStatistics(
+                sessionID: sessionID,
+                database: database,
+                forceRefresh: forceRefresh
+            )
+            status = snapshot.status(for: table)
+            statisticsCapturedAt = snapshot.capturedAt
+            if status == nil {
+                errorMessage = "The server did not return statistics for \(database).\(table)."
+            }
+        } catch {
+            await sessionManager.handleConnectionFailure(error, sessionID: sessionID)
+            if status == nil {
                 errorMessage = error.localizedDescription
             }
         }
