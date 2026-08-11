@@ -186,6 +186,13 @@
 - [x] Final regressions passed 105/105 on Mac and 103/103 each on iPhone, iPad, and Vision Pro with zero failures or skips
 - [x] 2026-08-10 follow-up adopted glas.sh-style direct row interaction, denser rows/details, clearer action hierarchy, and restored Mac Settings access; the human-approved combined preview passed 115/115 Mac tests and all four platform builds
 
+### Completed — Command-W Editor Close and Workspace Tab Seeding (2026-08-11)
+- [x] Command-W closes the selected top-level SQL or table tab through one window-level registration, honoring the unsaved-SQL save/don't-save/cancel prompt; Overview is the fallback after the last closable tab
+- [x] New workspace windows seed only the Overview tab; SQL documents are on-demand via the workspace-level New Query Tab action (⌘T), available with zero editors open
+- [x] Overview namespace-inspection progress and sidebar preview/activation refinements landed with reworked `WorkspaceTabState` coverage
+- [x] Four-platform regression: Mac 118/118, iPhone 114/114, iPad 114/114, Vision Pro 114/114, zero failures or skips; Mac runtime warnings proven pre-existing via clean-HEAD worktree baseline
+- [x] Open follow-ups filed as Memory Bank tasks: Overview statistics performance, Mac File-menu SQL document lifecycle (⌘N capture and multi-editor focused-value defect), and Mac editor gutter alignment
+
 ### In Progress
 - [ ] C3 cross-device Glass-family credential catalog and eligible-secret synchronization; shared access group/App Group behavior is currently same-device only
 - [ ] Magic / First Class **My Connections** contract: neutral endpoint identity,

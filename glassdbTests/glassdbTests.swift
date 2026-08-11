@@ -156,30 +156,26 @@ struct glassdbTests {
         #expect(appearance.surfaceAlpha(strength: 2) == 1)
     }
 
-    @Test func workspaceTabsStartWithOverviewAndOneQueryAndDeduplicateTables() throws {
+    @Test func workspaceTabsStartWithOnlyOverviewAndDeduplicateTables() {
         var state = WorkspaceTabState()
         let table = WorkspaceSelection.table(database: "analytics", table: "events")
-        let initialQuery = try #require(state.tabs.dropFirst().first)
+        let query = WorkspaceSelection.query(id: UUID())
 
-        guard case .query = initialQuery else {
-            Issue.record("The second workspace tab must be an SQL document")
-            return
-        }
-        #expect(state.tabs == [.connection, initialQuery])
+        #expect(state.tabs == [.connection])
         #expect(state.selected == .connection)
 
         state.open(table)
-        state.open(initialQuery)
+        state.open(query)
         state.open(table)
 
-        #expect(state.tabs == [.connection, initialQuery, table])
+        #expect(state.tabs == [.connection, table, query])
         #expect(state.selected == table)
     }
 
-    @Test func commandWTargetsTheSelectedTopLevelWorkspace() throws {
+    @Test func commandWTargetsTheSelectedTopLevelWorkspace() {
         var state = WorkspaceTabState()
         let table = WorkspaceSelection.table(database: "analytics", table: "events")
-        let query = try #require(state.tabs.dropFirst().first)
+        let query = WorkspaceSelection.query(id: UUID())
 
         #expect(state.selected.commandWEditorTarget == .none)
         state.open(query)
@@ -327,17 +323,16 @@ struct glassdbTests {
         #expect(fallback.initialSelection == .connection)
     }
 
-    @Test func workspaceTabsStartAtRequestedDatabaseWithoutLosingTheInitialQuery() throws {
+    @Test func workspaceTabsStartAtRequestedSelectionBesideOnlyOverview() {
         let database = WorkspaceSelection.database("analytics")
-        let state = WorkspaceTabState(initialSelection: database)
-        let query = try #require(state.tabs.dropFirst().first)
+        let databaseState = WorkspaceTabState(initialSelection: database)
+        #expect(databaseState.tabs == [.connection, database])
+        #expect(databaseState.selected == database)
 
-        guard case .query = query else {
-            Issue.record("The second workspace tab must be an SQL document")
-            return
-        }
-        #expect(state.tabs == [.connection, query, database])
-        #expect(state.selected == database)
+        let restoredQuery = WorkspaceSelection.query(id: UUID())
+        let queryState = WorkspaceTabState(initialSelection: restoredQuery)
+        #expect(queryState.tabs == [.connection, restoredQuery])
+        #expect(queryState.selected == restoredQuery)
     }
 
     @Test func overviewRefreshActionOnlyAppearsForOverviewDestinations() {
@@ -347,9 +342,8 @@ struct glassdbTests {
         #expect(!WorkspaceSelection.query(id: UUID()).usesOverviewRefreshAction)
     }
 
-    @Test func workspaceTabsUseFullDatabaseAndTableIdentity() throws {
+    @Test func workspaceTabsUseFullDatabaseAndTableIdentity() {
         var state = WorkspaceTabState()
-        let query = try #require(state.tabs.dropFirst().first)
         let first = WorkspaceSelection.table(database: "ab", table: "c")
         let second = WorkspaceSelection.table(database: "a", table: "bc")
         let sameNameOtherDatabase = WorkspaceSelection.table(database: "archive", table: "c")
@@ -359,25 +353,81 @@ struct glassdbTests {
         state.open(sameNameOtherDatabase)
 
         #expect(first != second)
-        #expect(state.tabs == [.connection, query, first, second, sameNameOtherDatabase])
+        #expect(state.tabs == [.connection, first, second, sameNameOtherDatabase])
         #expect(state.selected == sameNameOtherDatabase)
     }
 
-    @Test func workspaceTabsKeepOneReplaceableDatabasePreview() throws {
+    @Test func workspaceTabsKeepOneReplaceableDatabasePreview() {
         var state = WorkspaceTabState()
-        let query = try #require(state.tabs.dropFirst().first)
         let table = WorkspaceSelection.table(database: "analytics", table: "events")
         state.open(table)
         state.open(.database("analytics"))
         state.open(.database("archive"))
 
-        #expect(state.tabs == [.connection, query, table, .database("archive")])
+        #expect(state.tabs == [.connection, table, .database("archive")])
         #expect(state.selected == .database("archive"))
     }
 
-    @Test func workspaceTabsCloseSelectedUsingRightThenLeftThenOverviewFallback() throws {
+    @Test func workspaceSingleClickPreviewsDoNotCreateOrSelectTabs() {
         var state = WorkspaceTabState()
-        let query = try #require(state.tabs.dropFirst().first)
+        let query = WorkspaceSelection.query(id: UUID())
+        let database = WorkspaceSelection.database("analytics")
+        let table = WorkspaceSelection.table(database: "analytics", table: "events")
+
+        state.open(query)
+        state.preview(database)
+        #expect(state.tabs == [.connection, query])
+        #expect(state.selected == query)
+        #expect(state.previewed == database)
+        #expect(state.displayed == database)
+
+        state.preview(table)
+        #expect(state.tabs == [.connection, query])
+        #expect(state.selected == query)
+        #expect(state.previewed == table)
+        #expect(state.displayed == table)
+    }
+
+    @Test func workspaceDoubleClickActivationPromotesPreviewToPersistentTab() {
+        var state = WorkspaceTabState()
+        let database = WorkspaceSelection.database("analytics")
+        let table = WorkspaceSelection.table(database: "analytics", table: "events")
+
+        state.preview(database)
+        state.open(database)
+        #expect(state.tabs == [.connection, database])
+        #expect(state.selected == database)
+        #expect(state.previewed == nil)
+
+        state.preview(table)
+        state.open(table)
+        #expect(state.tabs == [.connection, database, table])
+        #expect(state.selected == table)
+        #expect(state.previewed == nil)
+    }
+
+    @Test func workspaceActivationWinsWhenSingleClickArrivesAfterDoubleClick() throws {
+        var state = WorkspaceTabState()
+        let database = WorkspaceSelection.database("analytics")
+        let table = WorkspaceSelection.table(database: "analytics", table: "events")
+
+        state.open(database)
+        state.preview(database)
+        #expect(state.selected == database)
+        #expect(state.displayed == database)
+        #expect(state.previewed == nil)
+
+        state.open(table)
+        state.preview(table)
+        #expect(state.selected == table)
+        #expect(state.displayed == table)
+        #expect(state.previewed == nil)
+    }
+
+    @Test func workspaceTabsCloseSelectedUsingRightThenLeftThenOverviewFallback() {
+        var state = WorkspaceTabState()
+        let query = WorkspaceSelection.query(id: UUID())
+        state.open(query)
         let first = WorkspaceSelection.table(database: "db", table: "first")
         let middle = WorkspaceSelection.table(database: "db", table: "middle")
         let last = WorkspaceSelection.table(database: "db", table: "last")
@@ -407,9 +457,10 @@ struct glassdbTests {
         #expect(state.selected == .connection)
     }
 
-    @Test func workspaceTabsCloseInactiveWithoutChangingSelectionAndRejectInvalidCloses() throws {
+    @Test func workspaceTabsCloseInactiveWithoutChangingSelectionAndRejectInvalidCloses() {
         var state = WorkspaceTabState()
-        let query = try #require(state.tabs.dropFirst().first)
+        let query = WorkspaceSelection.query(id: UUID())
+        state.open(query)
         let first = WorkspaceSelection.table(database: "db", table: "first")
         let selected = WorkspaceSelection.table(database: "db", table: "selected")
         let missing = WorkspaceSelection.table(database: "db", table: "missing")

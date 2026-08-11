@@ -98,22 +98,25 @@ struct DatabaseWorkspaceWindowRequest: Hashable, Codable, Identifiable {
 struct WorkspaceTabState: Equatable {
     private(set) var tabs: [WorkspaceSelection]
     private(set) var selected: WorkspaceSelection
+    private(set) var previewed: WorkspaceSelection?
+
+    var displayed: WorkspaceSelection {
+        previewed ?? selected
+    }
 
     init(initialSelection: WorkspaceSelection = .connection) {
-        let initialQuery: WorkspaceSelection
-        if case .query = initialSelection {
-            initialQuery = initialSelection
-        } else {
-            initialQuery = .query(id: UUID())
-        }
-        let permanentTabs: [WorkspaceSelection] = [.connection, initialQuery]
-        tabs = permanentTabs.contains(initialSelection)
-            ? permanentTabs
-            : permanentTabs + [initialSelection]
+        // Overview is the only seeded tab; SQL documents are created on
+        // demand (⌘N, sidebar, or Overview) per the unified-workspace
+        // fallback decision.
+        tabs = initialSelection == .connection
+            ? [.connection]
+            : [.connection, initialSelection]
         selected = initialSelection
+        previewed = nil
     }
 
     mutating func open(_ destination: WorkspaceSelection) {
+        previewed = nil
         if case .database = destination {
             tabs.removeAll { existing in
                 if case .database = existing { return true }
@@ -126,12 +129,34 @@ struct WorkspaceTabState: Equatable {
         selected = destination
     }
 
+    mutating func preview(_ destination: WorkspaceSelection) {
+        switch destination {
+        case .database, .table:
+            // SwiftUI can deliver the single-click callback after the
+            // simultaneous double-click callback. Once activation has opened
+            // and selected this destination, that trailing click must not
+            // cover the live tab with an ephemeral preview.
+            guard selected != destination || !tabs.contains(destination) else {
+                previewed = nil
+                return
+            }
+            previewed = destination
+        case .connection, .query:
+            open(destination)
+        }
+    }
+
+    mutating func clearPreview() {
+        previewed = nil
+    }
+
     @discardableResult
     mutating func close(_ destination: WorkspaceSelection) -> Bool {
         guard destination.isClosable,
               let index = tabs.firstIndex(of: destination) else { return false }
         let wasSelected = selected == destination
         tabs.remove(at: index)
+        previewed = nil
         if wasSelected {
             selected = tabs[min(index, tabs.count - 1)]
         }
@@ -189,14 +214,18 @@ struct DatabaseWorkspaceView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SchemaBrowserView(
                 sessionID: sessionID,
-                selection: tabState.selected
-            ) { newSelection in
-                if case .query(let id) = newSelection {
-                    openQueryDocument(QueryDocumentTab(id: id))
-                } else {
-                    openWorkspace(newSelection)
+                selection: tabState.displayed,
+                onSelectionChanged: { newSelection in
+                    previewWorkspace(newSelection)
+                },
+                onOpenSelection: { newSelection in
+                    if case .query(let id) = newSelection {
+                        openQueryDocument(QueryDocumentTab(id: id))
+                    } else {
+                        openWorkspace(newSelection)
+                    }
                 }
-            }
+            )
             .databaseSidebarColumnWidth()
             .databaseWorkspaceSidebarMaterial()
         } detail: {
@@ -256,7 +285,7 @@ struct DatabaseWorkspaceView: View {
                 .accessibilityLabel("SQL Editor")
                 .accessibilityHint("Opens the connected SQL query editor")
 
-                if tabState.selected.usesOverviewRefreshAction {
+                if tabState.displayed.usesOverviewRefreshAction {
                     Button {
                         overviewRefreshTrigger &+= 1
                     } label: {
@@ -566,13 +595,19 @@ struct DatabaseWorkspaceView: View {
 
             ZStack {
                 ForEach(tabState.tabs, id: \.self) { destination in
-                    let isActive = destination == tabState.selected
+                    let isActive = tabState.previewed == nil && destination == tabState.selected
                     workspaceContent(for: destination, isActive: isActive)
                         .id(destination)
                         .opacity(isActive ? 1 : 0)
                         .allowsHitTesting(isActive)
                         .accessibilityHidden(!isActive)
                         .zIndex(isActive ? 1 : 0)
+                }
+
+                if let preview = tabState.previewed {
+                    workspacePreviewContent(for: preview)
+                        .id(preview)
+                        .zIndex(2)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -591,7 +626,7 @@ struct DatabaseWorkspaceView: View {
         ScrollView(.horizontal) {
             HStack(spacing: 6) {
                 ForEach(tabState.tabs, id: \.self) { destination in
-                    let isSelected = destination == tabState.selected
+                    let isSelected = tabState.previewed == nil && destination == tabState.selected
                     HStack(spacing: 2) {
                         Button {
                             openWorkspace(destination)
@@ -647,6 +682,41 @@ struct DatabaseWorkspaceView: View {
     }
 
     @ViewBuilder
+    private func workspacePreviewContent(for destination: WorkspaceSelection) -> some View {
+        switch destination {
+        case .database(let database):
+            DatabaseDetailView(
+                sessionID: sessionID,
+                database: database,
+                isWorkspaceActive: true,
+                refreshTrigger: overviewRefreshTrigger,
+                activatesDatabaseOnLoad: false,
+                previewsTables: true,
+                onOpenTable: { table in
+                    previewWorkspace(.table(database: database, table: table))
+                }
+            ) {
+                openQueryDocument()
+            }
+        case .table(let database, let table):
+            TableStatisticsPreviewView(
+                sessionID: sessionID,
+                database: database,
+                table: table,
+                refreshTrigger: overviewRefreshTrigger,
+                onOpenTable: {
+                    openWorkspace(destination)
+                },
+                onOpenSQLEditor: {
+                    openQueryDocument()
+                }
+            )
+        case .connection, .query:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
     private func workspaceContent(
         for destination: WorkspaceSelection,
         isActive: Bool
@@ -658,7 +728,7 @@ struct DatabaseWorkspaceView: View {
                 isWorkspaceActive: isActive,
                 refreshTrigger: overviewRefreshTrigger,
                 onOpenDatabase: { database in
-                    openWorkspace(.database(database))
+                    previewWorkspace(.database(database))
                 },
                 onOpenSQLEditor: {
                     openQueryDocument()
@@ -697,7 +767,7 @@ struct DatabaseWorkspaceView: View {
     }
 
     private var detailTitle: String {
-        switch tabState.selected {
+        switch tabState.displayed {
         case .connection:
             return session?.connectionConfig.name ?? "Overview"
         case .table(let database, let table):
@@ -711,8 +781,9 @@ struct DatabaseWorkspaceView: View {
 
     private var workspaceCommandActions: DatabaseWorkspaceCommandActions {
         DatabaseWorkspaceCommandActions(
-            canCloseTab: canCloseWorkspace(tabState.selected),
-            closeTab: { requestCloseWorkspace(tabState.selected) }
+            canCloseTab: tabState.previewed != nil || canCloseWorkspace(tabState.selected),
+            newQueryTab: { openQueryDocument() },
+            closeTab: { closeFocusedEditor() }
         )
     }
 
@@ -741,6 +812,14 @@ struct DatabaseWorkspaceView: View {
     /// content remains alive in the ZStack, so child registrations would be
     /// able to shadow the selected table or database editor with stale state.
     private func closeFocusedEditor() {
+        if tabState.previewed != nil {
+            var updatedState = tabState
+            updatedState.clearPreview()
+            withAnimation(.snappy) {
+                tabState = updatedState
+            }
+            return
+        }
         switch tabState.selected.commandWEditorTarget {
         case .none:
             break
@@ -755,6 +834,14 @@ struct DatabaseWorkspaceView: View {
     private func openWorkspace(_ destination: WorkspaceSelection) {
         var updatedState = tabState
         updatedState.open(destination)
+        withAnimation(.snappy) {
+            tabState = updatedState
+        }
+    }
+
+    private func previewWorkspace(_ destination: WorkspaceSelection) {
+        var updatedState = tabState
+        updatedState.preview(destination)
         withAnimation(.snappy) {
             tabState = updatedState
         }
