@@ -27,7 +27,7 @@ public final class PostgreSQLEngine: DatabaseEngine, @unchecked Sendable {
             .transactions, .parameterBinding, .transportTLS, .queryTimeout,
             .metadata, .schemas, .indexes, .foreignKeys, .explain,
             .serverVersion, .cancellation, .tableStatistics,
-            .truncateTable,
+            .aggregateTableStatistics, .truncateTable,
         ]
     }
 
@@ -117,7 +117,7 @@ actor PostgreSQLDatabaseConnection: DatabaseConnection {
         .transactions, .parameterBinding, .transportTLS, .queryTimeout,
         .metadata, .schemas, .indexes, .foreignKeys, .explain,
         .serverVersion, .cancellation, .tableStatistics,
-        .truncateTable,
+        .aggregateTableStatistics, .truncateTable,
     ]
     nonisolated let identifierQuoteCharacter: Character = "\""
 
@@ -358,23 +358,58 @@ actor PostgreSQLDatabaseConnection: DatabaseConnection {
             """,
             parameters: [.string(database)]
         )
-        return result.rows.map { row in
-            let statisticsUpdatedAt: Date? = if case .date(let value)? = row[safe: 3] {
-                value
-            } else {
-                nil
-            }
-            return TableStatus(
-                name: row[safe: 0]?.displayString ?? "",
-                engine: "PostgreSQL",
-                rowCount: Int(row[safe: 1]?.displayString ?? "0") ?? 0,
-                dataLength: Int(row[safe: 2]?.displayString ?? "0") ?? 0,
-                collation: nil,
-                rowCountAccuracy: .estimated,
-                statisticsUpdatedAt: statisticsUpdatedAt,
-                modifiedRowsSinceAnalysis: Int(row[safe: 4]?.displayString ?? "")
-            )
+        return result.rows.map { Self.tableStatus(from: $0, startingAt: 0) }
+    }
+
+    /// One pass over every user schema in the current database, mirroring the
+    /// per-schema query above and the schema filter used by databases().
+    static let aggregateTableStatusQuery = """
+        SELECT namespace.nspname,
+               table_class.relname,
+               GREATEST(COALESCE(stats.n_live_tup, table_class.reltuples), 0)::bigint,
+               pg_total_relation_size(table_class.oid),
+               GREATEST(stats.last_analyze, stats.last_autoanalyze),
+               stats.n_mod_since_analyze
+        FROM pg_catalog.pg_class table_class
+        JOIN pg_catalog.pg_namespace namespace
+          ON namespace.oid = table_class.relnamespace
+        LEFT JOIN pg_catalog.pg_stat_user_tables stats
+          ON stats.relid = table_class.oid
+        WHERE namespace.nspname <> 'information_schema'
+          AND namespace.nspname NOT LIKE 'pg_%'
+          AND table_class.relkind IN ('r', 'p')
+        ORDER BY namespace.nspname, table_class.relname
+        """
+
+    func tableStatusByNamespace() async throws -> [String: [TableStatus]] {
+        let result = try await performQuery(Self.aggregateTableStatusQuery, parameters: [])
+        var grouped: [String: [TableStatus]] = [:]
+        for row in result.rows {
+            guard let schema = row[safe: 0]?.displayString, !schema.isEmpty else { continue }
+            grouped[schema, default: []].append(Self.tableStatus(from: row, startingAt: 1))
         }
+        return grouped
+    }
+
+    /// Shared mapping for the per-schema and aggregate statistics queries. The
+    /// aggregate query prepends the schema name, so its rows map from offset 1.
+    /// Internal (not private) so tests can pin the offset-based contract.
+    static func tableStatus(from row: [DatabaseValue], startingAt offset: Int) -> TableStatus {
+        let statisticsUpdatedAt: Date? = if case .date(let value)? = row[safe: offset + 3] {
+            value
+        } else {
+            nil
+        }
+        return TableStatus(
+            name: row[safe: offset]?.displayString ?? "",
+            engine: "PostgreSQL",
+            rowCount: Int(row[safe: offset + 1]?.displayString ?? "0") ?? 0,
+            dataLength: Int(row[safe: offset + 2]?.displayString ?? "0") ?? 0,
+            collation: nil,
+            rowCountAccuracy: .estimated,
+            statisticsUpdatedAt: statisticsUpdatedAt,
+            modifiedRowsSinceAnalysis: Int(row[safe: offset + 4]?.displayString ?? "")
+        )
     }
 
     func rowCount(table: String, database: String) async throws -> Int {

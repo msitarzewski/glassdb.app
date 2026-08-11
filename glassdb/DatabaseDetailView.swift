@@ -428,65 +428,28 @@ struct ConnectionOverviewView: View {
         do {
             let databases = try await connection.databases()
             namespaceCount = databases.count
-            var summaries: [ConnectionDatabaseSummary] = []
-            var unavailableCount = 0
 
-            for database in databases {
-                try Task.checkCancellation()
-                var summary: ConnectionDatabaseSummary?
-
-                if connection.capabilities.contains(.tableStatistics) {
-                    if let cached = sessionManager.cachedTableStatistics(
-                        sessionID: sessionID,
-                        database: database
-                    ) {
-                        let cachedSummary = ConnectionDatabaseSummary(name: database, snapshot: cached)
-                        summary = cachedSummary
-                        summaries.append(cachedSummary)
-                        databaseSummaries = summaries.sorted {
-                            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-                        }
-                    }
-                    do {
-                        let snapshot = try await sessionManager.tableStatistics(
-                            sessionID: sessionID,
-                            database: database,
-                            forceRefresh: forceRefresh
-                        )
-                        summary = ConnectionDatabaseSummary(name: database, snapshot: snapshot)
-                    } catch {
-                        if await connection.isConnected == false { throw error }
-                        unavailableCount += 1
-                        if summary == nil {
-                            summary = ConnectionDatabaseSummary(name: database)
-                        }
-                    }
-                } else if connection.capabilities.contains(.metadata) {
-                    do {
-                        let tables = try await connection.tables(in: database)
-                        summary = ConnectionDatabaseSummary(name: database, tableCount: tables.count)
-                    } catch {
-                        if await connection.isConnected == false { throw error }
-                        unavailableCount += 1
-                        summary = ConnectionDatabaseSummary(name: database)
-                    }
-                } else {
-                    summary = ConnectionDatabaseSummary(name: database)
-                }
-
-                if let summary,
-                   let existingIndex = summaries.firstIndex(where: { $0.name == database }) {
-                    summaries[existingIndex] = summary
-                } else if let summary {
-                    summaries.append(summary)
-                }
-                loadedNamespaceCount = summaries.count
-                databaseSummaries = summaries.sorted {
-                    $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-                }
+            var summaries: [ConnectionDatabaseSummary]?
+            if connection.capabilities.contains(.aggregateTableStatistics) {
+                summaries = try await aggregateSummaries(
+                    databases: databases,
+                    connection: connection,
+                    forceRefresh: forceRefresh
+                )
             }
-
-            unavailableNamespaceCount = unavailableCount
+            let resolvedSummaries: [ConnectionDatabaseSummary]
+            if let summaries {
+                resolvedSummaries = summaries
+            } else {
+                resolvedSummaries = try await sequentialSummaries(
+                    databases: databases,
+                    connection: connection,
+                    forceRefresh: forceRefresh
+                )
+            }
+            databaseSummaries = resolvedSummaries.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
         } catch is CancellationError {
             isLoading = false
             return
@@ -496,6 +459,104 @@ struct ConnectionOverviewView: View {
         }
 
         isLoading = false
+    }
+
+    /// One aggregate round trip covers every namespace, so there is no
+    /// incremental progress to report. Returns nil when the aggregate query
+    /// fails while the transport stays healthy (for example a restricted
+    /// metadata grant), letting the caller fall back to the per-database walk.
+    @MainActor
+    private func aggregateSummaries(
+        databases: [String],
+        connection: any DatabaseConnection,
+        forceRefresh: Bool
+    ) async throws -> [ConnectionDatabaseSummary]? {
+        do {
+            let snapshots = try await sessionManager.aggregateTableStatistics(
+                sessionID: sessionID,
+                namespaces: databases,
+                forceRefresh: forceRefresh
+            )
+            loadedNamespaceCount = databases.count
+            return databases.map { database in
+                if let snapshot = snapshots[database] {
+                    ConnectionDatabaseSummary(name: database, snapshot: snapshot)
+                } else {
+                    ConnectionDatabaseSummary(name: database)
+                }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if await connection.isConnected == false { throw error }
+            return nil
+        }
+    }
+
+    /// Per-database walk for engines without an aggregate statistics surface.
+    /// Publishes the summaries array once per coarse chunk instead of once per
+    /// database so a large server does not re-render the dashboard per query.
+    @MainActor
+    private func sequentialSummaries(
+        databases: [String],
+        connection: any DatabaseConnection,
+        forceRefresh: Bool
+    ) async throws -> [ConnectionDatabaseSummary] {
+        var summaries: [ConnectionDatabaseSummary] = []
+        var unavailableCount = 0
+        let publishChunkSize = 16
+
+        for database in databases {
+            try Task.checkCancellation()
+            var summary: ConnectionDatabaseSummary?
+
+            if connection.capabilities.contains(.tableStatistics) {
+                if let cached = sessionManager.cachedTableStatistics(
+                    sessionID: sessionID,
+                    database: database
+                ) {
+                    summary = ConnectionDatabaseSummary(name: database, snapshot: cached)
+                }
+                do {
+                    let snapshot = try await sessionManager.tableStatistics(
+                        sessionID: sessionID,
+                        database: database,
+                        forceRefresh: forceRefresh
+                    )
+                    summary = ConnectionDatabaseSummary(name: database, snapshot: snapshot)
+                } catch {
+                    if await connection.isConnected == false { throw error }
+                    unavailableCount += 1
+                    if summary == nil {
+                        summary = ConnectionDatabaseSummary(name: database)
+                    }
+                }
+            } else if connection.capabilities.contains(.metadata) {
+                do {
+                    let tables = try await connection.tables(in: database)
+                    summary = ConnectionDatabaseSummary(name: database, tableCount: tables.count)
+                } catch {
+                    if await connection.isConnected == false { throw error }
+                    unavailableCount += 1
+                    summary = ConnectionDatabaseSummary(name: database)
+                }
+            } else {
+                summary = ConnectionDatabaseSummary(name: database)
+            }
+
+            if let summary {
+                summaries.append(summary)
+            }
+            loadedNamespaceCount = summaries.count
+            if summaries.count.isMultiple(of: publishChunkSize) {
+                databaseSummaries = summaries.sorted {
+                    $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            }
+        }
+
+        unavailableNamespaceCount = unavailableCount
+        return summaries
     }
 }
 

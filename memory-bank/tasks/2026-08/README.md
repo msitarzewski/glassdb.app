@@ -2,6 +2,19 @@
 
 ## Tasks Completed
 
+### 2026-08-11: Overview Statistics, File-Menu Lifecycle, and Editor Gutter
+
+- One aggregate statistics query per engine replaces the 391-round-trip
+  Overview walk (~4 s cold load, was 40+); cache fan-out preserves all
+  per-database consumers.
+- Mac File menu owns SQL document lifecycle (⌘N/⌘⇧N/⌘O/⌘S/Close Active Tab);
+  single workspace command publisher fixes the multi-editor ⌘O/⌘S defect.
+- Visible digit-sized editor gutter with correct draw order and focus
+  handling, caught and repaired through live function testing.
+- Final code: Mac 122/122, iPhone/iPad/Vision 118/118 each, GlassDBKit 28/28,
+  security review clean.
+- See the three task records at the tasks root.
+
 ### 2026-08-11: Command-W Editor Close and Workspace Tab Seeding
 
 - Command-W closes the selected top-level SQL/table tab with save prompts;

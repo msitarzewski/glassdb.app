@@ -106,6 +106,69 @@ private final class SSHKeyLifecycleTestState {
     }
 }
 
+/// Minimal aggregate-capable connection. DatabaseSessionManager's aggregate
+/// statistics path needs a deterministic grouped result plus a server
+/// round-trip counter, and no shipping engine can provide that in-process
+/// (SQLite intentionally lacks `.aggregateTableStatistics`).
+private final class AggregateStatisticsTestConnection: DatabaseConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedGroupedResult: [String: [TableStatus]]
+    private var storedAggregateCallCount = 0
+
+    init(groupedResult: [String: [TableStatus]]) {
+        storedGroupedResult = groupedResult
+    }
+
+    var aggregateCallCount: Int {
+        lock.withLock { storedAggregateCallCount }
+    }
+
+    var isConnected: Bool { get async { true } }
+    var engineName: String { "AggregateTest" }
+    var capabilities: Set<DatabaseCapability> {
+        [.metadata, .tableStatistics, .aggregateTableStatistics]
+    }
+
+    /// NSLock's lock()/unlock() are unavailable from async contexts, so the
+    /// async protocol methods delegate to synchronous locked accessors.
+    private func recordAggregateCall() -> [String: [TableStatus]] {
+        lock.withLock {
+            storedAggregateCallCount += 1
+            return storedGroupedResult
+        }
+    }
+
+    private var groupedResult: [String: [TableStatus]] {
+        lock.withLock { storedGroupedResult }
+    }
+
+    func tableStatusByNamespace() async throws -> [String: [TableStatus]] {
+        recordAggregateCall()
+    }
+
+    func execute(_ query: String, parameters: [DatabaseValue]) async throws -> QueryResult {
+        QueryResult(query: query, executionTime: 0)
+    }
+
+    func close() async throws {}
+
+    func databases() async throws -> [String] {
+        groupedResult.keys.sorted()
+    }
+
+    func tables(in database: String) async throws -> [String] { [] }
+    func columns(in table: String, database: String) async throws -> [ColumnInfo] { [] }
+    func showCreateTable(_ table: String, database: String) async throws -> String { "" }
+    func indexes(in table: String, database: String) async throws -> [IndexInfo] { [] }
+    func foreignKeys(in table: String, database: String) async throws -> [ForeignKeyInfo] { [] }
+
+    func tableStatus(in database: String) async throws -> [TableStatus] {
+        groupedResult[database] ?? []
+    }
+
+    func rowCount(table: String, database: String) async throws -> Int { 0 }
+}
+
 struct glassdbTests {
     @Test func databaseSidebarsShareOrderedMacLayoutPolicy() {
         #expect(DatabaseSidebarLayout.minimumWidth == 300)
@@ -3099,6 +3162,233 @@ struct glassdbTests {
         )
         manager.invalidateTableStatistics(sessionID: sessionID, database: "main")
         #expect(manager.cachedTableStatistics(sessionID: sessionID, database: "main") == nil)
+    }
+
+    @MainActor
+    @Test func aggregateStatisticsFanOutFillsThePerDatabaseSnapshotCache() async throws {
+        let connection = AggregateStatisticsTestConnection(groupedResult: [
+            "alpha": [
+                TableStatus(name: "orders", engine: "InnoDB", rowCount: 12, dataLength: 2_048, collation: nil),
+                TableStatus(name: "users", engine: "InnoDB", rowCount: 4, dataLength: 512, collation: nil),
+            ],
+            "beta": [
+                TableStatus(name: "events", engine: "InnoDB", rowCount: 3, dataLength: 256, collation: nil),
+            ],
+        ])
+        let manager = DatabaseSessionManager(loadImmediately: false)
+        let sessionID = UUID()
+        let session = DatabaseSession(connectionConfig: DatabaseConnectionConfig(
+            name: "Aggregate statistics",
+            engine: .mysql,
+            host: "aggregate.invalid",
+            port: 3306,
+            username: "stats"
+        ))
+        session.connection = connection
+        session.state = .connected
+        manager.sessions[sessionID] = session
+
+        let namespaces = ["alpha", "beta", "gamma"]
+        let initialDate = Date(timeIntervalSince1970: 1_775_000_000)
+
+        // Concurrent overview loads share one server round trip.
+        async let firstLoad = manager.aggregateTableStatistics(
+            sessionID: sessionID,
+            namespaces: namespaces,
+            now: initialDate
+        )
+        async let secondLoad = manager.aggregateTableStatistics(
+            sessionID: sessionID,
+            namespaces: namespaces,
+            now: initialDate
+        )
+        let (first, second) = try await (firstLoad, secondLoad)
+        #expect(connection.aggregateCallCount == 1)
+        #expect(Set(first.keys) == Set(namespaces))
+        #expect(Set(second.keys) == Set(namespaces))
+
+        // One grouped result fans out into the same per-database cache the
+        // sequential path fills, including an empty snapshot for the
+        // table-less namespace.
+        #expect(first["alpha"]?.status(for: "orders")?.rowCount == 12)
+        #expect(first["beta"]?.status(for: "events")?.rowCount == 3)
+        #expect(first["gamma"]?.statuses.isEmpty == true)
+        for namespace in namespaces {
+            let cached = manager.cachedTableStatistics(sessionID: sessionID, database: namespace)
+            #expect(cached?.capturedAt == initialDate)
+        }
+
+        // Existing per-database consumers read the aggregate-filled cache
+        // without another server query.
+        let perDatabase = try await manager.tableStatistics(
+            sessionID: sessionID,
+            database: "alpha",
+            now: initialDate.addingTimeInterval(30)
+        )
+        #expect(perDatabase.capturedAt == initialDate)
+        #expect(perDatabase.status(for: "users")?.rowCount == 4)
+
+        // A cached-fresh aggregate short-circuits entirely.
+        let reused = try await manager.aggregateTableStatistics(
+            sessionID: sessionID,
+            namespaces: namespaces,
+            now: initialDate.addingTimeInterval(60)
+        )
+        #expect(connection.aggregateCallCount == 1)
+        #expect(reused["alpha"]?.capturedAt == initialDate)
+
+        // forceRefresh always takes a new round trip and restamps capture.
+        let forcedDate = initialDate.addingTimeInterval(120)
+        let forced = try await manager.aggregateTableStatistics(
+            sessionID: sessionID,
+            namespaces: namespaces,
+            forceRefresh: true,
+            now: forcedDate
+        )
+        #expect(connection.aggregateCallCount == 2)
+        #expect(forced["beta"]?.capturedAt == forcedDate)
+
+        // Invalidating one namespace forces the next aggregate load even
+        // though the remaining namespaces are still fresh.
+        manager.invalidateTableStatistics(sessionID: sessionID, database: "beta")
+        #expect(manager.cachedTableStatistics(sessionID: sessionID, database: "beta") == nil)
+        let refreshedDate = initialDate.addingTimeInterval(180)
+        let refreshed = try await manager.aggregateTableStatistics(
+            sessionID: sessionID,
+            namespaces: namespaces,
+            now: refreshedDate
+        )
+        #expect(connection.aggregateCallCount == 3)
+        #expect(refreshed["beta"]?.capturedAt == refreshedDate)
+        #expect(
+            manager.cachedTableStatistics(sessionID: sessionID, database: "beta")?
+                .capturedAt == refreshedDate
+        )
+    }
+
+    @MainActor
+    @Test func aggregateStatisticsRequireTheCapabilityWhilePerDatabasePathStillWorks() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        defer { Task { try? await connection.close() } }
+        _ = try await connection.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
+        _ = try await connection.execute("INSERT INTO notes (body) VALUES ('a'), ('b')")
+
+        let manager = DatabaseSessionManager(loadImmediately: false)
+        let sessionID = UUID()
+        let session = DatabaseSession(connectionConfig: DatabaseConnectionConfig(
+            name: "Capability gate",
+            engine: .sqlite,
+            host: ":memory:",
+            port: 0,
+            username: ""
+        ))
+        session.connection = connection
+        session.engine = SQLiteEngine()
+        session.state = .connected
+        manager.sessions[sessionID] = session
+
+        // The overview gates the aggregate path on this capability; SQLite
+        // must not advertise it and the manager must fail closed if asked.
+        #expect(!connection.capabilities.contains(.aggregateTableStatistics))
+        do {
+            _ = try await manager.aggregateTableStatistics(sessionID: sessionID, namespaces: ["main"])
+            Issue.record("A non-aggregate engine must reject the aggregate statistics path.")
+        } catch DatabaseError.unsupportedCapability(let capability, _) {
+            #expect(capability == .aggregateTableStatistics)
+        } catch {
+            Issue.record("Unexpected aggregate gating error: \(error)")
+        }
+
+        // The per-database fallback keeps serving the same cache unchanged.
+        let snapshot = try await manager.tableStatistics(sessionID: sessionID, database: "main")
+        #expect(snapshot.status(for: "notes")?.rowCount == 2)
+        #expect(manager.cachedTableStatistics(sessionID: sessionID, database: "main") != nil)
+    }
+
+    @Test func workspaceCommandRoutingConsultsOnlyTheActiveDocumentRegistration() {
+        var registry: [UUID: QueryEditorCommandHandlers] = [:]
+        var invoked: [String] = []
+        func handlers(_ label: String) -> QueryEditorCommandHandlers {
+            QueryEditorCommandHandlers(
+                executeStatement: { invoked.append("\(label).execute") },
+                executeScript: { invoked.append("\(label).script") },
+                explainPlan: { invoked.append("\(label).explain") },
+                cancel: { invoked.append("\(label).cancel") },
+                showHistory: { invoked.append("\(label).history") },
+                showSavedQueries: { invoked.append("\(label).saved") }
+            )
+        }
+        func activeHandlers(_ tabs: WorkspaceTabState) -> QueryEditorCommandHandlers? {
+            tabs.activeQueryDocumentID.flatMap { registry[$0] }
+        }
+
+        // Zero editors: only the Overview tab exists, so commands route nowhere.
+        var tabs = WorkspaceTabState()
+        #expect(tabs.activeQueryDocumentID == nil)
+        #expect(activeHandlers(tabs) == nil)
+
+        // One editor: the active tab resolves to its (and only its) bundle,
+        // and an active tab without a registration resolves to nothing.
+        let first = UUID()
+        tabs.open(.query(id: first))
+        #expect(tabs.activeQueryDocumentID == first)
+        #expect(activeHandlers(tabs) == nil)
+        registry[first] = handlers("first")
+        activeHandlers(tabs)?.executeStatement()
+        #expect(invoked == ["first.execute"])
+
+        // Two editors: the hidden ZStack editor keeps its registration, but
+        // only the selected document's bundle is ever consulted.
+        let second = UUID()
+        tabs.open(.query(id: second))
+        registry[second] = handlers("second")
+        #expect(registry.count == 2)
+        activeHandlers(tabs)?.executeStatement()
+        activeHandlers(tabs)?.cancel()
+        #expect(invoked == ["first.execute", "second.execute", "second.cancel"])
+
+        // Reselecting the other tab re-routes without re-registration.
+        tabs.open(.query(id: first))
+        activeHandlers(tabs)?.showHistory()
+        #expect(invoked.last == "first.history")
+
+        // A preview covers the editor, so no document is active while shown.
+        tabs.preview(.database("analytics"))
+        #expect(tabs.activeQueryDocumentID == nil)
+        #expect(activeHandlers(tabs) == nil)
+        tabs.clearPreview()
+        #expect(tabs.activeQueryDocumentID == first)
+
+        // Overview selection routes nowhere even with editors registered.
+        tabs.open(.connection)
+        #expect(tabs.activeQueryDocumentID == nil)
+
+        // Closing a document unregisters it and selection falls back to the
+        // neighboring editor, whose registration takes over.
+        tabs.open(.query(id: second))
+        tabs.close(.query(id: second))
+        registry.removeValue(forKey: second)
+        #expect(tabs.activeQueryDocumentID == first)
+        activeHandlers(tabs)?.executeScript()
+        #expect(invoked.last == "first.script")
+    }
+
+    @Test func editorGutterWidthIsDigitCountSizedWithATwoDigitFloor() {
+        // Two-digit floor: short documents share one stable width.
+        #expect(EditorGutterMetrics.width(lineCount: 1, digitWidth: 7) == 30)
+        #expect(EditorGutterMetrics.width(lineCount: 9, digitWidth: 7) == 30)
+        #expect(EditorGutterMetrics.width(lineCount: 99, digitWidth: 7) == 30)
+        // The gutter grows exactly at each digit rollover.
+        #expect(EditorGutterMetrics.width(lineCount: 100, digitWidth: 7) == 37)
+        #expect(EditorGutterMetrics.width(lineCount: 1_000_000, digitWidth: 7) == 65)
+        // Fractional digit advances round up so digits never clip.
+        #expect(EditorGutterMetrics.width(lineCount: 100, digitWidth: 7.4) == 39)
+        // Degenerate line counts clamp to the floor instead of collapsing.
+        #expect(EditorGutterMetrics.width(lineCount: 0, digitWidth: 7) == 30)
+        // Both platform editors share the same non-width constants.
+        #expect(EditorGutterMetrics.plainInset == 12)
+        #expect(EditorGutterMetrics.numberPadding == 8)
+        #expect(EditorGutterMetrics.textGap == 6)
     }
 
     @MainActor

@@ -1,6 +1,6 @@
 # Mac File Menu Owns SQL Document Lifecycle
 
-**Status:** To do — filed 2026-08-11 from live testing on `agent/command-w-editor-close`
+**Status:** Complete — implemented and human-approved 2026-08-11 on `agent/overview-stats-filemenu-gutter`. File menu owns New SQL Document ⌘N, New Connections Window ⌘⇧N, Open ⌘O, Save ⌘S, and Close Active Tab; Query keeps execution verbs. The workspace is the single focused-scene publisher (per-document handler registration), fixing the multi-editor ⌘O/⌘S defect — verified live with two editors. Focus follows new documents via a focus-token claim.
 **Discovered by:** Human testing of the seed-only-Overview / ⌘N change (same session, uncommitted)
 **Scope:** Route ⌘N correctly and move SQL document management (New/Open/Save/Close) into the Mac File menu per the macOS Human Interface Guidelines.
 

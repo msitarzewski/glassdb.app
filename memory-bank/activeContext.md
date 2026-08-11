@@ -8,6 +8,13 @@ The four-platform implementation and automated simulator/package QA are complete
 
 ## Recent Changes
 
+### Overview Statistics, File-Menu Lifecycle, and Editor Gutter (2026-08-11)
+- Added a `.aggregateTableStatistics` GlassDBKit capability with `tableStatusByNamespace()`: MySQL issues one static `INFORMATION_SCHEMA.TABLES` query aliased to the `SHOW TABLE STATUS` mapping, PostgreSQL one `pg_catalog` query across user schemas; the session manager fans the single result into the existing per-database snapshot cache with unchanged freshness/dedup/invalidation semantics, and SQLite keeps the per-database fallback. The 391-database local server's connection Overview now loads in about 4 seconds instead of 40+
+- The Mac File menu owns the SQL document lifecycle: New SQL Document ⌘N, New Connections Window ⌘⇧N, Open ⌘O, Save ⌘S, and Close Active Tab, with the Query menu reduced to execution verbs. The workspace is the single focused-scene publisher of command actions via per-document handler registration, fixing the pre-existing defect where ⌘O/⌘S died once two editors were alive; a focus token moves the keyboard into newly created documents
+- The Mac editor line-number gutter is a visible digit-count-sized band with a hairline separator and asymmetric effective insets via a `textContainerOrigin` shift; gutter and numbers draw before `super.draw` because NSTextView leaves the graphics state unusable afterward — the cause of a misplaced digit column that live function testing caught and an in-loop repair fixed alongside the focus defect
+- Multi-agent build: three parallel implementers with disjoint file ownership, an integrate/build agent, a test author, and a live-app repair agent; end-to-end verification covered function (menu inspection, keystroke-driven ⌘N/⌘O/⌘⇧N, typing, screenshots), unit (7 new tests), app suites, and a security review with no findings
+- Evidence on final code: Mac 122/122, iPhone/iPad/Vision Pro 118/118 each with zero failures/skips/warnings, GlassDBKit 28/28, TODO/stub sweep clean across 1,102 added lines
+
 ### Command-W Editor Close and Workspace Tab Seeding (2026-08-11)
 - Routed Command-W through one window-level registration (`MacDatabaseCommandWRouter`) that closes the selected top-level SQL or table tab with the existing save prompt; the connection Overview is the non-document fallback after the last closable tab closes
 - New workspace windows seed only the Overview tab; the previous implicitly minted "Untitled SQL" document is gone, and windows opened to a table, database, or restored SQL document still get that tab beside Overview

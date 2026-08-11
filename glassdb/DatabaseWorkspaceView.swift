@@ -150,6 +150,16 @@ struct WorkspaceTabState: Equatable {
         previewed = nil
     }
 
+    /// The SQL document whose editor is visible and interactive. Previews
+    /// overlay the tab strip's selection, so no document is active while one
+    /// is shown. Menu-bar command routing consults only this document's
+    /// registered editor handlers.
+    var activeQueryDocumentID: UUID? {
+        guard previewed == nil,
+              case .query(let id) = selected else { return nil }
+        return id
+    }
+
     @discardableResult
     mutating func close(_ destination: WorkspaceSelection) -> Bool {
         guard destination.isClosable,
@@ -194,7 +204,12 @@ struct DatabaseWorkspaceView: View {
     @State private var queryPendingExport: UUID?
     @State private var closeQueryAfterExport = false
     @State private var showingQueryExporter = false
+    @State private var showingSQLImporter = false
     @State private var queryDocumentError: String?
+    /// Editor-private verbs registered per document id for each alive editor,
+    /// including hidden ZStack members. Only the active tab's bundle is ever
+    /// consulted, so stale registrations cannot clobber command routing.
+    @State private var editorCommandHandlers: [UUID: QueryEditorCommandHandlers] = [:]
 
     private var session: DatabaseSession? {
         sessionManager.session(for: sessionID)
@@ -337,6 +352,13 @@ struct DatabaseWorkspaceView: View {
             defaultFilename: queryExportFilename
         ) { result in
             completeQueryExport(result)
+        }
+        .fileImporter(
+            isPresented: $showingSQLImporter,
+            allowedContentTypes: QueryEditorView.sqlDocumentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            importSQLDocument(result)
         }
         .alert("Save Changes Before Closing?", isPresented: .init(
             get: { queryPendingClose != nil },
@@ -761,7 +783,14 @@ struct DatabaseWorkspaceView: View {
                 isWorkspaceActive: isActive,
                 onOpenSQLEditor: { openQueryDocument() },
                 onRequestClose: { requestCloseWorkspace(.query(id: id)) },
-                onCreateDocument: { openQueryDocument($0) }
+                onCreateDocument: { openQueryDocument($0) },
+                onRegisterCommandHandlers: { handlers in
+                    if let handlers {
+                        editorCommandHandlers[id] = handlers
+                    } else {
+                        editorCommandHandlers.removeValue(forKey: id)
+                    }
+                }
             )
         }
     }
@@ -779,12 +808,78 @@ struct DatabaseWorkspaceView: View {
         }
     }
 
+    /// The SQL document whose editor is visible and interactive — mirroring
+    /// each editor's `isWorkspaceActive` flag.
+    private var activeQueryDocumentID: UUID? {
+        tabState.activeQueryDocumentID
+    }
+
+    private var activeEditorHandlers: QueryEditorCommandHandlers? {
+        activeQueryDocumentID.flatMap { editorCommandHandlers[$0] }
+    }
+
+    /// Single focused-scene command value for the whole workspace window.
+    /// Enablement is computed from workspace-owned document state; the verbs
+    /// resolve the active editor's handlers at call time so menu items stay
+    /// correct however many editors are alive (including zero).
     private var workspaceCommandActions: DatabaseWorkspaceCommandActions {
-        DatabaseWorkspaceCommandActions(
+        let document = activeQueryDocumentID.flatMap { queryDocuments[$0] }
+        let hasQuery = document.map {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } ?? false
+        return DatabaseWorkspaceCommandActions(
+            canExecute: session?.state.isConnected == true
+                && hasQuery
+                && document?.isExecuting != true,
+            canCancel: document?.isExecuting == true
+                && session?.connection?.capabilities.contains(.cancellation) == true,
+            canSave: document?.text.isEmpty == false,
+            canUseQueryLibrary: activeQueryDocumentID != nil,
             canCloseTab: tabState.previewed != nil || canCloseWorkspace(tabState.selected),
             newQueryTab: { openQueryDocument() },
-            closeTab: { closeFocusedEditor() }
+            closeTab: { closeFocusedEditor() },
+            openDocument: { showingSQLImporter = true },
+            saveDocument: { exportActiveQueryDocument() },
+            executeStatement: { activeEditorHandlers?.executeStatement() },
+            executeScript: { activeEditorHandlers?.executeScript() },
+            explainPlan: { activeEditorHandlers?.explainPlan() },
+            cancel: { activeEditorHandlers?.cancel() },
+            formatSQL: { formatActiveQueryDocument() },
+            showHistory: { activeEditorHandlers?.showHistory() },
+            showSavedQueries: { activeEditorHandlers?.showSavedQueries() }
         )
+    }
+
+    /// File > Save routes through the workspace's exporter so it works from
+    /// the menu bar without reaching into editor-private sheet state.
+    private func exportActiveQueryDocument() {
+        guard let id = activeQueryDocumentID,
+              queryDocuments[id]?.text.isEmpty == false else { return }
+        queryPendingExport = id
+        closeQueryAfterExport = false
+        showingQueryExporter = true
+    }
+
+    /// Formatting mutates only workspace-owned document state, so the menu
+    /// verb needs no editor registration.
+    private func formatActiveQueryDocument() {
+        guard let id = activeQueryDocumentID,
+              var document = queryDocuments[id],
+              !document.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !document.isExecuting else { return }
+        let formatted = SQLHighlighter.formatted(document.text)
+        document.text = formatted
+        document.selectedRange = NSRange(location: (formatted as NSString).length, length: 0)
+        queryDocuments[id] = document
+    }
+
+    private func importSQLDocument(_ result: Result<[URL], Error>) {
+        do {
+            guard let document = try QueryEditorView.importedSQLDocument(from: result) else { return }
+            openQueryDocument(document)
+        } catch {
+            queryDocumentError = error.localizedDescription
+        }
     }
 
     private func requestCloseWorkspace(_ destination: WorkspaceSelection) {

@@ -1,6 +1,6 @@
 # SQL Editor Gutter Alignment on Mac
 
-**Status:** To do — filed 2026-08-11 from human visual review on `agent/command-w-editor-close`
+**Status:** Complete — implemented and human-approved 2026-08-11 on `agent/overview-stats-filemenu-gutter`. Digit-count-sized visible gutter band with hairline separator and asymmetric effective insets via a textContainerOrigin shift; gutter and numbers draw before super.draw (NSTextView leaves the graphics state unusable afterward — the cause of a misplaced digit column caught in live function testing and repaired in-loop). Screenshot-verified; shared EditorGutterMetrics is unit-tested.
 **Discovered by:** Human testing of the table Data surface; the SQL editor's text appears to start far right of everything below it
 **Scope:** Make the SQL editor's line-number gutter read as an intentional region and align the editor's leading edge with the rest of the workspace surface on Mac.
 
