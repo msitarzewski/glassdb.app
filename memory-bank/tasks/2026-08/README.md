@@ -2,6 +2,15 @@
 
 ## Tasks Completed
 
+### 2026-08-13: GlassEditorKit Adoption Phase 1 (JSON Field)
+
+- First consumer adoption of the shared Glass-family editor package:
+  revision-pinned dependency, JSON record fields with tree-sitter
+  highlighting, resizable fields/sheet, header-inline actions.
+- Drive-by global-coordinate drag fixes for all three resize surfaces.
+- Mac 123/123; iPhone/iPad/Vision matrix green; upstream findings recorded.
+- See [../glasseditorkit-m3-adoption.md](../glasseditorkit-m3-adoption.md).
+
 ### 2026-08-11: Overview Statistics, File-Menu Lifecycle, and Editor Gutter
 
 - One aggregate statistics query per engine replaces the 391-round-trip

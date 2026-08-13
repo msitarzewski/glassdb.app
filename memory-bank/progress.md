@@ -186,6 +186,12 @@
 - [x] Final regressions passed 105/105 on Mac and 103/103 each on iPhone, iPad, and Vision Pro with zero failures or skips
 - [x] 2026-08-10 follow-up adopted glas.sh-style direct row interaction, denser rows/details, clearer action hierarchy, and restored Mac Settings access; the human-approved combined preview passed 115/115 Mac tests and all four platform builds
 
+### Completed — GlassEditorKit Adoption Phase 1: JSON Field (2026-08-13)
+- [x] GlassEditorKit wired as a revision-pinned remote dependency; record-editor JSON fields use `GlassEditorView` with tree-sitter highlighting, setting-driven line numbers, header-inline Format/Validate, drag-resizable fields, and a resizable sheet — staging semantics and `RecordJSONText` dirty detection unchanged
+- [x] `SQLHighlighter` retained whole per package D-008; the SQL editor surface and provider seam are the remaining M3 phases
+- [x] Drive-by: global-coordinate-space drag fixes for table column resize, the workspace divider, and the JSON pill
+- [x] Mac 123/123 with a new package-linkage test; iPhone/iPad/Vision matrix green on the final revision; upstream gutter-clip finding recorded for the package
+
 ### Completed — Overview Statistics, File-Menu Lifecycle, and Editor Gutter (2026-08-11)
 - [x] Aggregate table statistics: one static metadata query per engine (MySQL INFORMATION_SCHEMA.TABLES, PostgreSQL pg_catalog) fans into the existing per-database snapshot cache; 391-database Overview loads in ~4 seconds with the sequential walk retained as capability-gated fallback
 - [x] Mac File menu owns SQL documents (New ⌘N, New Connections Window ⌘⇧N, Open ⌘O, Save ⌘S, Close Active Tab); workspace is the single command-action publisher, fixing the multi-editor ⌘O/⌘S defect; focus follows new documents
