@@ -12,6 +12,7 @@
 		15EE3E9B85434489A98B1152 /* ResultsGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06AA08C663E426587B3B46C /* ResultsGridView.swift */; };
 
 		22B58E26C7444FF4802B4B17 /* GlassDBKit in Frameworks */ = {isa = PBXBuildFile; productRef = 469DAC2964D74CADB1B32DE2 /* GlassDBKit */; };
+		E4171CED00000000000000A1 /* GlassEditorKit in Frameworks */ = {isa = PBXBuildFile; productRef = E4171CED00000000000000A2 /* GlassEditorKit */; };
 		A1B2C3D4E5F64A7B8C9D0E1F /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = B2C3D4E5F6A74B8C9D0E1F2A /* GlasSecretStore */; };
 		C0DEC0DEC0DEC0DEC0DEC001 /* GlassConnectionKit in Frameworks */ = {isa = PBXBuildFile; productRef = C0DEC0DEC0DEC0DEC0DEC003 /* GlassConnectionKit */; };
 		28A1F3C5D7E84B6A9C0D2E4F /* DatabaseWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3E8A1F42B54C7D9E0F1A2B /* DatabaseWorkspaceView.swift */; };
@@ -92,6 +93,7 @@
 			buildActionMask = 2147483647;
 				files = (
 					22B58E26C7444FF4802B4B17 /* GlassDBKit in Frameworks */,
+					E4171CED00000000000000A1 /* GlassEditorKit in Frameworks */,
 					C0DEC0DEC0DEC0DEC0DEC001 /* GlassConnectionKit in Frameworks */,
 					A1B2C3D4E5F64A7B8C9D0E1F /* GlasSecretStore in Frameworks */,
 			);
@@ -239,6 +241,7 @@
 			mainGroup = 322E2E8ABC124DE8A96D43A8;
 				packageReferences = (
 					95EEFE7D4E8E42E092908953 /* XCLocalSwiftPackageReference "Packages/GlassDBKit" */,
+					E4171CED00000000000000A3 /* XCRemoteSwiftPackageReference "GlassEditorKit" */,
 					C0DEC0DEC0DEC0DEC0DEC002 /* XCRemoteSwiftPackageReference "GlassConnectionKit" */,
 					C3D4E5F6A7B84C9D0E1F2A3B /* XCRemoteSwiftPackageReference "GlasSecretStore" */,
 			);
@@ -627,6 +630,14 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		E4171CED00000000000000A3 /* XCRemoteSwiftPackageReference "GlassEditorKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/msitarzewski/GlassEditorKit.git";
+			requirement = {
+				kind = revision;
+				revision = ae094a8162a85938df5a5b5a379ed79ab667c455;
+			};
+		};
 		C0DEC0DEC0DEC0DEC0DEC002 /* XCRemoteSwiftPackageReference "GlassConnectionKit" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/msitarzewski/GlassConnectionKit.git";
@@ -650,6 +661,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 95EEFE7D4E8E42E092908953 /* XCLocalSwiftPackageReference "Packages/GlassDBKit" */;
 			productName = GlassDBKit;
+		};
+		E4171CED00000000000000A2 /* GlassEditorKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E4171CED00000000000000A3 /* XCRemoteSwiftPackageReference "GlassEditorKit" */;
+			productName = GlassEditorKit;
 		};
 		C0DEC0DEC0DEC0DEC0DEC003 /* GlassConnectionKit */ = {
 			isa = XCSwiftPackageProductDependency;

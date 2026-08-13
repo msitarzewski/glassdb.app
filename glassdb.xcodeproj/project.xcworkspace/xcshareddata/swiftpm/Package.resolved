@@ -1,5 +1,5 @@
 {
-  "originHash" : "5f853dfccb8201945f97852d7cee1f9774aac1494d796fc6308d2ea5ab07bc82",
+  "originHash" : "04af0a6f66b94ed692b4d1eeea763f4a6da26d260f7568759526a4eab96dfe25",
   "pins" : [
     {
       "identity" : "bigint",
@@ -24,6 +24,14 @@
       "location" : "https://github.com/msitarzewski/GlasSecretStore.git",
       "state" : {
         "revision" : "9be45c91d145333252e3f5b03a5e5b6e6349e3e6"
+      }
+    },
+    {
+      "identity" : "glasseditorkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/msitarzewski/GlassEditorKit.git",
+      "state" : {
+        "revision" : "ae094a8162a85938df5a5b5a379ed79ab667c455"
       }
     },
     {
@@ -167,6 +175,24 @@
       "state" : {
         "revision" : "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
         "version" : "1.6.4"
+      }
+    },
+    {
+      "identity" : "swifttreesitter",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ChimeHQ/SwiftTreeSitter.git",
+      "state" : {
+        "revision" : "08ef81eb8620617b55b08868126707ad72bf754f",
+        "version" : "0.25.0"
+      }
+    },
+    {
+      "identity" : "tree-sitter",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/tree-sitter/tree-sitter",
+      "state" : {
+        "revision" : "da6fe9beb4f7f67beb75914ca8e0d48ae48d6406",
+        "version" : "0.25.10"
       }
     }
   ],

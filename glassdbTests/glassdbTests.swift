@@ -2,6 +2,8 @@ import Foundation
 import Testing
 import GlassDBKit
 import GlassConnectionKit
+import GlassEditorCore
+import GlassEditorUI
 import GlasSecretStore
 import Security
 @testable import glassdb
@@ -752,6 +754,34 @@ struct glassdbTests {
         )
         #expect(!staged.isModified)
         #expect(try staged.boundValue() == .json(source))
+    }
+
+    @Test @MainActor func glassEditorModelMirrorsJSONStagingSemantics() throws {
+        let source = #"{"message":"stays","items":[1,2]}"#
+        let model = GlassEditorModel(
+            snapshot: DocumentSnapshot(
+                content: source,
+                encoding: .utf8(hadBOM: false),
+                lineEndings: .lf,
+                origin: .ephemeral(id: UUID())
+            ),
+            configuration: GlassEditorConfiguration(showsLineNumbers: false),
+            language: .json,
+            surfaceCondition: .opaque
+        )
+        #expect(model.text == source)
+        #expect(!model.isDirty)
+
+        // Format-button push: an external rewrite lands verbatim and the
+        // staging model's whitespace-aware equivalence still reads clean.
+        let formatted = try RecordJSONText.pretty(source)
+        try model.replaceAllContent(with: formatted)
+        #expect(model.text == formatted)
+        #expect(RecordJSONText.isEquivalent(model.text, source))
+
+        // The echo guard in fieldBinding compares model text directly; a
+        // same-content push must be detectable as a no-op.
+        #expect(model.text == formatted)
     }
 
     @Test func recordJSONCompactionPreservesStringWhitespaceAndNumberLexemes() throws {

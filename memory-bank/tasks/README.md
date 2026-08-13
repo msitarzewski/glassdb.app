@@ -5,9 +5,18 @@ archived in monthly folders (see [2026-08/README.md](./2026-08/README.md)).
 
 ## To Do
 
-(none — all filed tasks completed 2026-08-11)
+- [ ] **SSH credential sharing model in the connection form** — database
+  passwords must never offer "Shared with glas.sh"; SSH credentials become the
+  shareable class via a glas.sh catalog picker or manual entry with a
+  share-on-create checkbox. No migration needed (no users).
+  See [ssh-credential-sharing-model.md](./ssh-credential-sharing-model.md).
 
 ## In Progress
+
+- [ ] **GlassEditorKit adoption (M3)** — Phase 1 (JSON field) complete and
+  approved 2026-08-13; DDL display, the SQL editor surface, and the
+  `SQLHighlighter` provider seam remain.
+  See [glasseditorkit-m3-adoption.md](./glasseditorkit-m3-adoption.md).
 
 - [ ] **Unified SQL Workspace** — Command-W close, seed-only-Overview, and
   File-menu ⌘N document creation completed and approved 2026-08-11; U3 surface

@@ -1232,6 +1232,7 @@ struct DataTabView: View {
     @State private var showEditor = false
     @State private var addingNewRow = false
     @State private var editorHeight: CGFloat = 120
+    @State private var editorHeightDragStart: CGFloat?
     @State private var isAutoQuery = true
     @State private var showAIAssistant = false
     @State private var showExporter = false
@@ -1470,11 +1471,18 @@ struct DataTabView: View {
                 .frame(height: 12)
                 .contentShape(Rectangle())
                 .highPriorityGesture(
-                    DragGesture(minimumDistance: 1)
+                    // Global space: the handle moves with the pane edge it
+                    // resizes, so local translation would feed back into
+                    // itself. Anchoring to the drag-start height keeps the
+                    // cumulative translation from compounding per tick.
+                    DragGesture(minimumDistance: 1, coordinateSpace: .global)
                         .onChanged { value in
+                            let start = editorHeightDragStart ?? editorHeight
+                            editorHeightDragStart = start
                             editorHeight = min(maxEditorHeight, max(minEditorHeight,
-                                editorHeight + value.translation.height))
+                                start + value.translation.height))
                         }
+                        .onEnded { _ in editorHeightDragStart = nil }
                 )
             }
 
@@ -2824,7 +2832,9 @@ struct DataTabView: View {
                                             .frame(width: 5)
                                             .contentShape(Rectangle().inset(by: -6))
                                             .gesture(
-                                                DragGesture(minimumDistance: 1)
+                                                // Global space: the handle rides the column edge
+                                                // being resized, so local translation feeds back.
+                                                DragGesture(minimumDistance: 1, coordinateSpace: .global)
                                                     .onChanged { value in resizeColumn(col.name, baseWidth: widths[visibleOffset], translation: value.translation.width) }
                                                     .onEnded { _ in finishResizingColumn(col.name) }
                                             )

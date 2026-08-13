@@ -8,6 +8,8 @@
 
 import SwiftUI
 import GlassDBKit
+import GlassEditorCore
+import GlassEditorUI
 
 enum RecordJSONText {
     static func compact(_ text: String) throws -> String {
@@ -281,6 +283,7 @@ enum RecordValueError: LocalizedError {
 
 struct RecordEditorView: View {
     @Environment(SettingsManager.self) private var settingsManager
+    @Environment(\.colorScheme) private var colorScheme
 
     enum RecordEditorMode {
         case edit(rowIndex: Int, originalRow: [DatabaseValue])
@@ -307,6 +310,14 @@ struct RecordEditorView: View {
     @State private var edits: [StagedEdit] = []
     @State private var jsonErrors: [Int: String] = [:]
     @State private var confirmingDiscard = false
+    // One GlassEditorKit model per JSON column, created alongside the staged
+    // edits. The staging model in `edits` stays the source of truth; the
+    // editor models mirror it so RecordJSONText-based dirty detection and
+    // save semantics are untouched.
+    @State private var jsonEditorModels: [Int: GlassEditorModel] = [:]
+    @State private var jsonFieldHeights: [Int: CGFloat] = [:]
+    @State private var jsonFieldRenderedHeights: [Int: CGFloat] = [:]
+    @State private var jsonFieldDragStarts: [Int: CGFloat] = [:]
 
     private var hasChanges: Bool {
         edits.contains(where: \.isModified)
@@ -363,10 +374,16 @@ struct RecordEditorView: View {
                 }
         }
         #if os(macOS)
-        .frame(width: 680)
-        .frame(minHeight: 520, idealHeight: 640, maxHeight: 760)
+        .frame(minWidth: 680, idealWidth: 680, maxWidth: 1100)
+        .frame(minHeight: 520, idealHeight: 640, maxHeight: 960)
         #endif
         .onAppear { initializeEdits() }
+        .onChange(of: colorScheme) { _, newScheme in
+            let theme: EditorTheme = newScheme == .dark ? .glassDark : .glassLight
+            for model in jsonEditorModels.values {
+                model.theme = theme
+            }
+        }
         .alert("Discard Changes?", isPresented: $confirmingDiscard) {
             Button("Keep Editing", role: .cancel) {}
                 .keyboardShortcut(.cancelAction)
@@ -481,6 +498,8 @@ struct RecordEditorView: View {
         } header: {
             HStack(spacing: 6) {
                 Text(edit.columnName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 if edit.isPrimaryKey {
                     Image(systemName: "key.fill")
                         .font(.caption2)
@@ -494,6 +513,14 @@ struct RecordEditorView: View {
                 Text(edit.columnType)
                     .foregroundStyle(.secondary)
                 Spacer()
+                if edit.isJSON && !edit.isNull && !edit.useDefault {
+                    Button("Format") { formatJSON(index: index) }
+                        .font(.caption)
+                        .fixedSize()
+                    Button("Validate") { validateJSON(edits[index].editText, index: index) }
+                        .font(.caption)
+                        .fixedSize()
+                }
                 if edit.isModified {
                     Text("Modified")
                         .font(.caption2)
@@ -595,23 +622,75 @@ struct RecordEditorView: View {
             .accessibilityLabel("\(edit.columnName), JSON")
             .help("Enter valid JSON for \(edit.columnName)")
         } else {
-            TextEditor(text: fieldBinding(index: index))
-                .font(.system(.body, design: .monospaced))
-                .multilineTextAlignment(.leading)
-                .autocorrectionDisabled()
-                .databaseNoAutocapitalization()
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 120, maxHeight: 300)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel("\(edit.columnName), JSON")
-                .help("Enter valid JSON for \(edit.columnName)")
+            if let model = jsonEditorModels[index] {
+                // Until the user drags, the field autosizes to content within
+                // 120–300. A drag pins an explicit height anchored at the
+                // rendered height, so the first drag never jumps.
+                let pinnedHeight = jsonFieldHeights[index]
+                GlassEditorView(model: model)
+                    .frame(
+                        minHeight: pinnedHeight ?? 120,
+                        maxHeight: pinnedHeight ?? 300
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // The gutter overlay draws outside the capped frame on
+                    // macOS 14+ no-clip views; the field owns its bounds.
+                    .clipped()
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height
+                    } action: { height in
+                        jsonFieldRenderedHeights[index] = height
+                    }
+                    .accessibilityLabel("\(edit.columnName), JSON")
+                    .help("Enter valid JSON for \(edit.columnName)")
+                    .onChange(of: model.text) { _, newText in
+                        // Route through the shared binding so staging
+                        // semantics (isNull/useDefault/error clearing)
+                        // stay identical to typed edits.
+                        guard edits[index].editText != newText else { return }
+                        fieldBinding(index: index).wrappedValue = newText
+                    }
 
-            HStack {
-                Button("Format") { formatJSON(index: index) }
-                Button("Validate") { validateJSON(edits[index].editText, index: index) }
-                Spacer(minLength: 0)
+                HStack {
+                    Spacer()
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.secondary.opacity(0.4))
+                        .frame(width: 40, height: 4)
+                    Spacer()
+                }
+                .frame(height: 12)
+                .contentShape(Rectangle())
+                .accessibilityLabel("Resize \(edit.columnName) editor")
+                .highPriorityGesture(
+                    // Global space: the pill travels with the field's bottom
+                    // edge, so local translation would feed back into the
+                    // height it is changing.
+                    DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                        .onChanged { value in
+                            let start = jsonFieldDragStarts[index]
+                                ?? jsonFieldRenderedHeights[index]
+                                ?? 300
+                            jsonFieldDragStarts[index] = start
+                            jsonFieldHeights[index] = min(800, max(120, start + value.translation.height))
+                        }
+                        .onEnded { _ in
+                            jsonFieldDragStarts.removeValue(forKey: index)
+                        }
+                )
+            } else {
+                // Defensive fallback only; models are created with the edits.
+                TextEditor(text: fieldBinding(index: index))
+                    .font(.system(.body, design: .monospaced))
+                    .multilineTextAlignment(.leading)
+                    .autocorrectionDisabled()
+                    .databaseNoAutocapitalization()
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 120, maxHeight: 300)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("\(edit.columnName), JSON")
+                    .help("Enter valid JSON for \(edit.columnName)")
             }
-            .font(.caption)
+
         }
     }
 
@@ -625,6 +704,12 @@ struct RecordEditorView: View {
                 edits[index].isNull = false
                 edits[index].useDefault = false
                 jsonErrors.removeValue(forKey: index)
+                // Mirror external writes (NULL-prompt typing, Format) into the
+                // JSON editor model; the equality guard breaks the echo cycle
+                // for edits that originated in the editor itself.
+                if let model = jsonEditorModels[index], model.text != newText {
+                    try? model.replaceAllContent(with: newText)
+                }
             }
         )
     }
@@ -651,6 +736,9 @@ struct RecordEditorView: View {
         }
         edits[index].editText = formatted
         jsonErrors.removeValue(forKey: index)
+        if let model = jsonEditorModels[index], model.text != formatted {
+            try? model.replaceAllContent(with: formatted)
+        }
     }
 
     // MARK: - Init
@@ -687,6 +775,33 @@ struct RecordEditorView: View {
             edits = columns.enumerated().map { colIndex, col in
                 StagedEdit.initialValue(for: col, columnIndex: colIndex)
             }
+        }
+        rebuildJSONEditorModels()
+    }
+
+    /// Builds one editor model per JSON column, including currently-NULL ones
+    /// so a NULL-to-typed transition finds its model waiting. The record
+    /// editor sheet sits on system material, not the glass canvas, so the
+    /// surface is `.opaque`; the canvas mapping belongs to the SQL editor
+    /// phase.
+    private func rebuildJSONEditorModels() {
+        jsonEditorModels.removeAll()
+        for edit in edits where edit.isJSON {
+            let snapshot = DocumentSnapshot(
+                content: edit.isNull ? "" : edit.editText,
+                encoding: .utf8(hadBOM: false),
+                lineEndings: .lf,
+                origin: .ephemeral(id: UUID())
+            )
+            jsonEditorModels[edit.columnIndex] = GlassEditorModel(
+                snapshot: snapshot,
+                configuration: GlassEditorConfiguration(
+                    showsLineNumbers: settingsManager.showLineNumbers
+                ),
+                theme: colorScheme == .dark ? .glassDark : .glassLight,
+                language: .json,
+                surfaceCondition: .opaque
+            )
         }
     }
 
