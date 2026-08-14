@@ -9,6 +9,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import GlassDBKit
+import GlassEditorUI
 #if os(macOS)
 import AppKit
 #endif
@@ -1173,6 +1174,7 @@ struct DataTabView: View {
     let isWorkspaceActive: Bool
     private let document: Binding<QueryDocumentTab>?
     private let completionIdentifiers: [String]
+    private let externalEditorController: SQLEditorController?
     private let completionError: String?
     private let displaysEditor: Bool
 
@@ -1192,6 +1194,7 @@ struct DataTabView: View {
         completionIdentifiers = []
         completionError = nil
         displaysEditor = true
+        externalEditorController = nil
     }
 
     init(
@@ -1200,7 +1203,8 @@ struct DataTabView: View {
         isWorkspaceActive: Bool,
         completionIdentifiers: [String],
         completionError: String? = nil,
-        displaysEditor: Bool = true
+        displaysEditor: Bool = true,
+        editorController: SQLEditorController? = nil
     ) {
         self.sessionID = sessionID
         database = ""
@@ -1211,6 +1215,7 @@ struct DataTabView: View {
         self.completionIdentifiers = completionIdentifiers
         self.completionError = completionError
         self.displaysEditor = displaysEditor
+        externalEditorController = editorController
     }
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
@@ -1298,29 +1303,52 @@ struct DataTabView: View {
 
     private var isTableContext: Bool { document == nil }
 
+    /// The table-browsing surface loads its own schema identifiers (the
+    /// document surface receives them from QueryEditorView's loader). Without
+    /// this, table-surface completion had only keywords and current-table
+    /// columns — `comm` could never offer `common_vision`.
+    @State private var tableSurfaceIdentifiers: [String] = []
+
+    private var effectiveCompletionIdentifiers: [String] {
+        isTableContext ? tableSurfaceIdentifiers : completionIdentifiers
+    }
+
+    /// The table context owns its editor handle; the document context shares
+    /// QueryEditorView's, so its document-level actions reach the same editor.
+    @State private var ownedEditorController = SQLEditorController()
+    private var editorController: SQLEditorController {
+        externalEditorController ?? ownedEditorController
+    }
+
+    /// The editor model is the source of truth for content; these setters
+    /// keep the persisted state AND forward to the editor handle. The
+    /// forward is an equality no-op when the write originated from typing
+    /// (outbound bridge), so only genuine external replacements land.
     private var queryText: String {
         get { document?.wrappedValue.text ?? tableQueryText }
         nonmutating set {
-            guard let document else {
+            if let document {
+                var value = document.wrappedValue
+                value.text = newValue
+                document.wrappedValue = value
+            } else {
                 tableQueryText = newValue
-                return
             }
-            var value = document.wrappedValue
-            value.text = newValue
-            document.wrappedValue = value
+            editorController.setText(newValue)
         }
     }
 
     private var selectedRange: NSRange {
         get { document?.wrappedValue.selectedRange ?? tableSelectedRange }
         nonmutating set {
-            guard let document else {
+            if let document {
+                var value = document.wrappedValue
+                value.selectedRange = newValue
+                document.wrappedValue = value
+            } else {
                 tableSelectedRange = newValue
-                return
             }
-            var value = document.wrappedValue
-            value.selectedRange = newValue
-            document.wrappedValue = value
+            editorController.setSelection(newValue)
         }
     }
 
@@ -1441,15 +1469,38 @@ struct DataTabView: View {
         VStack(spacing: 0) {
             if displaysEditor {
                 // SQL editor area remains subordinate to the user-controlled canvas.
-                HighlightedTextEditor(
+                SQLEditorSurface(
                     text: queryTextBinding,
                     fontSize: CGFloat(settingsManager.editorFontSize),
                     showLineNumbers: settingsManager.showLineNumbers,
                     selection: selectedRangeBinding,
-                    isActive: isWorkspaceActive
+                    isActive: isWorkspaceActive,
+                    schemaIdentifiers: effectiveCompletionIdentifiers + columnMeta.map(\.name),
+                    controller: editorController,
+                    onTabComplete: { acceptTopCompletion() },
+                    ghostSuffix: SQLHighlighter.completionPreviewSuffix(
+                        in: queryText,
+                        selectedRange: selectedRange,
+                        schemaIdentifiers: effectiveCompletionIdentifiers + columnMeta.map(\.name)
+                    )
                 )
                 .frame(height: editorHeight)
                 .databaseCanvasSurface(opacity: settingsManager.windowOpacity, strength: 0.045)
+                // Suggestions float over the editor's bottom edge instead of
+                // occupying a layout row, so their appearance never reflows
+                // the grid below.
+                .overlay(alignment: .bottom) {
+                    // Pills align with the text area, not the box: the
+                    // gutter band (package-defined width) is chrome, and a
+                    // scrolled pill must never ride over the line numbers.
+                    completionBar
+                        .padding(
+                            .leading,
+                            10 + (settingsManager.showLineNumbers ? EditorMetrics.gutterWidth : 0)
+                        )
+                        .padding(.trailing, 10)
+                        .padding(.bottom, 8)
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .padding(.horizontal, 12)
                 .padding(.top, 12)
@@ -1457,8 +1508,13 @@ struct DataTabView: View {
                     // User edited the query — disable auto-query sync
                     if !isLoading { isAutoQuery = false }
                 }
-
-                completionBar
+                .task(id: "\(sessionID).\(database)") {
+                    guard isTableContext, let connection = session?.connection else { return }
+                    tableSurfaceIdentifiers = (try? await SchemaCompletionIdentifiers.load(
+                        connection: connection,
+                        database: database
+                    )) ?? []
+                }
 
                 // Drag handle to resize
                 HStack {
@@ -1841,9 +1897,48 @@ struct DataTabView: View {
         exactCountTask = nil
     }
 
+    /// Formats the selected SQL slice when a selection exists, otherwise the
+    /// whole editor text. Runs through the state setters so the editor model
+    /// updates via the controller path.
+    private func formatQuery() {
+        let source = queryText as NSString
+        if selectedRange.length > 0 {
+            let location = min(selectedRange.location, source.length)
+            let length = min(selectedRange.length, source.length - location)
+            let range = NSRange(location: location, length: length)
+            let formatted = SQLHighlighter.formatted(source.substring(with: range))
+            queryText = source.replacingCharacters(in: range, with: formatted)
+            selectedRange = NSRange(location: location, length: (formatted as NSString).length)
+        } else {
+            let formatted = SQLHighlighter.formatted(queryText)
+            queryText = formatted
+            selectedRange = NSRange(location: (formatted as NSString).length, length: 0)
+        }
+    }
+
+    /// Tab-to-complete: applies the completion bar's top suggestion through
+    /// the same insertion path as a bar tap. Returns false when there is
+    /// nothing to accept so Tab keeps its normal behavior.
+    private func acceptTopCompletion() -> Bool {
+        let identifiers = effectiveCompletionIdentifiers + columnMeta.map(\.name)
+        guard let first = SQLHighlighter.completions(
+            in: queryText,
+            selectedRange: selectedRange,
+            schemaIdentifiers: identifiers
+        ).first else { return false }
+        let applied = SQLHighlighter.applyingCompletion(
+            first,
+            to: queryText,
+            selectedRange: selectedRange
+        )
+        queryText = applied.sql
+        selectedRange = applied.selection
+        return true
+    }
+
     @ViewBuilder
     private var completionBar: some View {
-        let identifiers = completionIdentifiers + columnMeta.map(\.name)
+        let identifiers = effectiveCompletionIdentifiers + columnMeta.map(\.name)
         let suggestions = SQLHighlighter.completions(
             in: queryText,
             selectedRange: selectedRange,
@@ -1852,9 +1947,6 @@ struct DataTabView: View {
         if !suggestions.isEmpty {
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
-                    Text("Complete")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     ForEach(suggestions, id: \.self) { suggestion in
                         Button(suggestion) {
                             let applied = SQLHighlighter.applyingCompletion(
@@ -1869,10 +1961,27 @@ struct DataTabView: View {
                         .controlSize(.small)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 6)
             }
             .scrollIndicators(.hidden)
+            .mask(
+                HStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [.clear, .black],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: 12)
+                    Rectangle()
+                    LinearGradient(
+                        colors: [.black, .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: 12)
+                }
+            )
         } else if let completionError {
             Label(completionError, systemImage: "exclamationmark.triangle")
                 .font(.caption)
@@ -2089,6 +2198,14 @@ struct DataTabView: View {
             }
             Spacer()
             Button {
+                formatQuery()
+            } label: {
+                Label("Format", systemImage: "text.alignleft")
+                    .labelStyle(.iconOnly)
+            }
+            .help("Format the selected SQL, or the whole query when nothing is selected")
+            .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button {
                 beginFilterEditing()
             } label: {
                 Label(activeFilterCount == 0 ? "Filter" : "Filter \(activeFilterCount)", systemImage: "line.3.horizontal.decrease.circle")
@@ -2124,6 +2241,14 @@ struct DataTabView: View {
 
     private var gridControls: some View {
         HStack(spacing: 8) {
+            Button {
+                formatQuery()
+            } label: {
+                Label("Format", systemImage: "text.alignleft")
+            }
+            .help("Format the selected SQL, or the whole query when nothing is selected")
+            .disabled(queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
             Button {
                 beginFilterEditing()
             } label: {
@@ -5520,5 +5645,44 @@ struct ForeignKeysTabView: View {
             errorMessage = "The server may have changed. Refresh before retrying. \(error.localizedDescription)"
         }
         isApplyingChange = false
+    }
+}
+
+/// Schema-wide completion identifiers: every database name, the focus
+/// database's table names, and plain plus table-qualified column names for up
+/// to 50 tables. One implementation serves both the SQL-document editor and
+/// the table Data surface, so a fragment like `comm` completes to
+/// `common_vision` everywhere an editor appears.
+enum SchemaCompletionIdentifiers {
+    static func load(
+        connection: any DatabaseConnection,
+        database: String?
+    ) async throws -> [String] {
+        var identifiers = Set(try await connection.databases())
+        if let database, !database.isEmpty {
+            let tables = try await connection.tables(in: database)
+            identifiers.formUnion(tables)
+            // Dotted references complete as one token (the completion
+            // context treats "." as an identifier character), so qualified
+            // names must exist as candidates for `db.tab` prefixes to match.
+            identifiers.formUnion(tables.map { "\(database).\($0)" })
+            await withTaskGroup(of: [String].self) { group in
+                for table in tables.prefix(50) {
+                    group.addTask {
+                        guard let columns = try? await connection.columns(
+                            in: table,
+                            database: database
+                        ) else { return [] }
+                        return columns.flatMap { [$0.name, "\(table).\($0.name)"] }
+                    }
+                }
+                for await names in group {
+                    identifiers.formUnion(names)
+                }
+            }
+        }
+        return identifiers.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
     }
 }

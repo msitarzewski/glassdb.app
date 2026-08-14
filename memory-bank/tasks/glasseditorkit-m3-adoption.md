@@ -1,6 +1,6 @@
 # GlassEditorKit Adoption (M3)
 
-**Status:** Phase 1 complete and human-approved 2026-08-13 on `agent/glasseditorkit-m3-phase1`. Phases 2–4 (DDL display, SQL editor, `SQLHighlighter` seam) remain open.
+**Status:** Phases 1–3 complete. Phase 1 (JSON field) approved 2026-08-13. Phases 2–3 (DDL decision + the SQL editor) implemented and human-approved 2026-08-14 on `agent/glasseditorkit-m3-phase2` after an intensive live-review loop. The `StatementBoundaryProvider` seam is wired; `SQLHighlighter` remains whole per D-008.
 **Package:** [GlassEditorKit](https://github.com/msitarzewski/GlassEditorKit) — the shared Glass-family text-editing engine; sibling repo at `../GlassEditorKit`. Its `INTEGRATION.md` Part A is the authoritative plan; D-008 resolved option 2 (statement parsing and the SQL policy engine stay in glassdb).
 **Pinned revision:** `ae094a8` ("Highlight by default: GlassEditorModel drives tree-sitter automatically"), wired as a revision-pinned remote reference in `glassdb.xcodeproj` following the GlasSecretStore/GlassConnectionKit pattern, so CI resolves it with no workflow changes.
 
@@ -27,8 +27,22 @@
 - New `glassEditorModelMirrorsJSONStagingSemantics` test exercises the package inside glassdb's test host.
 - Live function-verified: connect, query, highlighted JSON with green strings/amber numbers, header Format/Validate, pill resize.
 
-## Remaining phases (INTEGRATION.md Part D order)
+## Phase 2–3 record (2026-08-14)
 
-- [ ] Phase 2: DDL display (`TableDetailView` read-only highlight consumer)
-- [ ] Phase 3: the SQL editor surface (replace `HighlightedTextEditor`; keep `SQLHighlighter` as policy per D-008; attach providers)
-- [ ] Phase 4: `SQLHighlighter` seam via `StatementBoundaryProvider`
+- **DDL display**: kept `SQLHighlighter.highlight` (D-008 keeps the tokenizer anyway; native text-selection copy behavior preserved; zero risk beats engine-consistency for a non-editing surface).
+- **SQL editor**: `HighlightedTextEditor.swift` deleted; `GlassEditorAdapters.swift` provides the three provider pass-throughs (completion ranking, lint, statement boundaries — classification never leaves glassdb), the surface wrapper with A7 glass mapping (`.blur(strength:)`), focus-token behavior, and the platform representables over the package's public engines.
+- **The binding-bridge saga** (three repair rounds, each producing a guard test): (1) SwiftUI `.onChange` outbound sync never fired in the alive-ZStack workspace → replaced with direct `withObservationTracking`; (2) schema identifiers were empty on table tabs — a pre-existing gap from the unification merge (`completionIdentifiers = []` hardcoded) — fixed with a shared loader for both surfaces; (3) diff-based inbound sync reverted user keystrokes under State-commit batching (editor read-only) → architecture inverted: the model is the single source of truth, `update*View` applies no content diffs, all external writers route through the imperative `SQLEditorController` choke points. A deferred-commit harness test pins the round-3 failure mode.
+- **Editor features added during live review**: dotted-reference completion (`db.table` qualified candidates), Tab-accepts-top-suggestion (guarded local key monitor), ghost-text preview of the pending completion (caret-anchored `CATextLayer`), horizontal scrolling for long lines, selection-aware Format (control bar + compact iOS layout), and the suggestion pills relocated to a bottom overlay inside the editor (gutter-aware leading inset via `EditorMetrics.gutterWidth`, edge fades, zero layout reflow).
+- **Platform reach**: bar/pills/Format/insets are shared SwiftUI; UIKit honors no-wrap natively. Tab-accept and ghost preview are macOS-only pending package key/inline-suggestion hooks.
+
+## Upstream findings for GlassEditorKit (Phase 2 additions)
+
+3. The engine's deferred model-revision sync restores the pre-replace caret, clobbering selections applied between — consumers must call `syncTextViewFromModel` synchronously; an atomic replace-with-selection API would remove the footgun.
+4. No key-command hook on the text view (Tab interception needs a consumer-side NSEvent monitor; blocks iPad hardware-keyboard Tab-complete).
+5. No inline-suggestion surface (ghost text is a consumer-side layer).
+6. `hasHorizontalScroller` is hardcoded false even when `wrapsLines == false` — long lines clip until the consumer overrides.
+
+## Remaining
+
+- [ ] Phase 4 cleanup: exercise `StatementBoundaryProvider` end-to-end once the package consumes spans for anything user-visible
+- [ ] Lazy per-qualifier table completion for non-focus databases (typing `otherdb.` currently completes nothing; prefetching 391 databases is not sane)
