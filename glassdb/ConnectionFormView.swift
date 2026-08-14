@@ -165,7 +165,11 @@ struct ConnectionFormView: View {
     @State private var sshPort: String = "22"
     @State private var sshUsername: String = ""
     @State private var sshPassword: String = ""
-    @State private var sshCredentialPolicy: CredentialStoragePolicy = .glassdbOnly
+    // Sharing is an explicit opt-in on the SSH credential, never a database
+    // password concern; the stored policy derives from these two values.
+    @State private var sshShareWithGlas: Bool = false
+    @State private var sshManualPolicy: CredentialStoragePolicy = .glassdbOnly
+    @State private var sharedSSHIdentities: [KeychainManager.SharedSSHCredentialIdentity] = []
     @State private var sshAuthMethod: AuthenticationMethod = .password
     @State private var sshKeyID: UUID?
     @State private var colorTag: ConnectionColorTag = .none
@@ -327,7 +331,13 @@ struct ConnectionFormView: View {
             _host = State(initialValue: connection.host)
             _port = State(initialValue: String(connection.port))
             _username = State(initialValue: connection.username)
-            _databaseCredentialPolicy = State(initialValue: connection.databaseCredentialPolicy)
+            // Defensive clamp mirroring the decoder: database passwords are
+            // never shared with glas.sh.
+            _databaseCredentialPolicy = State(
+                initialValue: connection.databaseCredentialPolicy == .sharedWithGlas
+                    ? .glassdbOnly
+                    : connection.databaseCredentialPolicy
+            )
             _defaultDatabase = State(initialValue: connection.defaultDatabase ?? "")
             _useTLS = State(initialValue: connection.useTLS)
             _useSSHTunnel = State(initialValue: connection.useSSHTunnel)
@@ -335,7 +345,14 @@ struct ConnectionFormView: View {
             _sshPort = State(initialValue: String(connection.sshPort ?? 22))
             _sshUsername = State(initialValue: connection.sshUsername ?? "")
             _sshAuthMethod = State(initialValue: connection.sshAuthMethod ?? .password)
-            _sshCredentialPolicy = State(initialValue: connection.sshCredentialPolicy)
+            _sshShareWithGlas = State(
+                initialValue: connection.sshCredentialPolicy == .sharedWithGlas
+            )
+            _sshManualPolicy = State(
+                initialValue: connection.sshCredentialPolicy == .requireAuthentication
+                    ? .requireAuthentication
+                    : .glassdbOnly
+            )
             _sshKeyID = State(initialValue: connection.sshKeyID)
             _colorTag = State(initialValue: connection.colorTag)
             _tagsText = State(initialValue: connection.tags.joined(separator: ", "))
@@ -364,6 +381,7 @@ struct ConnectionFormView: View {
         .connectionFormSheetSize()
         .onAppear {
             loadKeychainCredentials()
+            reloadSharedSSHIdentities()
             #if os(macOS)
             focusedField = .name
             #endif
@@ -545,7 +563,8 @@ struct ConnectionFormView: View {
                 )
                 credentialPolicyPicker(
                     label: "Password storage",
-                    selection: $databaseCredentialPolicy
+                    selection: $databaseCredentialPolicy,
+                    options: CredentialStoragePolicy.databasePolicies
                 )
                 macTextField(
                     "Default database",
@@ -600,15 +619,56 @@ struct ConnectionFormView: View {
                         .frame(width: 340, alignment: .leading)
                     }
                     if sshAuthMethod == .password {
+                        if !sharedSSHIdentities.isEmpty {
+                            LabeledContent("Shared credentials") {
+                                Menu {
+                                    ForEach(sharedSSHIdentities) { identity in
+                                        Button(identity.displayName) {
+                                            applySharedSSHIdentity(identity)
+                                        }
+                                    }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Label(
+                                            "Use a glas.sh credential",
+                                            systemImage: "person.badge.key"
+                                        )
+                                        Spacer(minLength: 12)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(width: 316, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .menuStyle(.button)
+                                .frame(width: 340, alignment: .leading)
+                            }
+                            .help("Fill the SSH identity from a credential already shared with glas.sh; its saved password is reused.")
+                        }
                         passwordField(
                             label: "SSH password",
                             text: $sshPassword,
                             showPlaintext: $showSSHPassword
                         )
-                        credentialPolicyPicker(
-                            label: "SSH password storage",
-                            selection: $sshCredentialPolicy
-                        )
+                        Toggle("Share with glas.sh", isOn: $sshShareWithGlas)
+                            .disabled(!KeychainManager.sharedCredentialAccessAvailable)
+                            .help("Publish this SSH password to the shared Glass Keychain so glas.sh can use the same identity.")
+                        if sshShareWithGlas {
+                            LabeledContent("SSH password storage") {
+                                Text(credentialPolicyDescription(.sharedWithGlas))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 340, alignment: .leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        } else {
+                            credentialPolicyPicker(
+                                label: "SSH password storage",
+                                selection: $sshManualPolicy,
+                                options: CredentialStoragePolicy.sshManualPolicies
+                            )
+                        }
                     } else {
                         macSSHKeyPicker
                     }
@@ -825,7 +885,8 @@ struct ConnectionFormView: View {
             )
             credentialPolicyPicker(
                 label: "Password Storage",
-                selection: $databaseCredentialPolicy
+                selection: $databaseCredentialPolicy,
+                options: CredentialStoragePolicy.databasePolicies
             )
             LabeledContent("Default Database") {
                 TextField("Optional", text: $defaultDatabase)
@@ -901,15 +962,35 @@ struct ConnectionFormView: View {
                 }
 
                 if sshAuthMethod == .password {
+                    if !sharedSSHIdentities.isEmpty {
+                        Menu {
+                            ForEach(sharedSSHIdentities) { identity in
+                                Button(identity.displayName) {
+                                    applySharedSSHIdentity(identity)
+                                }
+                            }
+                        } label: {
+                            Label("Use a glas.sh credential", systemImage: "person.badge.key")
+                        }
+                    }
                     passwordField(
                         label: "Password",
                         text: $sshPassword,
                         showPlaintext: $showSSHPassword
                     )
-                    credentialPolicyPicker(
-                        label: "Password Storage",
-                        selection: $sshCredentialPolicy
-                    )
+                    Toggle("Share with glas.sh", isOn: $sshShareWithGlas)
+                        .disabled(!KeychainManager.sharedCredentialAccessAvailable)
+                    if sshShareWithGlas {
+                        Text(credentialPolicyDescription(.sharedWithGlas))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        credentialPolicyPicker(
+                            label: "Password Storage",
+                            selection: $sshManualPolicy,
+                            options: CredentialStoragePolicy.sshManualPolicies
+                        )
+                    }
                 } else {
                     sshKeyPicker
                 }
@@ -1018,13 +1099,14 @@ struct ConnectionFormView: View {
 
     private func credentialPolicyPicker(
         label: String,
-        selection: Binding<CredentialStoragePolicy>
+        selection: Binding<CredentialStoragePolicy>,
+        options: [CredentialStoragePolicy]
     ) -> some View {
         #if os(macOS)
         LabeledContent(label) {
             VStack(alignment: .leading, spacing: 6) {
                 Menu {
-                    ForEach(CredentialStoragePolicy.allCases) { policy in
+                    ForEach(options) { policy in
                         Button {
                             selection.wrappedValue = policy
                         } label: {
@@ -1066,7 +1148,13 @@ struct ConnectionFormView: View {
         #else
         VStack(alignment: .leading, spacing: 6) {
             Picker(label, selection: selection) {
-                credentialPolicyOptions
+                ForEach(options) { policy in
+                    Text(policy.displayName).tag(policy)
+                        .disabled(
+                            policy == .sharedWithGlas
+                                && !KeychainManager.sharedCredentialAccessAvailable
+                        )
+                }
             }
             Text(credentialPolicyDescription(selection.wrappedValue))
                 .font(.caption)
@@ -1075,19 +1163,33 @@ struct ConnectionFormView: View {
         #endif
     }
 
-    @ViewBuilder
-    private var credentialPolicyOptions: some View {
-        ForEach(CredentialStoragePolicy.allCases) { policy in
-            Text(policy.displayName).tag(policy)
-                .disabled(policy == .sharedWithGlas && !KeychainManager.sharedCredentialAccessAvailable)
-        }
-    }
-
     private func credentialPolicyDescription(_ policy: CredentialStoragePolicy) -> String {
         if policy == .sharedWithGlas, !KeychainManager.sharedCredentialAccessAvailable {
             return "Shared Keychain access is unavailable in this unsigned or unprovisioned build. This credential remains in the current app’s default Keychain."
         }
         return policy.policyDescription
+    }
+
+    // MARK: - Shared SSH Credential Catalog
+
+    /// Fills the SSH identity fields from an existing shared Glass-family
+    /// credential. The password stays blank: the saved shared secret is
+    /// retrieved through the existing endpoint-account fallback at connect,
+    /// so no duplicate secret is ever created here.
+    private func applySharedSSHIdentity(
+        _ identity: KeychainManager.SharedSSHCredentialIdentity
+    ) {
+        sshHost = identity.host
+        sshPort = String(identity.port)
+        sshUsername = identity.username
+        sshAuthMethod = .password
+        sshPassword = ""
+        sshShareWithGlas = true
+        touchedFields.formUnion([.sshHost, .sshPort, .sshUsername])
+    }
+
+    private func reloadSharedSSHIdentities() {
+        sharedSSHIdentities = KeychainManager.sharedSSHCredentialIdentities()
     }
 
     // MARK: - SSH Key Picker
@@ -1250,7 +1352,11 @@ struct ConnectionFormView: View {
             sshAuthMethod: useSSHTunnel ? sshAuthMethod : nil,
             sshKeyID: useSSHTunnel && sshAuthMethod == .sshKey ? sshKeyID : nil,
             databaseCredentialPolicy: databaseCredentialPolicy,
-            sshCredentialPolicy: sshCredentialPolicy,
+            sshCredentialPolicy: CredentialStoragePolicy.sshPolicy(
+                shareWithGlas: sshShareWithGlas
+                    && KeychainManager.sharedCredentialAccessAvailable,
+                manualPolicy: sshManualPolicy
+            ),
             useTLS: engine.supportsTLS && useTLS,
             isFavorite: editingConnection?.isFavorite ?? false,
             colorTag: colorTag,

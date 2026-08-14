@@ -2343,8 +2343,89 @@ struct glassdbTests {
         let legacyData = try JSONSerialization.data(withJSONObject: object)
         let decoded = try JSONDecoder().decode(DatabaseConnectionConfig.self, from: legacyData)
 
-        #expect(decoded.databaseCredentialPolicy == .sharedWithGlas)
+        // Legacy records defaulted both policies to the shared access group.
+        // Database passwords are never shared with glas.sh, so their legacy
+        // default normalizes to private storage; the SSH identity keeps its
+        // shared location.
+        #expect(decoded.databaseCredentialPolicy == .glassdbOnly)
         #expect(decoded.sshCredentialPolicy == .sharedWithGlas)
+    }
+
+    @Test func sharedDatabasePolicyNormalizesToPrivateOnDecode() throws {
+        var config = DatabaseConnectionConfig(
+            name: "Backwards",
+            databaseCredentialPolicy: .sharedWithGlas,
+            sshCredentialPolicy: .sharedWithGlas
+        )
+        config.useSSHTunnel = true
+        let decoded = try JSONDecoder().decode(
+            DatabaseConnectionConfig.self,
+            from: JSONEncoder().encode(config)
+        )
+        #expect(decoded.databaseCredentialPolicy == .glassdbOnly)
+        #expect(decoded.sshCredentialPolicy == .sharedWithGlas)
+    }
+
+    @Test func databasePolicyOptionsNeverOfferGlasSharingAndSSHOptInResolvesThePolicy() {
+        #expect(CredentialStoragePolicy.databasePolicies == [.glassdbOnly, .requireAuthentication])
+        #expect(!CredentialStoragePolicy.databasePolicies.contains(.sharedWithGlas))
+        #expect(CredentialStoragePolicy.sshManualPolicies == [.glassdbOnly, .requireAuthentication])
+
+        #expect(CredentialStoragePolicy.sshPolicy(
+            shareWithGlas: true, manualPolicy: .glassdbOnly
+        ) == .sharedWithGlas)
+        #expect(CredentialStoragePolicy.sshPolicy(
+            shareWithGlas: true, manualPolicy: .requireAuthentication
+        ) == .sharedWithGlas)
+        #expect(CredentialStoragePolicy.sshPolicy(
+            shareWithGlas: false, manualPolicy: .requireAuthentication
+        ) == .requireAuthentication)
+        #expect(CredentialStoragePolicy.sshPolicy(
+            shareWithGlas: false, manualPolicy: .glassdbOnly
+        ) == .glassdbOnly)
+        // A stray shared manual value without the opt-in collapses to private.
+        #expect(CredentialStoragePolicy.sshPolicy(
+            shareWithGlas: false, manualPolicy: .sharedWithGlas
+        ) == .glassdbOnly)
+    }
+
+    @Test func sharedSSHCredentialIdentityParsesEndpointAccountsOnly() throws {
+        let identity = try #require(
+            KeychainManager.sharedSSHCredentialIdentity(
+                fromAccount: "ssh:operator@bastion.example.com:2222"
+            )
+        )
+        #expect(identity.username == "operator")
+        #expect(identity.host == "bastion.example.com")
+        #expect(identity.port == 2222)
+        #expect(identity.displayName == "operator@bastion.example.com:2222")
+
+        let defaultPort = try #require(
+            KeychainManager.sharedSSHCredentialIdentity(
+                fromAccount: "ssh:deploy@edge.local:22"
+            )
+        )
+        #expect(defaultPort.displayName == "deploy@edge.local")
+
+        // IPv6 hosts keep every interior colon; the port is the last segment.
+        let ipv6 = try #require(
+            KeychainManager.sharedSSHCredentialIdentity(
+                fromAccount: "ssh:ops@2001:db8::1:22"
+            )
+        )
+        #expect(ipv6.host == "2001:db8::1")
+        #expect(ipv6.port == 22)
+
+        // Canonical UUID-profile accounts and malformed records are excluded.
+        #expect(KeychainManager.sharedSSHCredentialIdentity(
+            fromAccount: KeychainManager.sshAccount(for: UUID())
+        ) == nil)
+        #expect(KeychainManager.sharedSSHCredentialIdentity(fromAccount: "ssh:@host:22") == nil)
+        #expect(KeychainManager.sharedSSHCredentialIdentity(fromAccount: "ssh:user@:22") == nil)
+        #expect(KeychainManager.sharedSSHCredentialIdentity(fromAccount: "ssh:user@host:0") == nil)
+        #expect(KeychainManager.sharedSSHCredentialIdentity(fromAccount: "ssh:user@host:99999") == nil)
+        #expect(KeychainManager.sharedSSHCredentialIdentity(fromAccount: "ssh:user@host") == nil)
+        #expect(KeychainManager.sharedSSHCredentialIdentity(fromAccount: "user@host:22") == nil)
     }
 
     @Test func credentialPoliciesRoundTripAndExposeExactlyThreeModes() throws {

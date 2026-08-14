@@ -11,6 +11,7 @@ import GlasSecretStore
 import GlassDBKit
 import LocalAuthentication
 import os
+import Security
 
 enum KeychainManager {
 
@@ -545,6 +546,73 @@ enum KeychainManager {
     /// Compatibility identity published only for an explicitly shared SSH
     /// password. glas.sh uses this endpoint-scoped alias while glassdb retains
     /// its UUID primary record, so either app can import the same shared value.
+    // MARK: - Shared SSH Credential Catalog
+
+    /// Endpoint identity of a shared Glass-family SSH password record — the
+    /// "ssh:user@host:port" accounts either app publishes into the shared
+    /// access group. Identity only; no secret material.
+    struct SharedSSHCredentialIdentity: Identifiable, Hashable, Sendable {
+        let username: String
+        let host: String
+        let port: Int
+
+        var id: String { "ssh:\(username)@\(host):\(port)" }
+
+        var displayName: String {
+            port == 22 ? "\(username)@\(host)" : "\(username)@\(host):\(port)"
+        }
+    }
+
+    /// Parses a shared endpoint account of the form "ssh:user@host:port".
+    /// Canonical UUID-profile accounts and malformed records return nil. The
+    /// port separator is the last colon, so IPv6 hosts parse intact.
+    static func sharedSSHCredentialIdentity(
+        fromAccount account: String
+    ) -> SharedSSHCredentialIdentity? {
+        guard account.hasPrefix("ssh:") else { return nil }
+        let body = account.dropFirst(4)
+        guard let atIndex = body.firstIndex(of: "@") else { return nil }
+        let username = String(body[..<atIndex])
+        let hostPort = body[body.index(after: atIndex)...]
+        guard let colonIndex = hostPort.lastIndex(of: ":") else { return nil }
+        let host = String(hostPort[..<colonIndex])
+        let portText = hostPort[hostPort.index(after: colonIndex)...]
+        guard !username.isEmpty, !host.isEmpty,
+              let port = Int(portText), (1...65_535).contains(port) else {
+            return nil
+        }
+        return SharedSSHCredentialIdentity(username: username, host: host, port: port)
+    }
+
+    /// Lists the endpoint identities of shared SSH password records visible
+    /// in the Glass-family access group — credentials either app published.
+    /// Reads account attributes only; secret data never leaves the Keychain.
+    static func sharedSSHCredentialIdentities() -> [SharedSSHCredentialIdentity] {
+        guard let accessGroup = sharedConfig.accessGroup else { return [] }
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: sharedConfig.sshPasswordsService,
+            kSecAttrAccessGroup as String: accessGroup,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true
+        ]
+        if useDataProtectionKeychain {
+            query[kSecUseDataProtectionKeychain as String] = true
+        }
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else {
+            return []
+        }
+        let identities = Set(items.compactMap { item -> SharedSSHCredentialIdentity? in
+            guard let account = item[kSecAttrAccount as String] as? String else { return nil }
+            return sharedSSHCredentialIdentity(fromAccount: account)
+        })
+        return identities.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
     static func sharedSSHCompatibilityAccount(
         for connection: DatabaseConnectionConfig
     ) -> String? {
