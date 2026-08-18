@@ -353,6 +353,7 @@ struct QueryEditorView: View {
     @FocusState private var savedQueryNameFocused: Bool
     @State private var documentError: String?
     @State private var schemaCompletionIdentifiers: [String] = []
+    @State private var editorController = SQLEditorController()
     @State private var completionLoadError: String?
     @State private var statementsAwaitingConfirmation: [SQLStatement] = []
     @State private var showingExecutionConfirmation = false
@@ -361,14 +362,23 @@ struct QueryEditorView: View {
         sessionManager.session(for: sessionID)
     }
 
+    /// Document-level actions (Format, history/saved insertion, Clear, open)
+    /// replace editor content through the shared handle; the editor model is
+    /// the source of truth and state follows it (see SQLEditorController).
     private var queryText: String {
         get { document.text }
-        nonmutating set { document.text = newValue }
+        nonmutating set {
+            document.text = newValue
+            editorController.setText(newValue)
+        }
     }
 
     private var selectedRange: NSRange {
         get { document.selectedRange }
-        nonmutating set { document.selectedRange = newValue }
+        nonmutating set {
+            document.selectedRange = newValue
+            editorController.setSelection(newValue)
+        }
     }
 
     private var currentResult: QueryResult? {
@@ -402,7 +412,8 @@ struct QueryEditorView: View {
                     document: $document,
                     isWorkspaceActive: isWorkspaceActive,
                     completionIdentifiers: schemaCompletionIdentifiers,
-                    completionError: completionLoadError
+                    completionError: completionLoadError,
+                    editorController: editorController
                 )
                 .environment(\.sqlEditorFocusToken, document.id)
             } else {
@@ -862,36 +873,10 @@ struct QueryEditorView: View {
     private func loadCompletionIdentifiers() async {
         guard let connection = session?.connection else { return }
         do {
-            var identifiers = Set(try await connection.databases())
-            if let database = session?.currentDatabase, !database.isEmpty {
-                let tables = try await connection.tables(in: database)
-                identifiers.formUnion(tables)
-                await withTaskGroup(of: SchemaContext.TableInfo?.self) { group in
-                    for table in tables.prefix(50) {
-                        group.addTask {
-                            guard let columns = try? await connection.columns(
-                                in: table,
-                                database: database
-                            ) else { return nil }
-                            return SchemaContext.TableInfo(
-                                name: table,
-                                columns: columns.map {
-                                    SchemaContext.ColumnInfo(name: $0.name, type: $0.type)
-                                }
-                            )
-                        }
-                    }
-                    for await tableInfo in group {
-                        guard let tableInfo else { continue }
-                        identifiers.formUnion(tableInfo.columns.flatMap { column in
-                            [column.name, "\(tableInfo.name).\(column.name)"]
-                        })
-                    }
-                }
-            }
-            schemaCompletionIdentifiers = identifiers.sorted {
-                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-            }
+            schemaCompletionIdentifiers = try await SchemaCompletionIdentifiers.load(
+                connection: connection,
+                database: session?.currentDatabase
+            )
             completionLoadError = nil
         } catch {
             schemaCompletionIdentifiers = []
