@@ -546,6 +546,21 @@ enum KeychainManager {
     /// Compatibility identity published only for an explicitly shared SSH
     /// password. glas.sh uses this endpoint-scoped alias while glassdb retains
     /// its UUID primary record, so either app can import the same shared value.
+    /// Reads the shared endpoint record behind a catalog identity.
+    ///
+    /// A connection authenticating with a credential glas.sh owns has no
+    /// private copy of the secret by design, so test and connect read it from
+    /// the shared account instead of from a field the user never filled in.
+    static func retrieveSharedSSHPassword(
+        for identity: SharedSSHCredentialIdentity
+    ) throws -> String {
+        try retrieveLegacyPassword(
+            account: identity.id,
+            primaryService: sharedConfig.sshPasswordsService,
+            legacySuffix: "sshpasswords"
+        )
+    }
+
     // MARK: - Shared SSH Credential Catalog
 
     /// Endpoint identity of a shared Glass-family SSH password record — the
@@ -558,8 +573,10 @@ enum KeychainManager {
 
         var id: String { "ssh:\(username)@\(host):\(port)" }
 
+        /// Host leads so the machine is scannable at a glance; the port
+        /// appears only when nonstandard.
         var displayName: String {
-            port == 22 ? "\(username)@\(host)" : "\(username)@\(host):\(port)"
+            port == 22 ? "\(host) — \(username)" : "\(host):\(port) — \(username)"
         }
     }
 

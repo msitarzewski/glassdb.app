@@ -165,12 +165,34 @@ struct ConnectionFormView: View {
     @State private var sshPort: String = "22"
     @State private var sshUsername: String = ""
     @State private var sshPassword: String = ""
+    /// How the SSH secret is provided. `shared` still authenticates with a
+    /// password on the wire — it selects an identity glas.sh already owns
+    /// rather than entering a new one — so the persisted auth method stays
+    /// `.password` and the tunnel layer is untouched.
+    enum SSHCredentialMode: Hashable {
+        case password
+        case sshKey
+        case shared
+
+        /// Reopening a saved connection lands in the mode that describes what
+        /// was stored: key auth is key mode, a shared password credential is
+        /// Shared Credentials, everything else is manual password entry.
+        static func resolved(
+            authMethod: AuthenticationMethod?,
+            policy: CredentialStoragePolicy
+        ) -> SSHCredentialMode {
+            if (authMethod ?? .password) == .sshKey { return .sshKey }
+            return policy == .sharedWithGlas ? .shared : .password
+        }
+    }
+
     // Sharing is an explicit opt-in on the SSH credential, never a database
     // password concern; the stored policy derives from these two values.
     @State private var sshShareWithGlas: Bool = false
     @State private var sshManualPolicy: CredentialStoragePolicy = .glassdbOnly
     @State private var sharedSSHIdentities: [KeychainManager.SharedSSHCredentialIdentity] = []
-    @State private var sshAuthMethod: AuthenticationMethod = .password
+    @State private var sshCredentialMode: SSHCredentialMode = .password
+    @State private var selectedSharedIdentityID: String?
     @State private var sshKeyID: UUID?
     @State private var colorTag: ConnectionColorTag = .none
     @State private var tagsText: String = ""
@@ -344,7 +366,12 @@ struct ConnectionFormView: View {
             _sshHost = State(initialValue: connection.sshHost ?? "")
             _sshPort = State(initialValue: String(connection.sshPort ?? 22))
             _sshUsername = State(initialValue: connection.sshUsername ?? "")
-            _sshAuthMethod = State(initialValue: connection.sshAuthMethod ?? .password)
+            _sshCredentialMode = State(
+                initialValue: SSHCredentialMode.resolved(
+                    authMethod: connection.sshAuthMethod,
+                    policy: connection.sshCredentialPolicy
+                )
+            )
             _sshShareWithGlas = State(
                 initialValue: connection.sshCredentialPolicy == .sharedWithGlas
             )
@@ -371,8 +398,13 @@ struct ConnectionFormView: View {
                             .connectionFormCancelShortcut()
                     }
                     ToolbarItem(placement: .confirmationAction) {
+                        // Deliberately not disabled by validation: inline
+                        // messages only appear after an attempted save, so a
+                        // disabled button would hide the very reasons it is
+                        // disabled. `save()` re-validates, reveals every
+                        // issue, and focuses the first offending field.
                         Button(isEditing ? "Save Changes" : "Save Connection") { save() }
-                            .disabled(!isFormValid || isSavingAndConnecting)
+                            .disabled(isSavingAndConnecting)
                             .connectionFormDefaultShortcut()
                             .accessibilityIdentifier("connection-form.save")
                     }
@@ -611,41 +643,18 @@ struct ConnectionFormView: View {
                         help: "Account name used to authenticate to the SSH server."
                     )
                     LabeledContent("Authentication") {
-                        Picker("Authentication", selection: $sshAuthMethod) {
-                            Text("Password").tag(AuthenticationMethod.password)
-                            Text("SSH Key").tag(AuthenticationMethod.sshKey)
+                        Picker("Authentication", selection: $sshCredentialMode) {
+                            Text("Password").tag(SSHCredentialMode.password)
+                            Text("SSH Key").tag(SSHCredentialMode.sshKey)
+                            if offersSharedCredentialMode {
+                                Text("Shared Credentials").tag(SSHCredentialMode.shared)
+                            }
                         }
                         .labelsHidden()
                         .frame(width: 340, alignment: .leading)
                     }
-                    if sshAuthMethod == .password {
-                        if !sharedSSHIdentities.isEmpty {
-                            LabeledContent("Shared credentials") {
-                                Menu {
-                                    ForEach(sharedSSHIdentities) { identity in
-                                        Button(identity.displayName) {
-                                            applySharedSSHIdentity(identity)
-                                        }
-                                    }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Label(
-                                            "Use a glas.sh credential",
-                                            systemImage: "person.badge.key"
-                                        )
-                                        Spacer(minLength: 12)
-                                        Image(systemName: "chevron.up.chevron.down")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .frame(width: 316, alignment: .leading)
-                                    .contentShape(Rectangle())
-                                }
-                                .menuStyle(.button)
-                                .frame(width: 340, alignment: .leading)
-                            }
-                            .help("Fill the SSH identity from a credential already shared with glas.sh; its saved password is reused.")
-                        }
+                    switch sshCredentialMode {
+                    case .password:
                         passwordField(
                             label: "SSH password",
                             text: $sshPassword,
@@ -654,22 +663,47 @@ struct ConnectionFormView: View {
                         Toggle("Share with glas.sh", isOn: $sshShareWithGlas)
                             .disabled(!KeychainManager.sharedCredentialAccessAvailable)
                             .help("Publish this SSH password to the shared Glass Keychain so glas.sh can use the same identity.")
-                        if sshShareWithGlas {
-                            LabeledContent("SSH password storage") {
-                                Text(credentialPolicyDescription(.sharedWithGlas))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 340, alignment: .leading)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        } else {
+                        // Sharing decides where the secret lives, so the
+                        // private-storage picker is not offered alongside it.
+                        if !sshShareWithGlas {
                             credentialPolicyPicker(
                                 label: "SSH password storage",
                                 selection: $sshManualPolicy,
                                 options: CredentialStoragePolicy.sshManualPolicies
                             )
                         }
-                    } else {
+                    case .shared:
+                        LabeledContent("glas.sh credential") {
+                            Menu {
+                                ForEach(sharedSSHIdentities) { identity in
+                                    Button(identity.displayName) {
+                                        applySharedSSHIdentity(identity)
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Label(
+                                        selectedSharedIdentity?.displayName ?? "Choose a credential",
+                                        systemImage: "person.badge.key"
+                                    )
+                                    Spacer(minLength: 12)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(width: 316, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .menuStyle(.button)
+                            .frame(width: 340, alignment: .leading)
+                            .disabled(sharedSSHIdentities.isEmpty)
+                        }
+                        .help("Reuse an SSH identity already shared with glas.sh; its saved password is used at connect time.")
+                        Text(sharedCredentialModeCaption)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .sshKey:
                         macSSHKeyPicker
                     }
                     testSSHButton
@@ -956,23 +990,16 @@ struct ConnectionFormView: View {
             }
 
             Section("SSH Authentication") {
-                Picker("Method", selection: $sshAuthMethod) {
-                    Text("Password").tag(AuthenticationMethod.password)
-                    Text("SSH Key").tag(AuthenticationMethod.sshKey)
+                Picker("Method", selection: $sshCredentialMode) {
+                    Text("Password").tag(SSHCredentialMode.password)
+                    Text("SSH Key").tag(SSHCredentialMode.sshKey)
+                    if offersSharedCredentialMode {
+                        Text("Shared Credentials").tag(SSHCredentialMode.shared)
+                    }
                 }
 
-                if sshAuthMethod == .password {
-                    if !sharedSSHIdentities.isEmpty {
-                        Menu {
-                            ForEach(sharedSSHIdentities) { identity in
-                                Button(identity.displayName) {
-                                    applySharedSSHIdentity(identity)
-                                }
-                            }
-                        } label: {
-                            Label("Use a glas.sh credential", systemImage: "person.badge.key")
-                        }
-                    }
+                switch sshCredentialMode {
+                case .password:
                     passwordField(
                         label: "Password",
                         text: $sshPassword,
@@ -980,18 +1007,33 @@ struct ConnectionFormView: View {
                     )
                     Toggle("Share with glas.sh", isOn: $sshShareWithGlas)
                         .disabled(!KeychainManager.sharedCredentialAccessAvailable)
-                    if sshShareWithGlas {
-                        Text(credentialPolicyDescription(.sharedWithGlas))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
+                    // Sharing decides where the secret lives, so the
+                    // private-storage picker is not offered alongside it.
+                    if !sshShareWithGlas {
                         credentialPolicyPicker(
                             label: "Password Storage",
                             selection: $sshManualPolicy,
                             options: CredentialStoragePolicy.sshManualPolicies
                         )
                     }
-                } else {
+                case .shared:
+                    Menu {
+                        ForEach(sharedSSHIdentities) { identity in
+                            Button(identity.displayName) {
+                                applySharedSSHIdentity(identity)
+                            }
+                        }
+                    } label: {
+                        Label(
+                            selectedSharedIdentity?.displayName ?? "Choose a credential",
+                            systemImage: "person.badge.key"
+                        )
+                    }
+                    .disabled(sharedSSHIdentities.isEmpty)
+                    Text(sharedCredentialModeCaption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .sshKey:
                     sshKeyPicker
                 }
             }
@@ -1182,7 +1224,8 @@ struct ConnectionFormView: View {
         sshHost = identity.host
         sshPort = String(identity.port)
         sshUsername = identity.username
-        sshAuthMethod = .password
+        sshCredentialMode = .shared
+        selectedSharedIdentityID = identity.id
         sshPassword = ""
         sshShareWithGlas = true
         touchedFields.formUnion([.sshHost, .sshPort, .sshUsername])
@@ -1190,6 +1233,49 @@ struct ConnectionFormView: View {
 
     private func reloadSharedSSHIdentities() {
         sharedSSHIdentities = KeychainManager.sharedSSHCredentialIdentities()
+        guard selectedSharedIdentityID == nil else { return }
+        // An existing shared connection opens in Shared Credentials mode;
+        // match its endpoint back to a catalog entry so the picker shows
+        // which identity it is using.
+        let host = sshHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let username = sshUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = Int(sshPort) ?? 22
+        selectedSharedIdentityID = sharedSSHIdentities.first {
+            $0.host == host && $0.username == username && $0.port == port
+        }?.id
+    }
+
+    /// Persisted auth method: Shared Credentials is still password auth on
+    /// the wire, so only the key mode changes it.
+    private var sshAuthMethod: AuthenticationMethod {
+        sshCredentialMode == .sshKey ? .sshKey : .password
+    }
+
+    /// The third mode is offered when the shared catalog has entries, and
+    /// stays available while a connection is already using it.
+    private var offersSharedCredentialMode: Bool {
+        !sharedSSHIdentities.isEmpty || sshCredentialMode == .shared
+    }
+
+    private var selectedSharedIdentity: KeychainManager.SharedSSHCredentialIdentity? {
+        guard let selectedSharedIdentityID else { return nil }
+        return sharedSSHIdentities.first { $0.id == selectedSharedIdentityID }
+    }
+
+    private var sharedCredentialModeCaption: String {
+        sharedSSHIdentities.isEmpty
+            ? "No SSH credentials are currently shared with glas.sh on this device."
+            : "The password saved with the shared credential is reused; glassdb stores no second copy."
+    }
+
+    /// Whether the saved connection resolves to the shared storage policy.
+    private var sshUsesSharedCredential: Bool {
+        guard KeychainManager.sharedCredentialAccessAvailable else { return false }
+        switch sshCredentialMode {
+        case .shared: return true
+        case .password: return sshShareWithGlas
+        case .sshKey: return false
+        }
     }
 
     // MARK: - SSH Key Picker
@@ -1227,7 +1313,7 @@ struct ConnectionFormView: View {
             } label: {
                 Label("Test SSH Connection", systemImage: "antenna.radiowaves.left.and.right")
             }
-            .disabled(!isSSHTunnelValid || isTestingConnection)
+            .disabled(isTestingConnection)
             .help("Verify the SSH server and authentication settings without saving.")
 
             Spacer()
@@ -1243,7 +1329,7 @@ struct ConnectionFormView: View {
             } label: {
                 Label("Test Connection", systemImage: "bolt")
             }
-            .disabled(!isFormValid || isTestingConnection)
+            .disabled(isTestingConnection)
             .help("Verify the complete database connection without saving.")
             .accessibilityIdentifier("connection-form.test")
 
@@ -1263,7 +1349,7 @@ struct ConnectionFormView: View {
                 Label("Save & Connect", systemImage: "bolt")
             }
         }
-        .disabled(!isFormValid || isTestingConnection || isSavingAndConnecting)
+        .disabled(isTestingConnection || isSavingAndConnecting)
         .connectionFormConnectShortcut()
         .help("Save this connection, then connect using the current credentials.")
         .accessibilityHint("This is the only form action that saves and starts a database connection.")
@@ -1353,8 +1439,7 @@ struct ConnectionFormView: View {
             sshKeyID: useSSHTunnel && sshAuthMethod == .sshKey ? sshKeyID : nil,
             databaseCredentialPolicy: databaseCredentialPolicy,
             sshCredentialPolicy: CredentialStoragePolicy.sshPolicy(
-                shareWithGlas: sshShareWithGlas
-                    && KeychainManager.sharedCredentialAccessAvailable,
+                shareWithGlas: sshUsesSharedCredential,
                 manualPolicy: sshManualPolicy
             ),
             useTLS: engine.supportsTLS && useTLS,
@@ -1533,6 +1618,15 @@ struct ConnectionFormView: View {
     ) throws -> String? {
         guard connection.useSSHTunnel, connection.sshAuthMethod == .password else {
             return nil
+        }
+        // Shared Credentials mode keeps no local secret: read the shared
+        // record directly rather than sending the deliberately empty field.
+        // A missing record throws so the caller can say so plainly instead of
+        // failing later as a wrong password.
+        if sshCredentialMode == .shared,
+           sshPassword.isEmpty,
+           let identity = selectedSharedIdentity {
+            return try KeychainManager.retrieveSharedSSHPassword(for: identity)
         }
         if !sshPassword.isEmpty || !isEditing { return sshPassword }
         do {
