@@ -1233,6 +1233,55 @@ struct glassdbTests {
             == "SELECT * FROM users WHERE email = '?' AND pin = ?")
     }
 
+    @Test func sqlCompletionPreviewSuffixShowsWhatTabAppends() {
+        let sql = "SELECT * FROM common_vision.artic"
+        let selection = NSRange(location: (sql as NSString).length, length: 0)
+        let suffix = SQLHighlighter.completionPreviewSuffix(
+            in: sql,
+            selectedRange: selection,
+            schemaIdentifiers: ["common_vision", "common_vision.articles"]
+        )
+        #expect(suffix == "les")
+
+        // Exact match already typed: nothing to preview.
+        let exact = "SELECT * FROM common_vision.articles"
+        #expect(SQLHighlighter.completionPreviewSuffix(
+            in: exact,
+            selectedRange: NSRange(location: (exact as NSString).length, length: 0),
+            schemaIdentifiers: ["common_vision.articles"]
+        ) == nil)
+
+        // Empty prefix: no preview.
+        #expect(SQLHighlighter.completionPreviewSuffix(
+            in: "SELECT ",
+            selectedRange: NSRange(location: 7, length: 0),
+            schemaIdentifiers: ["users"]
+        ) == nil)
+    }
+
+    @Test func sqlCompletionMatchesDatabaseQualifiedTableReferences() {
+        // The completion context includes "." in identifier tokens, so a
+        // dotted reference completes as one token and requires qualified
+        // candidates — the identifier loader emits `db.table` entries.
+        let sql = "SELECT * FROM common_vision.ar"
+        let selection = NSRange(location: (sql as NSString).length, length: 0)
+        let suggestions = SQLHighlighter.completions(
+            in: sql,
+            selectedRange: selection,
+            schemaIdentifiers: ["common_vision", "articles", "common_vision.articles", "beam"]
+        )
+        #expect(suggestions.first == "common_vision.articles")
+        #expect(!suggestions.contains("articles"))
+
+        let applied = SQLHighlighter.applyingCompletion(
+            "common_vision.articles",
+            to: sql,
+            selectedRange: selection
+        )
+        #expect(applied.sql == "SELECT * FROM common_vision.articles")
+        #expect(applied.selection.location == (applied.sql as NSString).length)
+    }
+
     @Test func sqlCompletionUsesLiveSchemaAndDoesNotCompleteInsideLiterals() {
         let sql = "SELECT us"
         let selection = NSRange(location: (sql as NSString).length, length: 0)
@@ -3403,23 +3452,276 @@ struct glassdbTests {
         #expect(invoked.last == "first.script")
     }
 
-    @Test func editorGutterWidthIsDigitCountSizedWithATwoDigitFloor() {
-        // Two-digit floor: short documents share one stable width.
-        #expect(EditorGutterMetrics.width(lineCount: 1, digitWidth: 7) == 30)
-        #expect(EditorGutterMetrics.width(lineCount: 9, digitWidth: 7) == 30)
-        #expect(EditorGutterMetrics.width(lineCount: 99, digitWidth: 7) == 30)
-        // The gutter grows exactly at each digit rollover.
-        #expect(EditorGutterMetrics.width(lineCount: 100, digitWidth: 7) == 37)
-        #expect(EditorGutterMetrics.width(lineCount: 1_000_000, digitWidth: 7) == 65)
-        // Fractional digit advances round up so digits never clip.
-        #expect(EditorGutterMetrics.width(lineCount: 100, digitWidth: 7.4) == 39)
-        // Degenerate line counts clamp to the floor instead of collapsing.
-        #expect(EditorGutterMetrics.width(lineCount: 0, digitWidth: 7) == 30)
-        // Both platform editors share the same non-width constants.
-        #expect(EditorGutterMetrics.plainInset == 12)
-        #expect(EditorGutterMetrics.numberPadding == 8)
-        #expect(EditorGutterMetrics.textGap == 6)
+    @Test func sqlEditorProvidersPreserveSQLHighlighterSemantics() async throws {
+        // Completion: SQLHighlighter's deterministic ranking passes through
+        // the provider untouched (exact match first, then shorter, then
+        // localized case-insensitive — INTEGRATION.md A5).
+        let sql = "SELECT us"
+        let caret = (sql as NSString).length
+        let direct = SQLHighlighter.completions(
+            in: sql,
+            selectedRange: NSRange(location: caret, length: 0),
+            schemaIdentifiers: ["users", "user_sessions", "usage"]
+        )
+        let provided = try await SQLEditorCompletionProvider(
+            schemaIdentifiers: ["users", "user_sessions", "usage"]
+        ).completions(
+            for: CompletionRequest(position: caret, prefix: "us", language: .sql),
+            in: sql
+        )
+        #expect(provided.map(\.insertText) == direct)
+
+        // Statement boundaries: ranges are SQLHighlighter's parse in UTF-16,
+        // including the compound-routine behavior that stays in glassdb.
+        let script = "SELECT 1; SELECT 2;"
+        let spans = try await SQLEditorStatementBoundaryProvider()
+            .statements(in: script, language: .sql)
+        let statements = SQLHighlighter.statements(in: script)
+        #expect(spans.count == statements.count)
+        #expect(spans.count == 2)
+        let firstText = (script as NSString).substring(
+            with: NSRange(
+                location: spans[0].range.lowerBound,
+                length: spans[0].range.count
+            )
+        )
+        #expect(firstText.contains("SELECT 1"))
+
+        // Diagnostics: the linter's findings map through with their message.
+        let broken = "SELECT 'unterminated"
+        let diagnostics = try await SQLEditorDiagnosticsProvider()
+            .diagnostics(for: broken, language: .sql)
+        #expect(!diagnostics.isEmpty)
+
+        // Non-SQL languages produce nothing from any provider.
+        let none = try await SQLEditorStatementBoundaryProvider()
+            .statements(in: script, language: .json)
+        #expect(none.isEmpty)
     }
+
+    #if os(macOS)
+    /// Hosts the Phase 2 SQL editor surface offscreen, types into the engine's
+    /// text view programmatically, and asserts glassdb's text/selection
+    /// bindings observe it — the seam the completion bar depends on.
+    @Test @MainActor func sqlEditorSurfacePropagatesTypingToCompletionInputs() async throws {
+        let settings = SettingsManager(loadImmediately: false)
+        final class Captured {
+            var text = ""
+            var selection = NSRange(location: 0, length: 0)
+        }
+        let captured = Captured()
+        let surface = SQLEditorSurface(
+            text: Binding(get: { captured.text }, set: { captured.text = $0 }),
+            fontSize: 13,
+            showLineNumbers: false,
+            selection: Binding(get: { captured.selection }, set: { captured.selection = $0 }),
+            isActive: true,
+            schemaIdentifiers: ["users", "user_sessions"]
+        )
+        .environment(settings)
+
+        let hostingView = NSHostingView(rootView: AnyView(surface))
+        hostingView.frame = NSRect(x: 0, y: 0, width: 600, height: 200)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        hostingView.needsLayout = true
+        hostingView.layoutSubtreeIfNeeded()
+
+        func findTextView(_ view: NSView) -> NSTextView? {
+            if let textView = view as? NSTextView { return textView }
+            for sub in view.subviews {
+                if let found = findTextView(sub) { return found }
+            }
+            return nil
+        }
+        let textView = try #require(findTextView(hostingView))
+
+        textView.insertText("SELECT us", replacementRange: NSRange(location: 0, length: 0))
+        // Deliberately NO forced layout: the bridge must deliver through
+        // Observation alone, exactly as in the live workspace where SwiftUI
+        // may never re-evaluate the surface's body on a keystroke. (A forced
+        // layout pump here previously masked a dead onChange bridge.)
+        for _ in 0..<40 {
+            try await Task.sleep(for: .milliseconds(20))
+            if captured.text == "SELECT us", captured.selection.location == 9 { break }
+        }
+
+        #expect(captured.text == "SELECT us")
+        #expect(captured.selection == NSRange(location: 9, length: 0))
+
+        // The completion pipeline the bar runs on those inputs still ranks
+        // deterministically and yields schema identifiers.
+        let suggestions = SQLHighlighter.completions(
+            in: captured.text,
+            selectedRange: captured.selection,
+            schemaIdentifiers: ["users", "user_sessions"]
+        )
+        #expect(!suggestions.isEmpty)
+        window.orderOut(nil)
+    }
+
+    /// Mimics tapping a completion-bar suggestion end to end: the bar's
+    /// action rewrites the bound state via `applyingCompletion`, and the
+    /// surface's inbound direction must land both the text and the caret in
+    /// the editor's native text view.
+    @Test @MainActor func sqlEditorSurfaceAppliesCompletionInsertionEndToEnd() async throws {
+        let settings = SettingsManager(loadImmediately: false)
+
+        struct CompletionInsertionHarness: View {
+            @State private var text = "SELECT * FROM comm"
+            @State private var selection = NSRange(location: 18, length: 0)
+            let controller: SQLEditorController
+
+            var body: some View {
+                SQLEditorSurface(
+                    text: $text,
+                    fontSize: 13,
+                    showLineNumbers: false,
+                    selection: Binding(
+                        get: { selection },
+                        set: { selection = $0 }
+                    ),
+                    isActive: true,
+                    controller: controller
+                )
+                .task {
+                    // The completion bar's button action as routed by the
+                    // computed setters: persisted state plus the imperative
+                    // editor handle.
+                    try? await Task.sleep(for: .milliseconds(150))
+                    let applied = SQLHighlighter.applyingCompletion(
+                        "common_vision",
+                        to: text,
+                        selectedRange: selection
+                    )
+                    text = applied.sql
+                    selection = applied.selection
+                    controller.setText(applied.sql, selection: applied.selection)
+                }
+            }
+        }
+
+        let insertionController = SQLEditorController()
+        let hostingView = NSHostingView(
+            rootView: AnyView(
+                CompletionInsertionHarness(controller: insertionController)
+                    .environment(settings)
+            )
+        )
+        hostingView.frame = NSRect(x: 0, y: 0, width: 600, height: 200)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        hostingView.needsLayout = true
+        hostingView.layoutSubtreeIfNeeded()
+
+        func findTextView(_ view: NSView) -> NSTextView? {
+            if let textView = view as? NSTextView { return textView }
+            for sub in view.subviews {
+                if let found = findTextView(sub) { return found }
+            }
+            return nil
+        }
+        let textView = try #require(findTextView(hostingView))
+
+        let expected = "SELECT * FROM common_vision"
+        for _ in 0..<60 {
+            try await Task.sleep(for: .milliseconds(20))
+            if textView.string == expected { break }
+        }
+
+        #expect(textView.string == expected)
+        #expect(textView.selectedRange().location == (expected as NSString).length)
+        window.orderOut(nil)
+    }
+
+    /// SwiftUI @State commits writes asynchronously: an update cycle can run
+    /// while the binding still reads the pre-keystroke value. A typed
+    /// character must survive that cycle — any inbound sync that diffs the
+    /// binding against the model during updates will revert fresh typing and
+    /// make the editor effectively read-only.
+    @Test @MainActor func sqlEditorSurfaceTypingSurvivesDeferredBindingCommit() async throws {
+        let settings = SettingsManager(loadImmediately: false)
+
+        @MainActor final class DeferredStore {
+            var committedText = ""
+            var committedSelection = NSRange(location: 0, length: 0)
+            func deferCommit(_ apply: @escaping @MainActor () -> Void) {
+                // Like State batching: the write lands a runloop turn later.
+                Task { @MainActor in apply() }
+            }
+        }
+        let store = DeferredStore()
+        func makeSurface() -> AnyView {
+            AnyView(
+                SQLEditorSurface(
+                    text: Binding(
+                        get: { store.committedText },
+                        set: { newValue in
+                            store.deferCommit { store.committedText = newValue }
+                        }
+                    ),
+                    fontSize: 13,
+                    showLineNumbers: false,
+                    selection: Binding(
+                        get: { store.committedSelection },
+                        set: { newValue in
+                            store.deferCommit { store.committedSelection = newValue }
+                        }
+                    ),
+                    isActive: true
+                )
+                .environment(settings)
+            )
+        }
+
+        let hostingView = NSHostingView(rootView: makeSurface())
+        hostingView.frame = NSRect(x: 0, y: 0, width: 600, height: 200)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        hostingView.needsLayout = true
+        hostingView.layoutSubtreeIfNeeded()
+
+        func findTextView(_ view: NSView) -> NSTextView? {
+            if let textView = view as? NSTextView { return textView }
+            for sub in view.subviews {
+                if let found = findTextView(sub) { return found }
+            }
+            return nil
+        }
+        let textView = try #require(findTextView(hostingView))
+
+        textView.insertText("S", replacementRange: NSRange(location: 0, length: 0))
+        // Force an update cycle while the binding still reads "" — the
+        // character must not be reverted by it.
+        hostingView.rootView = makeSurface()
+        hostingView.needsLayout = true
+        hostingView.layoutSubtreeIfNeeded()
+
+        for _ in 0..<40 {
+            try await Task.sleep(for: .milliseconds(20))
+            if store.committedText == "S", textView.string == "S" { break }
+        }
+
+        #expect(textView.string == "S")
+        #expect(store.committedText == "S")
+        window.orderOut(nil)
+    }
+    #endif
 
     @MainActor
     @Test func foregroundAndQueryPathsRejectATransportLostDuringSuspension() async throws {

@@ -593,6 +593,29 @@ struct SQLHighlighter {
             .map { $0 }
     }
 
+    /// The dimmed inline preview for Tab-to-complete: the characters that
+    /// accepting the top suggestion would append at the caret. `nil` when
+    /// there is no suggestion, the prefix is empty, or the suggestion does
+    /// not extend the prefix (e.g. exact match already typed).
+    static func completionPreviewSuffix(
+        in sql: String,
+        selectedRange: NSRange,
+        schemaIdentifiers: [String]
+    ) -> String? {
+        guard let context = completionContext(in: sql, selectedRange: selectedRange),
+              !context.prefix.isEmpty,
+              let top = completions(
+                  in: sql,
+                  selectedRange: selectedRange,
+                  schemaIdentifiers: schemaIdentifiers,
+                  limit: 1
+              ).first,
+              top.count > context.prefix.count,
+              top.lowercased().hasPrefix(context.prefix.lowercased())
+        else { return nil }
+        return String(top.dropFirst(context.prefix.count))
+    }
+
     /// Replaces only the completion fragment immediately before the caret and
     /// returns the new selection. A non-empty selection is replaced directly.
     static func applyingCompletion(
