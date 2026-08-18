@@ -1603,6 +1603,8 @@ struct DataTabView: View {
                         )
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if result.columns.isEmpty {
+                    statementCompletedView(result)
                 } else if usesCompactRecordList {
                     compactRecordList(result)
                 } else {
@@ -1990,6 +1992,33 @@ struct DataTabView: View {
                 .padding(.vertical, 6)
                 .accessibilityLabel("Schema completion unavailable. \(completionError)")
         }
+    }
+
+    /// A statement that returns no result set — DDL, DCL, or a bare mutation —
+    /// would otherwise render as an empty grid, which looks exactly like a
+    /// query that did nothing. Report completion explicitly instead.
+    @ViewBuilder
+    private func statementCompletedView(_ result: QueryResult) -> some View {
+        ContentUnavailableView {
+            Label("Statement Completed", systemImage: "checkmark.circle")
+        } description: {
+            Text(Self.statementCompletionSummary(
+                affectedRows: result.affectedRows,
+                executionTime: result.executionTime
+            ))
+        }
+    }
+
+    static func statementCompletionSummary(
+        affectedRows: UInt64?,
+        executionTime: TimeInterval
+    ) -> String {
+        let duration = String(format: "%.3f", executionTime)
+        guard let affectedRows else {
+            return "The server returned no result set. Completed in \(duration)s."
+        }
+        let noun = affectedRows == 1 ? "row" : "rows"
+        return "\(affectedRows) \(noun) affected in \(duration)s."
     }
 
     @ViewBuilder
