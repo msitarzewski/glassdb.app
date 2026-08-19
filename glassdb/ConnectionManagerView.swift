@@ -222,9 +222,11 @@ struct ConnectionManagerView: View {
     ) -> some View {
         NavigationSplitView {
             libraryNavigation(connectionLibrary: connectionLibrary)
-                .databaseSidebarColumnWidth()
+                .connectionLibraryNavigationColumnWidth()
         } content: {
             connectionResults(connectionLibrary: connectionLibrary)
+                .connectionLibraryResultsColumnWidth()
+                .connectionLibraryColumnAutosave()
         } detail: {
             detailView(connectionLibrary: connectionLibrary)
         }

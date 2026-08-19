@@ -46,6 +46,23 @@ enum KeychainServiceNames {
 
 // MARK: - Shared platform adapters
 
+/// Connection library column metrics, mirrored from glas.sh's
+/// `ConnectionLibraryMacColumnLayout` (`ConnectionManagerView.swift:16-23`) so
+/// both Glass-family Connections windows open at the same proportions. These
+/// are deliberately separate from `DatabaseSidebarLayout`, which measures the
+/// database workspace's schema sidebar, not this window.
+enum ConnectionLibraryColumnLayout {
+    static let navigationMinimum: CGFloat = 240
+    static let navigationIdeal: CGFloat = 340
+    static let navigationMaximum: CGFloat = 480
+    static let resultsMinimum: CGFloat = 320
+    static let resultsIdeal: CGFloat = 510
+    static let resultsMaximum: CGFloat = 760
+    /// AppKit persists the user's divider positions under this name, so a
+    /// resize survives relaunch. Namespaced to glassdb; glas.sh keeps its own.
+    static let autosaveName = "app.glassdb.connection-library.columns"
+}
+
 enum DatabaseSidebarLayout {
     static let minimumWidth: CGFloat = 300
     static let idealWidth: CGFloat = 340
@@ -120,6 +137,46 @@ extension View {
             min: DatabaseSidebarLayout.minimumWidth,
             ideal: DatabaseSidebarLayout.idealWidth,
             max: DatabaseSidebarLayout.maximumWidth
+        )
+        #else
+        self
+        #endif
+    }
+
+    /// Attaches AppKit's split-view autosave so the user's own column widths
+    /// replace the defaults after the first resize. Mirrors glas.sh's
+    /// `MacConnectionLibrarySplitViewAutosave`.
+    @ViewBuilder
+    func connectionLibraryColumnAutosave() -> some View {
+        #if os(macOS)
+        background(MacConnectionLibrarySplitViewAutosave(
+            name: ConnectionLibraryColumnLayout.autosaveName
+        ))
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func connectionLibraryNavigationColumnWidth() -> some View {
+        #if os(macOS)
+        navigationSplitViewColumnWidth(
+            min: ConnectionLibraryColumnLayout.navigationMinimum,
+            ideal: ConnectionLibraryColumnLayout.navigationIdeal,
+            max: ConnectionLibraryColumnLayout.navigationMaximum
+        )
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func connectionLibraryResultsColumnWidth() -> some View {
+        #if os(macOS)
+        navigationSplitViewColumnWidth(
+            min: ConnectionLibraryColumnLayout.resultsMinimum,
+            ideal: ConnectionLibraryColumnLayout.resultsIdeal,
+            max: ConnectionLibraryColumnLayout.resultsMaximum
         )
         #else
         self
@@ -747,6 +804,65 @@ struct DatabasePersistentToolbar: ToolbarContent {
                 Label("Settings", systemImage: "gearshape")
             }
             .help("Open Settings")
+        }
+    }
+}
+#endif
+
+#if os(macOS)
+/// Walks up to the hosting `NSSplitView` and gives it an autosave name, which
+/// is what makes AppKit remember divider positions across launches. SwiftUI
+/// exposes no equivalent for `NavigationSplitView`, so the attachment view is
+/// invisible and never takes hit tests.
+private struct MacConnectionLibrarySplitViewAutosave: NSViewRepresentable {
+    let name: String
+
+    func makeNSView(context: Context) -> AttachmentView {
+        let view = AttachmentView(frame: .zero)
+        view.autosaveName = name
+        view.applyAutosaveName()
+        return view
+    }
+
+    func updateNSView(_ nsView: AttachmentView, context: Context) {
+        nsView.autosaveName = name
+        nsView.applyAutosaveName()
+    }
+
+    @MainActor
+    final class AttachmentView: NSView {
+        var autosaveName = ""
+
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            applyAutosaveName()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyAutosaveName()
+        }
+
+        /// Deferred: the split view is not in the hierarchy yet while SwiftUI
+        /// is still assembling the columns.
+        func applyAutosaveName() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                var candidate = self.superview
+                while let view = candidate {
+                    if let splitView = view as? NSSplitView {
+                        if splitView.autosaveName != self.autosaveName {
+                            splitView.autosaveName = self.autosaveName
+                        }
+                        return
+                    }
+                    candidate = view.superview
+                }
+            }
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
         }
     }
 }

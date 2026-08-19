@@ -304,8 +304,15 @@ class DatabaseSessionManager {
             trustedHostKeys: Set(trustedHostKeys.map(\.publicKeyData))
         )
         let tunnelManager = SSHTunnelManager()
-        let tunnel = try await tunnelManager.establish(config: tunnelConfig)
-        try? await tunnel.close()
+        do {
+            let tunnel = try await tunnelManager.establish(config: tunnelConfig)
+            try? await tunnel.close()
+        } catch {
+            // A first run can fail only because the local-network prompt is
+            // still pending. Classify it the way the connect path does so the
+            // result says what to do instead of reporting a bare failure.
+            throw Self.actionableConnectionError(error, config: config)
+        }
     }
 
     /// Re-establishes the transport behind an existing logical session. Keeping

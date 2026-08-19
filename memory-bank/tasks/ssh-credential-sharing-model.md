@@ -1,6 +1,6 @@
 # SSH Credential Sharing Model in the Connection Form
 
-**Status:** To do — specced and human-confirmed 2026-08-13; not started
+**Status:** Complete — implemented 2026-08-14 on `agent/ssh-credential-sharing`, human-approved via live form review. Database password pickers are structurally restricted to private policies (decode-time normalization covers stray shared values); SSH manual entry gains the "Share with glas.sh" toggle mapped to the existing atomic dual-write, and a "Use a glas.sh credential" catalog menu (identity-only shared-Keychain read, IPv6-safe endpoint parsing, no secret duplication — the existing retrieval fallback adopts the shared record at connect). Mac 126/126; iPhone/iPad/Vision 122/122 each.
 **Discovered by:** Human review of the Add/Edit Connection form
 **Scope:** Invert the sharing surface: database passwords are never shared with glas.sh; SSH credentials are the shareable class, selectable from the glas.sh catalog or entered manually with an explicit share opt-in.
 

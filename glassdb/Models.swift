@@ -101,12 +101,19 @@ struct DatabaseConnectionConfig: Identifiable, Codable, Hashable {
         sshUsername = try values.decodeIfPresent(String.self, forKey: .sshUsername)
         sshAuthMethod = try values.decodeIfPresent(AuthenticationMethod.self, forKey: .sshAuthMethod)
         sshKeyID = try values.decodeIfPresent(UUID.self, forKey: .sshKeyID)
-        // Records written before G04 were always stored in the shared glas.sh
-        // access group. Preserve that location until the user explicitly changes it.
-        databaseCredentialPolicy = try values.decodeIfPresent(
+        // Database passwords are never shared across the Glass family —
+        // glas.sh has no use for them. Shared (and legacy-defaulted) database
+        // policies normalize to glassdb-only storage on read.
+        let decodedDatabasePolicy = try values.decodeIfPresent(
             CredentialStoragePolicy.self,
             forKey: .databaseCredentialPolicy
         ) ?? .sharedWithGlas
+        databaseCredentialPolicy = decodedDatabasePolicy == .sharedWithGlas
+            ? .glassdbOnly
+            : decodedDatabasePolicy
+        // SSH records written before G04 were always stored in the shared
+        // glas.sh access group. Preserve that location until the user
+        // explicitly changes it — SSH identity is the shareable class.
         sshCredentialPolicy = try values.decodeIfPresent(
             CredentialStoragePolicy.self,
             forKey: .sshCredentialPolicy
@@ -242,6 +249,31 @@ enum CredentialStoragePolicy: String, Codable, CaseIterable, Identifiable, Senda
         case .requireAuthentication:
             return "Private to glassdb and requires device-owner authentication before every use."
         }
+    }
+
+    /// Database passwords are never shared across the Glass family; sharing
+    /// is an SSH-credential concept, and glas.sh has no use for database
+    /// secrets.
+    static var databasePolicies: [CredentialStoragePolicy] {
+        [.glassdbOnly, .requireAuthentication]
+    }
+
+    /// Manual SSH entry chooses between the private policies; cross-app
+    /// sharing is the explicit opt-in resolved by
+    /// `sshPolicy(shareWithGlas:manualPolicy:)`.
+    static var sshManualPolicies: [CredentialStoragePolicy] {
+        [.glassdbOnly, .requireAuthentication]
+    }
+
+    /// Resolves the stored SSH policy from the form's share opt-in plus the
+    /// manual storage choice. Sharing always wins; a stray shared manual
+    /// value without the opt-in collapses to private storage.
+    static func sshPolicy(
+        shareWithGlas: Bool,
+        manualPolicy: CredentialStoragePolicy
+    ) -> CredentialStoragePolicy {
+        if shareWithGlas { return .sharedWithGlas }
+        return manualPolicy == .requireAuthentication ? .requireAuthentication : .glassdbOnly
     }
 }
 
