@@ -398,13 +398,8 @@ struct ConnectionFormView: View {
                             .connectionFormCancelShortcut()
                     }
                     ToolbarItem(placement: .confirmationAction) {
-                        // Deliberately not disabled by validation: inline
-                        // messages only appear after an attempted save, so a
-                        // disabled button would hide the very reasons it is
-                        // disabled. `save()` re-validates, reveals every
-                        // issue, and focuses the first offending field.
                         Button(isEditing ? "Save Changes" : "Save Connection") { save() }
-                            .disabled(isSavingAndConnecting)
+                            .disabled(!isFormValid || isSavingAndConnecting)
                             .connectionFormDefaultShortcut()
                             .accessibilityIdentifier("connection-form.save")
                     }
@@ -1313,7 +1308,7 @@ struct ConnectionFormView: View {
             } label: {
                 Label("Test SSH Connection", systemImage: "antenna.radiowaves.left.and.right")
             }
-            .disabled(isTestingConnection)
+            .disabled(!isSSHTunnelValid || isTestingConnection)
             .help("Verify the SSH server and authentication settings without saving.")
 
             Spacer()
@@ -1329,7 +1324,7 @@ struct ConnectionFormView: View {
             } label: {
                 Label("Test Connection", systemImage: "bolt")
             }
-            .disabled(isTestingConnection)
+            .disabled(!isFormValid || isTestingConnection)
             .help("Verify the complete database connection without saving.")
             .accessibilityIdentifier("connection-form.test")
 
@@ -1349,7 +1344,7 @@ struct ConnectionFormView: View {
                 Label("Save & Connect", systemImage: "bolt")
             }
         }
-        .disabled(isTestingConnection || isSavingAndConnecting)
+        .disabled(!isFormValid || isTestingConnection || isSavingAndConnecting)
         .connectionFormConnectShortcut()
         .help("Save this connection, then connect using the current credentials.")
         .accessibilityHint("This is the only form action that saves and starts a database connection.")
