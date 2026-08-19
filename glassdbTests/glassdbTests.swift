@@ -3566,6 +3566,23 @@ struct glassdbTests {
         #expect(invoked.last == "first.script")
     }
 
+    @Test func statementsWithoutResultSetsReportCompletion() {
+        // DDL/DCL returns no columns; an empty grid reads as "nothing
+        // happened", so the surface states the outcome instead.
+        #expect(DataTabView.statementCompletionSummary(
+            affectedRows: 0,
+            executionTime: 0.023
+        ) == "0 rows affected in 0.023s.")
+        #expect(DataTabView.statementCompletionSummary(
+            affectedRows: 1,
+            executionTime: 1.5
+        ) == "1 row affected in 1.500s.")
+        #expect(DataTabView.statementCompletionSummary(
+            affectedRows: nil,
+            executionTime: 0.5
+        ).contains("no result set"))
+    }
+
     @Test func sqlEditorProvidersPreserveSQLHighlighterSemantics() async throws {
         // Completion: SQLHighlighter's deterministic ranking passes through
         // the provider untouched (exact match first, then shorter, then
