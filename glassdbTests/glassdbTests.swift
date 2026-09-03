@@ -2438,6 +2438,26 @@ struct glassdbTests {
         ) == .glassdbOnly)
     }
 
+    @Test func workspaceBreadcrumbTrailExposesAncestors() {
+        let table = WorkspaceSelection.table(database: "common_vision", table: "articles")
+        let trail = WorkspaceBreadcrumb.trail(to: table, connectionName: "Local")
+        #expect(trail.map(\.title) == ["Local", "common_vision", "articles"])
+        #expect(trail[0].destination == .connection)
+        #expect(trail[1].destination == .database("common_vision"))
+        // The current surface is not a link back to itself.
+        #expect(trail[2].destination == nil)
+
+        let database = WorkspaceBreadcrumb.trail(to: .database("beam"), connectionName: "Local")
+        #expect(database.map(\.title) == ["Local", "beam"])
+
+        // Overview is the root, and SQL documents belong to the connection.
+        #expect(WorkspaceBreadcrumb.trail(to: .connection, connectionName: "Local").isEmpty)
+        #expect(WorkspaceBreadcrumb.trail(
+            to: .query(id: UUID()),
+            connectionName: "Local"
+        ).isEmpty)
+    }
+
     @Test func connectionLibraryColumnsMirrorGlasSh() {
         // Values copied from glas.sh ConnectionManagerView.swift:16-23 so the
         // two Connections windows open identically; they are intentionally

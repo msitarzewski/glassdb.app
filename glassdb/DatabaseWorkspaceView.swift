@@ -615,6 +615,11 @@ struct DatabaseWorkspaceView: View {
                     }
             }
 
+            if breadcrumbTrail.count > 1 {
+                breadcrumbBar
+                    .overlay(alignment: .bottom) { Divider() }
+            }
+
             ZStack {
                 ForEach(tabState.tabs, id: \.self) { destination in
                     let isActive = tabState.previewed == nil && destination == tabState.selected
@@ -642,6 +647,47 @@ struct DatabaseWorkspaceView: View {
             fillOpacity: settingsManager.windowOpacity,
             blurAmount: settingsManager.blurBackground
         ))
+    }
+
+    /// Ancestors of whatever is on screen, ending with the current surface.
+    /// With the sidebar collapsed the tab strip is the only structure left,
+    /// and it says nothing about which database a table belongs to — or how
+    /// to get back up to it.
+    private var breadcrumbTrail: [WorkspaceBreadcrumb] {
+        WorkspaceBreadcrumb.trail(
+            to: tabState.displayed,
+            connectionName: session?.connectionConfig.name ?? "Overview"
+        )
+    }
+
+    private var breadcrumbBar: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(breadcrumbTrail.enumerated()), id: \.offset) { index, crumb in
+                if index > 0 {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                if let destination = crumb.destination {
+                    Button(crumb.title) { openWorkspace(destination) }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHint("Open \(crumb.title)")
+                } else {
+                    Text(crumb.title)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.primary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Workspace location")
     }
 
     private var workspaceTabBar: some View {
@@ -1048,6 +1094,37 @@ private struct DatabaseWorkspaceBackground: ViewModifier {
             #if !os(macOS)
             .ignoresSafeArea()
             #endif
+        }
+    }
+}
+
+
+/// One step of the workspace's location trail. Ancestors carry the
+/// destination that reopens them; the final crumb is where you already are.
+struct WorkspaceBreadcrumb: Equatable {
+    let title: String
+    let destination: WorkspaceSelection?
+
+    static func trail(
+        to displayed: WorkspaceSelection,
+        connectionName: String
+    ) -> [WorkspaceBreadcrumb] {
+        switch displayed {
+        case .connection, .query:
+            // The overview is the root, and an SQL document belongs to the
+            // connection rather than to any database.
+            return []
+        case .database(let database):
+            return [
+                WorkspaceBreadcrumb(title: connectionName, destination: .connection),
+                WorkspaceBreadcrumb(title: database, destination: nil)
+            ]
+        case .table(let database, let table):
+            return [
+                WorkspaceBreadcrumb(title: connectionName, destination: .connection),
+                WorkspaceBreadcrumb(title: database, destination: .database(database)),
+                WorkspaceBreadcrumb(title: table, destination: nil)
+            ]
         }
     }
 }
