@@ -521,7 +521,8 @@ struct ConnectionFormView: View {
                 prompt: "Production database",
                 text: $name,
                 field: .name,
-                help: "A recognizable name used in the connection list."
+                help: "A recognizable name used in the connection list.",
+                isRequired: true
             )
             LabeledContent("Database engine") {
                 Picker("Database engine", selection: $engine) {
@@ -558,7 +559,8 @@ struct ConnectionFormView: View {
                     prompt: "127.0.0.1",
                     text: $host,
                     field: .host,
-                    help: "Database server hostname, IPv4 address, or IPv6 address."
+                    help: "Database server hostname, IPv4 address, or IPv6 address.",
+                    isRequired: true
                 )
                 macTextField(
                     "Port",
@@ -586,7 +588,8 @@ struct ConnectionFormView: View {
                     prompt: engine.defaultUsername,
                     text: $username,
                     field: .username,
-                    help: "Account name sent to the database server."
+                    help: "Account name sent to the database server.",
+                    isRequired: true
                 )
                 passwordField(
                     label: "Password",
@@ -626,7 +629,8 @@ struct ConnectionFormView: View {
                         prompt: "bastion.example.com",
                         text: $sshHost,
                         field: .sshHost,
-                        help: "Hostname or IP address of the SSH server."
+                        help: "Hostname or IP address of the SSH server.",
+                        isRequired: true
                     )
                     macTextField(
                         "SSH port",
@@ -640,7 +644,8 @@ struct ConnectionFormView: View {
                         prompt: "username",
                         text: $sshUsername,
                         field: .sshUsername,
-                        help: "Account name used to authenticate to the SSH server."
+                        help: "Account name used to authenticate to the SSH server.",
+                        isRequired: true
                     )
                     LabeledContent("Authentication") {
                         Picker("Authentication", selection: $sshCredentialMode) {
@@ -751,9 +756,10 @@ struct ConnectionFormView: View {
         prompt: String,
         text: Binding<String>,
         field: FormField,
-        help: String
+        help: String,
+        isRequired: Bool = false
     ) -> some View {
-        LabeledContent(label) {
+        LabeledContent {
             VStack(alignment: .leading, spacing: 6) {
                 TextField(label, text: text, prompt: Text(prompt))
                     .labelsHidden()
@@ -766,8 +772,30 @@ struct ConnectionFormView: View {
                     .frame(width: 340)
                 macValidationMessage(for: field)
             }
+        } label: {
+            requiredFieldLabel(label, isRequired: isRequired)
         }
         .help(help)
+    }
+
+    /// Requirements are stated up front rather than revealed after a failed
+    /// save, so a disabled Save button is self-explanatory: the form says what
+    /// it needs before anything is attempted. Optional fields stay unmarked,
+    /// which is meaningful too — a blank Password never blocks saving.
+    @ViewBuilder
+    private func requiredFieldLabel(_ label: String, isRequired: Bool = true) -> some View {
+        if isRequired {
+            HStack(spacing: 6) {
+                Text(label)
+                Text("Required")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(label), required")
+        } else {
+            Text(label)
+        }
     }
 
     @ViewBuilder
@@ -817,13 +845,15 @@ struct ConnectionFormView: View {
     @ViewBuilder
     private var connectionSection: some View {
         Section("Connection") {
-            LabeledContent("Name") {
+            LabeledContent {
                 TextField("Display Name", text: $name)
                     .multilineTextAlignment(.leading)
                     .autocorrectionDisabled()
                     .focused($focusedField, equals: .name)
                     .submitLabel(.next)
                     .onSubmit { advanceFocus(after: .name) }
+            } label: {
+                requiredFieldLabel("Name")
             }
             Picker("Engine", selection: $engine) {
                 ForEach(DatabaseEngineType.allCases) { eng in
@@ -842,7 +872,7 @@ struct ConnectionFormView: View {
                     Label(host.isEmpty ? "Choose SQLite File" : "Choose Different File", systemImage: "folder")
                 }
             } else {
-                LabeledContent("Host") {
+                LabeledContent {
                     TextField("127.0.0.1", text: $host)
                         .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
@@ -852,6 +882,8 @@ struct ConnectionFormView: View {
                         .focused($focusedField, equals: .host)
                         .submitLabel(.next)
                         .onSubmit { advanceFocus(after: .host) }
+                } label: {
+                    requiredFieldLabel("Host")
                 }
                 LabeledContent("Port") {
                     TextField("\(engine.defaultPort)", text: $port)
@@ -901,7 +933,7 @@ struct ConnectionFormView: View {
     private var databaseAuthSection: some View {
         if engine != .sqlite {
             Section("Database Authentication") {
-            LabeledContent("Username") {
+            LabeledContent {
                 TextField("root", text: $username)
                     .multilineTextAlignment(.leading)
                     .autocorrectionDisabled()
@@ -911,6 +943,8 @@ struct ConnectionFormView: View {
                     .focused($focusedField, equals: .username)
                     .submitLabel(.next)
                     .onSubmit { advanceFocus(after: .username) }
+            } label: {
+                requiredFieldLabel("Username")
             }
             passwordField(
                 label: "Password",
@@ -955,7 +989,7 @@ struct ConnectionFormView: View {
 
         if engine.supportsSSHTunnel && useSSHTunnel {
             Section("SSH Server") {
-                LabeledContent("Host") {
+                LabeledContent {
                     TextField("hostname or IP", text: $sshHost)
                         .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
@@ -965,6 +999,8 @@ struct ConnectionFormView: View {
                         .focused($focusedField, equals: .sshHost)
                         .submitLabel(.next)
                         .onSubmit { advanceFocus(after: .sshHost) }
+                } label: {
+                    requiredFieldLabel("Host")
                 }
                 LabeledContent("Port") {
                     TextField("22", text: $sshPort)
@@ -976,7 +1012,7 @@ struct ConnectionFormView: View {
                         .submitLabel(.next)
                         .onSubmit { advanceFocus(after: .sshPort) }
                 }
-                LabeledContent("Username") {
+                LabeledContent {
                     TextField("username", text: $sshUsername)
                         .multilineTextAlignment(.leading)
                         .autocorrectionDisabled()
@@ -986,6 +1022,8 @@ struct ConnectionFormView: View {
                         .focused($focusedField, equals: .sshUsername)
                         .submitLabel(.next)
                         .onSubmit { advanceFocus(after: .sshUsername) }
+                } label: {
+                    requiredFieldLabel("Username")
                 }
             }
 
