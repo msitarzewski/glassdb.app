@@ -31,6 +31,9 @@ struct ConnectionManagerView: View {
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
+    #if os(macOS)
+    @Environment(\.openSettings) private var openSettings
+    #endif
     #if os(iOS)
     @Environment(IOSAppRouter.self) private var iOSRouter
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -233,8 +236,12 @@ struct ConnectionManagerView: View {
         #if os(macOS)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Settings", systemImage: "gearshape") {
-                    showSettings()
+                // The Mac Settings scene is the platform `Settings` scene and
+                // carries no window id, so `openWindow(id:)` silently does
+                // nothing. `SettingsLink` is the supported route and matches
+                // the workspace toolbar (`Constants.swift`).
+                SettingsLink {
+                    Label("Settings", systemImage: "gearshape")
                 }
                 .accessibilityIdentifier("database-connection-library-settings")
                 .help("Open glassdb settings")
@@ -1042,8 +1049,13 @@ struct ConnectionManagerView: View {
             iOSRouter.showSettings()
             return
         }
-        #endif
         openWindow(id: "settings")
+        #elseif os(macOS)
+        // No id'd Settings scene exists on Mac; see the toolbar note above.
+        openSettings()
+        #else
+        openWindow(id: "settings")
+        #endif
     }
 
     private func trustPendingHostAndRetry() {
