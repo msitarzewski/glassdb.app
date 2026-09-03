@@ -11,6 +11,11 @@ archived in monthly folders (see [2026-08/README.md](./2026-08/README.md)).
   share-on-create checkbox. No migration needed (no users).
   See [ssh-credential-sharing-model.md](./ssh-credential-sharing-model.md).
 
+- [ ] **Shared SSH key picker** — the "Use a glas.sh credential" menu covers
+  password credentials only; offer the shared App Group `StoredSSHKey` catalog
+  on the SSH-Key auth path, excluding device-bound Secure Enclave keys.
+  See [shared-ssh-key-picker.md](./shared-ssh-key-picker.md).
+
 ## In Progress
 
 - [ ] **GlassEditorKit adoption (M3)** — Phase 1 (JSON field) complete and
