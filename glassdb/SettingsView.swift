@@ -465,7 +465,17 @@ private struct ContinuousSettingSlider: View {
     var body: some View {
         LabeledContent(title) {
             HStack(spacing: 12) {
-                Slider(value: $value, in: 0...1, step: 0.01)
+                // Continuous track: a `step` makes AppKit draw one tick mark
+                // per increment, and 101 of them read as a second slider
+                // ghosted under the first. Round on write instead, so values
+                // still land on whole percentage points.
+                Slider(
+                    value: Binding(
+                        get: { value },
+                        set: { value = ($0 * 100).rounded() / 100 }
+                    ),
+                    in: 0...1
+                )
                     .frame(minWidth: 190)
                     .accessibilityLabel(title)
                     .accessibilityValue(Text(value, format: .percent.precision(.fractionLength(0))))
