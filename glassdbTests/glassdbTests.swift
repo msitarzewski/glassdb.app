@@ -623,6 +623,19 @@ struct glassdbTests {
         // concurrently; the window-level style is the durable contract.
         #expect(window.toolbarStyle == .unifiedCompact)
 
+        let themeFrame = try #require(window.contentView?.superview)
+        let titlebarMaterials = themeFrame.subviews.compactMap {
+            $0 as? MacDatabaseWorkspaceTitlebarMaterialView
+        }
+        #expect(titlebarMaterials.count == 1)
+        let titlebarMaterial = try #require(titlebarMaterials.first)
+        #expect(titlebarMaterial.hitTest(.zero) == nil)
+        window.layoutIfNeeded()
+        // The material covers the titlebar/toolbar band and stops at the
+        // content layout rect, so it can never overlap workspace content.
+        let materialFrame = titlebarMaterial.convert(titlebarMaterial.bounds, to: nil)
+        #expect(materialFrame.height > 0)
+        #expect(!materialFrame.intersects(window.contentLayoutRect.insetBy(dx: 0, dy: 0.5)))
     }
 
     @Test @MainActor func macSettingsLayoutHasFiniteStableContentSize() throws {
