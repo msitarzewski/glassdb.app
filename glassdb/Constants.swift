@@ -538,22 +538,6 @@ struct MacDatabaseCanvasVisualEffect: NSViewRepresentable {
     }
 }
 
-/// A non-interactive material layer for AppKit's titlebar region. It must never
-/// participate in hit testing: the window's toolbar and SwiftUI content retain
-/// normal pointer, keyboard, and accessibility behavior.
-@MainActor
-final class MacDatabaseWorkspaceTitlebarMaterialView: NSVisualEffectView {
-    static let materialIdentifier = NSUserInterfaceItemIdentifier(
-        "app.glassdb.workspace-titlebar-material"
-    )
-
-    weak var contentBoundary: NSView?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-}
-
 /// Reuses the sister app's proven AppKit window-reader pattern to preserve
 /// native titlebar material around a transparent SwiftUI database canvas.
 struct MacDatabaseWorkspaceWindowReader: NSViewRepresentable {
@@ -585,8 +569,14 @@ enum MacDatabaseWorkspaceWindowPolicy {
         guard let window else { return }
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.titlebarAppearsTransparent = false
-        window.styleMask.remove(.fullSizeContentView)
+        // Match glas.sh's `MacTerminalWindowPolicy` and Apple's full-height
+        // sidebar windows: content extends under the toolbar, and SwiftUI's
+        // NavigationSplitView places its per-column titlebar backgrounds in
+        // that top band. Removing `.fullSizeContentView` pushed the split view
+        // below the toolbar, so those 40pt titlebar backgrounds landed on top
+        // of the workspace tab strip instead.
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
         window.ignoresMouseEvents = false
         window.isMovableByWindowBackground = false
         window.autorecalculatesKeyViewLoop = true
@@ -595,40 +585,6 @@ enum MacDatabaseWorkspaceWindowPolicy {
         // Liquid Glass controls on macOS 27. Keep workspace toolbar items in the
         // compact native row without changing control sizes inside the canvas.
         window.toolbar?.sizeMode = .small
-        installTitlebarMaterial(in: window)
-    }
-
-    private static func installTitlebarMaterial(in window: NSWindow) {
-        guard let contentView = window.contentView,
-              let themeFrame = contentView.superview else { return }
-
-        if let existing = themeFrame.subviews
-            .compactMap({ $0 as? MacDatabaseWorkspaceTitlebarMaterialView })
-            .first(where: {
-                $0.identifier == MacDatabaseWorkspaceTitlebarMaterialView.materialIdentifier
-            }) {
-            if existing.contentBoundary === contentView {
-                return
-            }
-            existing.removeFromSuperview()
-        }
-
-        let materialView = MacDatabaseWorkspaceTitlebarMaterialView(frame: .zero)
-        materialView.identifier = MacDatabaseWorkspaceTitlebarMaterialView.materialIdentifier
-        materialView.contentBoundary = contentView
-        materialView.material = .titlebar
-        materialView.blendingMode = .behindWindow
-        materialView.state = .followsWindowActiveState
-        materialView.alphaValue = 1
-        materialView.translatesAutoresizingMaskIntoConstraints = false
-        themeFrame.addSubview(materialView, positioned: .below, relativeTo: nil)
-
-        NSLayoutConstraint.activate([
-            materialView.leadingAnchor.constraint(equalTo: themeFrame.leadingAnchor),
-            materialView.trailingAnchor.constraint(equalTo: themeFrame.trailingAnchor),
-            materialView.topAnchor.constraint(equalTo: themeFrame.topAnchor),
-            materialView.bottomAnchor.constraint(equalTo: contentView.topAnchor),
-        ])
     }
 }
 #endif

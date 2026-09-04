@@ -8,6 +8,12 @@ The four-platform implementation and automated simulator/package QA are complete
 
 ## Recent Changes
 
+### Workspace Tab Strip Under Titlebar Backgrounds (2026-09-02)
+- Dogfooding showed the Mac workspace tab strip as an empty 40pt band above the breadcrumb. Accessibility inspection proved the strip was laid out with all tabs present but painted over; an offscreen host of the real workspace exposed NavigationSplitView's per-column `NSTitlebarBackgroundView`s sitting inside the content because `MacDatabaseWorkspaceWindowPolicy` removed `.fullSizeContentView`
+- The policy now mirrors glas.sh's `MacTerminalWindowPolicy` (full-size content, transparent titlebar) and the hand-built titlebar material view is deleted. The same defect explained the 2026-08-20 collapsed-sidebar dead band and mid-titlebar reload/sidebar buttons; all three were verified fixed live in a debug build driven through accessibility with a throwaway SQLite connection
+- Evidence: Mac 136/136 including a new `workspaceTitlebarBackgroundsStayOutOfTheContentLayoutRect` regression test that hosts the real workspace under the policy; the old policy fails it. See `tasks/workspace-tab-strip-titlebar-overlap.md`
+- Still open from that screenshot: breadcrumb navigation misbehavior (no repro) and grid rows painting above the results header
+
 ### GlassEditorKit Adoption Phase 1 — JSON Field (2026-08-13)
 - Adopted the new shared Glass-family editor package [GlassEditorKit](https://github.com/msitarzewski/GlassEditorKit) as a revision-pinned remote dependency (`ae094a8`, "Highlight by default"); the record editor's JSON fields now render `GlassEditorView` with tree-sitter highlighting, line numbers following the app's existing setting, header-inline Format/Validate, a drag-resizable field (120–800pt) anchored at live rendered height, and a resizable sheet
 - The staging model remains the sole source of truth — editor text routes through the existing `fieldBinding` semantics and `RecordJSONText` whitespace-aware dirty detection is untouched; `SQLHighlighter` stays whole per the package's D-008 (its tree-sitter spike could not reproduce MySQL compound-statement parsing, so the SQL policy engine and statement boundaries remain glassdb's)
