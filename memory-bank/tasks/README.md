@@ -18,6 +18,12 @@ archived in monthly folders (see [2026-08/README.md](./2026-08/README.md)).
 
 ## In Progress
 
+- [ ] **Workspace tab strip hidden under titlebar backgrounds (Mac)** — the
+  window policy dropped `.fullSizeContentView`, so NavigationSplitView's
+  per-column titlebar backgrounds sat on the tab strip; fixed by aligning
+  the policy with glas.sh, pending review.
+  See [workspace-tab-strip-titlebar-overlap.md](./workspace-tab-strip-titlebar-overlap.md).
+
 - [ ] **GlassEditorKit adoption (M3)** — Phase 1 (JSON field) complete and
   approved 2026-08-13; DDL display, the SQL editor surface, and the
   `SQLHighlighter` provider seam remain.

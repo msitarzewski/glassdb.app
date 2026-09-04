@@ -613,21 +613,16 @@ struct glassdbTests {
 
         #expect(!window.isOpaque)
         #expect(window.backgroundColor.alphaComponent == 0)
-        #expect(!window.titlebarAppearsTransparent)
-        #expect(!window.styleMask.contains(.fullSizeContentView))
+        // Full-size content keeps NavigationSplitView's per-column titlebar
+        // backgrounds under the toolbar rather than over the tab strip.
+        #expect(window.titlebarAppearsTransparent)
+        #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(!window.ignoresMouseEvents)
         #expect(!window.isMovableByWindowBackground)
         // AppKit may normalize NSToolbar.sizeMode asynchronously when tests run
         // concurrently; the window-level style is the durable contract.
         #expect(window.toolbarStyle == .unifiedCompact)
 
-        let themeFrame = try #require(window.contentView?.superview)
-        let titlebarMaterials = themeFrame.subviews.compactMap {
-            $0 as? MacDatabaseWorkspaceTitlebarMaterialView
-        }
-        #expect(titlebarMaterials.count == 1)
-        let titlebarMaterial = try #require(titlebarMaterials.first)
-        #expect(titlebarMaterial.hitTest(.zero) == nil)
     }
 
     @Test @MainActor func macSettingsLayoutHasFiniteStableContentSize() throws {
@@ -4153,4 +4148,92 @@ struct glassdbTests {
         }
         try await connection.close()
     }
+
+    #if os(macOS)
+    /// Hosts the real workspace (connected in-memory SQLite session, one table
+    /// tab beside Overview) in a toolbar-bearing window under the Mac window
+    /// policy. NavigationSplitView installs a 40pt titlebar background per
+    /// column at the top of its split view; without `.fullSizeContentView`
+    /// the split view began below the toolbar and those backgrounds sat on top
+    /// of the workspace tab strip, which then painted nothing. The contract
+    /// here is that every titlebar background stays outside the window's
+    /// content layout rect. With GLASSDB_WORKSPACE_CAPTURE_PATH set, the hosted
+    /// surface is also written out as a PNG for visual inspection.
+    @Test @MainActor func workspaceTitlebarBackgroundsStayOutOfTheContentLayoutRect() async throws {
+        let connection = try await SQLiteEngine().connect(path: ":memory:")
+        defer { Task { try? await connection.close() } }
+        _ = try await connection.execute(
+            "CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT)", parameters: []
+        )
+        _ = try await connection.execute(
+            "INSERT INTO items(name) VALUES ('alpha'), ('beta')", parameters: []
+        )
+
+        let manager = DatabaseSessionManager(loadImmediately: false)
+        let settings = SettingsManager(loadImmediately: false)
+        let sessionID = UUID()
+        let session = DatabaseSession(connectionConfig: DatabaseConnectionConfig(
+            name: "Capture",
+            engine: .sqlite,
+            host: ":memory:",
+            port: 0,
+            username: ""
+        ))
+        session.connection = connection
+        session.engine = SQLiteEngine()
+        session.state = .connected
+        manager.sessions[sessionID] = session
+
+        let root = DatabaseWorkspaceView(
+            sessionID: sessionID,
+            initialSelection: .table(database: "main", table: "items")
+        )
+        .environment(manager)
+        .environment(settings)
+
+        let hostingView = NSHostingView(rootView: AnyView(root))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 700),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.toolbar = NSToolbar(identifier: "app.glassdb.tests.tab-strip-toolbar")
+        window.contentView = hostingView
+        hostingView.frame = window.contentView!.bounds
+        MacDatabaseWorkspaceWindowPolicy.apply(window)
+        for _ in 0..<60 {
+            try await Task.sleep(for: .milliseconds(25))
+            hostingView.needsLayout = true
+            hostingView.layoutSubtreeIfNeeded()
+        }
+
+        // Private AppKit class; if it is ever renamed this guard goes vacuous
+        // rather than failing, so the policy assertions above it stay primary.
+        var titlebarBackgrounds: [NSView] = []
+        func collect(_ view: NSView) {
+            if String(describing: type(of: view)) == "NSTitlebarBackgroundView" {
+                titlebarBackgrounds.append(view)
+            }
+            for sub in view.subviews { collect(sub) }
+        }
+        collect(hostingView)
+        let contentLayoutRect = window.contentLayoutRect
+        for background in titlebarBackgrounds {
+            let frame = background.convert(background.bounds, to: nil)
+            #expect(
+                !frame.intersects(contentLayoutRect.insetBy(dx: 0, dy: 0.5)),
+                "titlebar background \(frame) overlaps content \(contentLayoutRect)"
+            )
+        }
+
+        if let capturePath = ProcessInfo.processInfo.environment["GLASSDB_WORKSPACE_CAPTURE_PATH"] {
+            hostingView.displayIfNeeded()
+            let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
+            hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+            let png = try #require(bitmap.representation(using: .png, properties: [:]))
+            try png.write(to: URL(fileURLWithPath: capturePath), options: .atomic)
+        }
+    }
+    #endif
 }
