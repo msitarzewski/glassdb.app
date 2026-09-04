@@ -773,26 +773,6 @@ struct ConnectionFormView: View {
         .help(help)
     }
 
-    /// Requirements are stated up front rather than revealed after a failed
-    /// save, so a disabled Save button is self-explanatory: the form says what
-    /// it needs before anything is attempted. Optional fields stay unmarked,
-    /// which is meaningful too — a blank Password never blocks saving.
-    @ViewBuilder
-    private func requiredFieldLabel(_ label: String, isRequired: Bool = true) -> some View {
-        if isRequired {
-            HStack(spacing: 6) {
-                Text(label)
-                Text("Required")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(label), required")
-        } else {
-            Text(label)
-        }
-    }
-
     @ViewBuilder
     private func macValidationMessage(for field: FormField) -> some View {
         if (attemptedSave || touchedFields.contains(field)),
@@ -834,6 +814,26 @@ struct ConnectionFormView: View {
         .help("Choose a software or Secure Enclave–wrapped key available to glassdb.")
     }
     #endif
+
+    /// Requirements are stated up front rather than revealed after a failed
+    /// save, so a disabled Save button is self-explanatory: the form says what
+    /// it needs before anything is attempted. Optional fields stay unmarked,
+    /// which is meaningful too — a blank Password never blocks saving.
+    @ViewBuilder
+    private func requiredFieldLabel(_ label: String, isRequired: Bool = true) -> some View {
+        if isRequired {
+            HStack(spacing: 6) {
+                Text(label)
+                Text("Required")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(label), required")
+        } else {
+            Text(label)
+        }
+    }
 
     // MARK: - Connection Section
 
