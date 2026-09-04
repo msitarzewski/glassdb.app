@@ -30,6 +30,12 @@ archived in monthly folders (see [2026-08/README.md](./2026-08/README.md)).
 
 ## Completed
 
+- [x] **iOS build: required-field helper outside the macOS guard (2026-09-02)** —
+  `requiredFieldLabel` from the required-markers slice was defined inside the
+  `#if os(macOS)` form block while the shared compact sections call it on
+  every platform; moved verbatim below the guard. iOS simulator build passes
+  against the pinned packages; Mac 135/135.
+
 - [x] **SQL editor gutter alignment on Mac (2026-08-11)** — visible digit-sized
   gutter band, asymmetric insets, draw-order fix for the misplaced digit
   column found in live testing.
