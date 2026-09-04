@@ -205,6 +205,13 @@
 - [x] Four-platform regression: Mac 118/118, iPhone 114/114, iPad 114/114, Vision Pro 114/114, zero failures or skips; Mac runtime warnings proven pre-existing via clean-HEAD worktree baseline
 - [x] Open follow-ups filed as Memory Bank tasks: Overview statistics performance, Mac File-menu SQL document lifecycle (⌘N capture and multi-editor focused-value defect), and Mac editor gutter alignment
 
+### Completed — Dogfood Polish, iOS Build Repair, and Workspace Tab Strip (2026-09-02 → 2026-09-04)
+- Landed the 2026-08-20 dogfood leftovers as five independent PRs (#15–#19): connection-form validation gating restored, required-field markers, Mac Connections Settings gear via `SettingsLink`, continuous Appearance sliders, and the workspace breadcrumb bar
+- Repaired the iOS simulator build: `requiredFieldLabel` was declared inside the macOS-only form block while the shared compact sections call it everywhere; moved verbatim below the guard (`709e4cf`)
+- Fixed the Mac workspace tab strip rendering as an empty band: `MacDatabaseWorkspaceWindowPolicy` keeps `.fullSizeContentView` so NavigationSplitView's per-column titlebar backgrounds stay under the toolbar; the titlebar material view is retained and anchored to `window.contentLayoutGuide` after its removal exposed the wallpaper (`911e06d`, `9075003`). Also resolves the collapsed-sidebar dead band and mid-titlebar reload/sidebar buttons
+- Evidence: Mac 136/136 on merged main including the new `workspaceTitlebarBackgroundsStayOutOfTheContentLayoutRect` host test and the extended policy test; iOS simulator build passes against pinned packages; live verification in a debug build driven through accessibility with a throwaway SQLite connection; signed arm64 Release installed to /Applications on 2026-09-04
+- Diagnostic method worth reusing: accessibility geometry plus window-only pixel/alpha capture separates "not laid out" from "painted over"; the offscreen `NSHostingView` harness does not composite window materials, so on-screen debug-build checks remain necessary for chrome bugs
+
 ### In Progress
 - [ ] C3 cross-device Glass-family credential catalog and eligible-secret synchronization; shared access group/App Group behavior is currently same-device only
 - [ ] Magic / First Class **My Connections** contract: neutral endpoint identity,

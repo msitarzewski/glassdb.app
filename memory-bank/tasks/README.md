@@ -5,11 +5,17 @@ archived in monthly folders (see [2026-08/README.md](./2026-08/README.md)).
 
 ## To Do
 
-- [ ] **SSH credential sharing model in the connection form** — database
-  passwords must never offer "Shared with glas.sh"; SSH credentials become the
-  shareable class via a glas.sh catalog picker or manual entry with a
-  share-on-create checkbox. No migration needed (no users).
-  See [ssh-credential-sharing-model.md](./ssh-credential-sharing-model.md).
+- [ ] **Breadcrumb navigation misbehaves** — reported during the 2026-08-20
+  dogfood session ("weird stuff happens when navigating"), repro never
+  captured. Suspects: `openWorkspace` replacing the single database tab,
+  preview-vs-open interaction with `tabState.previewed`, and the trail being
+  built from `tabState.displayed` (which includes previews) rather than
+  `selected`. Needs the exact crumb, starting surface, and outcome.
+
+- [ ] **Grid rows paint above the results header** — visible in the
+  2026-09-02 dogfood screenshot as rows 6–7 showing behind `created_at`;
+  the grid's vertical content leaks upward past its container. Separate
+  clipping defect, not touched by the tab-strip work.
 
 - [ ] **Shared SSH key picker** — the "Use a glas.sh credential" menu covers
   password credentials only; offer the shared App Group `StoredSSHKey` catalog
@@ -18,23 +24,39 @@ archived in monthly folders (see [2026-08/README.md](./2026-08/README.md)).
 
 ## In Progress
 
-- [ ] **Workspace tab strip hidden under titlebar backgrounds (Mac)** — the
-  window policy dropped `.fullSizeContentView`, so NavigationSplitView's
-  per-column titlebar backgrounds sat on the tab strip; fixed by aligning
-  the policy with glas.sh, pending review.
-  See [workspace-tab-strip-titlebar-overlap.md](./workspace-tab-strip-titlebar-overlap.md).
-
-- [ ] **GlassEditorKit adoption (M3)** — Phase 1 (JSON field) complete and
-  approved 2026-08-13; DDL display, the SQL editor surface, and the
-  `SQLHighlighter` provider seam remain.
-  See [glasseditorkit-m3-adoption.md](./glasseditorkit-m3-adoption.md).
-
 - [ ] **Unified SQL Workspace** — Command-W close, seed-only-Overview, and
   File-menu ⌘N document creation completed and approved 2026-08-11; U3 surface
   generalization and U7 loaded-result analysis remain open.
   See [unified-sql-workspace.md](./unified-sql-workspace.md).
 
 ## Completed
+
+- [x] **Workspace tab strip hidden under titlebar backgrounds, Mac
+  (2026-09-02, corrected 2026-09-04)** — `MacDatabaseWorkspaceWindowPolicy`
+  now keeps `.fullSizeContentView` so NavigationSplitView's per-column
+  titlebar backgrounds sit under the toolbar instead of over the tab strip;
+  the titlebar material view is kept and anchored to the content layout
+  guide after its removal exposed the wallpaper. Also fixed the collapsed-
+  sidebar dead band and mid-titlebar toolbar buttons from 2026-08-20.
+  Merged `911e06d` + `9075003`; Mac 136/136; signed Release installed.
+  See [workspace-tab-strip-titlebar-overlap.md](./workspace-tab-strip-titlebar-overlap.md).
+- [x] **2026-08-20 dogfood polish (merged 2026-09-02, PRs #15–#19)** —
+  validation gating restored on the connection form's action buttons plus
+  the shared-key-picker task record; "Required" markers on Name, Host,
+  Username, SSH host/username; Mac Connections Settings gear opens Settings
+  via `SettingsLink`; continuous Appearance sliders; workspace breadcrumb
+  bar with `WorkspaceBreadcrumb.trail(to:connectionName:)`. Each branch
+  passed the Mac suite on its own (134–135 tests); merged main 135/135.
+- [x] **GlassEditorKit adoption (M3), Phases 1–3 (2026-08-13/14)** — JSON
+  field (PR #11) and the SQL editor swap with the `StatementBoundaryProvider`
+  seam (PR #13); `SQLHighlighter` stays glassdb's policy engine per D-008.
+  See [glasseditorkit-m3-adoption.md](./glasseditorkit-m3-adoption.md).
+- [x] **SSH credential sharing model in the connection form (2026-08-14/18,
+  PR #12)** — database passwords never offer "Shared with glas.sh"; SSH
+  credentials are the shareable class via the glas.sh catalog menu or manual
+  entry with share-on-create; three explicit SSH auth modes; connection
+  library column widths mirror glas.sh.
+  See [ssh-credential-sharing-model.md](./ssh-credential-sharing-model.md).
 
 - [x] **iOS build: required-field helper outside the macOS guard (2026-09-02)** —
   `requiredFieldLabel` from the required-markers slice was defined inside the
