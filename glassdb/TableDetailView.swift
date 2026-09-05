@@ -14,12 +14,23 @@ import GlassEditorUI
 import AppKit
 #endif
 
+extension DatabaseValue {
+    /// Presentation only: never infer numeric types from textual identifiers.
+    var usesNumericGridAlignment: Bool {
+        switch self {
+        case .int, .uint, .decimal, .double: true
+        default: false
+        }
+    }
+}
+
 struct TableDetailView: View {
     let sessionID: UUID
     let database: String
     let table: String
     var isWorkspaceActive = true
     var onOpenSQLEditor: (() -> Void)?
+    var sqlDraft: Binding<QueryDocumentTab>?
 
     @Environment(DatabaseSessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
@@ -27,6 +38,7 @@ struct TableDetailView: View {
 
     @State private var selectedTab: TableTab = .data
     @State private var actionScope = UUID()
+    @State private var runAvailability = SQLRunAvailability()
     #if os(macOS) || os(iOS)
     @State private var visitedTabs: Set<TableTab> = [.data]
     #endif
@@ -45,6 +57,7 @@ struct TableDetailView: View {
             spatialContent
             #endif
         }
+        .onPreferenceChange(SQLRunAvailabilityKey.self) { runAvailability = $0 }
         .toolbar {
             if isWorkspaceActive {
                 #if os(macOS)
@@ -115,13 +128,10 @@ struct TableDetailView: View {
                         .help("Ask the on-device assistant about this table")
                         #endif
 
-                        Button {
-                            NotificationCenter.default.post(name: .glassdbExecuteQuery, object: actionScope)
-                        } label: {
-                            Image(systemName: "play.fill")
+                        SQLRunControl(availability: runAvailability) { mode in
+                            NotificationCenter.default.post(name: .glassdbExecuteQuery, object: actionScope,
+                                                            userInfo: ["mode": mode.rawValue])
                         }
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .help("Run the current query (Command-Return)")
                         .contextMenu {
                             Button("Run every 10s") {
                                 NotificationCenter.default.post(name: .glassdbStartRepeat, object: actionScope)
@@ -245,7 +255,8 @@ struct TableDetailView: View {
                 database: database,
                 table: table,
                 actionScope: actionScope,
-                isWorkspaceActive: isActive
+                isWorkspaceActive: isActive,
+                tableDraft: sqlDraft
             )
         case .structure:
             StructureTabView(
@@ -1173,6 +1184,7 @@ struct DataTabView: View {
     let actionScope: UUID
     let isWorkspaceActive: Bool
     private let document: Binding<QueryDocumentTab>?
+    private let tableDraft: Binding<QueryDocumentTab>?
     private let completionIdentifiers: [String]
     private let externalEditorController: SQLEditorController?
     private let completionError: String?
@@ -1183,7 +1195,8 @@ struct DataTabView: View {
         database: String,
         table: String,
         actionScope: UUID,
-        isWorkspaceActive: Bool
+        isWorkspaceActive: Bool,
+        tableDraft: Binding<QueryDocumentTab>? = nil
     ) {
         self.sessionID = sessionID
         self.database = database
@@ -1191,6 +1204,7 @@ struct DataTabView: View {
         self.actionScope = actionScope
         self.isWorkspaceActive = isWorkspaceActive
         document = nil
+        self.tableDraft = tableDraft
         completionIdentifiers = []
         completionError = nil
         displaysEditor = true
@@ -1212,6 +1226,7 @@ struct DataTabView: View {
         actionScope = document.wrappedValue.id
         self.isWorkspaceActive = isWorkspaceActive
         self.document = document
+        tableDraft = nil
         self.completionIdentifiers = completionIdentifiers
         self.completionError = completionError
         self.displaysEditor = displaysEditor
@@ -1308,9 +1323,15 @@ struct DataTabView: View {
     /// this, table-surface completion had only keywords and current-table
     /// columns — `comm` could never offer `common_vision`.
     @State private var tableSurfaceIdentifiers: [String] = []
+    @State private var qualifiedTableIdentifiers: [String: [String]] = [:]
+
+    private var completionDatabase: String? {
+        SQLHighlighter.completionDatabase(in: queryText, selectedRange: selectedRange)
+    }
 
     private var effectiveCompletionIdentifiers: [String] {
-        isTableContext ? tableSurfaceIdentifiers : completionIdentifiers
+        (isTableContext ? tableSurfaceIdentifiers : completionIdentifiers)
+            + (completionDatabase.flatMap { qualifiedTableIdentifiers[$0] } ?? [])
     }
 
     /// The table context owns its editor handle; the document context shares
@@ -1325,12 +1346,14 @@ struct DataTabView: View {
     /// forward is an equality no-op when the write originated from typing
     /// (outbound bridge), so only genuine external replacements land.
     private var queryText: String {
-        get { document?.wrappedValue.text ?? tableQueryText }
+        get { document?.wrappedValue.text ?? tableDraft?.wrappedValue.text ?? tableQueryText }
         nonmutating set {
             if let document {
                 var value = document.wrappedValue
                 value.text = newValue
                 document.wrappedValue = value
+            } else if let tableDraft {
+                tableDraft.wrappedValue.text = newValue
             } else {
                 tableQueryText = newValue
             }
@@ -1463,6 +1486,26 @@ struct DataTabView: View {
 
     var body: some View {
         interactionView
+            .task(id: completionDatabase) {
+                guard let database = completionDatabase,
+                      qualifiedTableIdentifiers[database] == nil,
+                      let connection = session?.connection else { return }
+                do {
+                    let names = try await SchemaCompletionIdentifiers.qualifiedTables(
+                        connection: connection, database: database
+                    )
+                    try Task.checkCancellation()
+                    qualifiedTableIdentifiers[database] = names
+                } catch {
+                    // Keep existing completions usable; retry on the next entry
+                    // into this qualifier rather than caching transient failures.
+                }
+            }
+            .preference(key: SQLRunAvailabilityKey.self, value: SQLRunAvailability(
+                canRun: isTableContext && isWorkspaceActive && session?.state.isConnected == true
+                    && !isLoading && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                hasSelection: selectedRange.length > 0
+            ))
     }
 
     private var presentedView: some View {
@@ -1611,11 +1654,7 @@ struct DataTabView: View {
                     dataGrid(result)
                 }
             } else {
-                ContentUnavailableView(
-                    "No Results",
-                    systemImage: "tablecells",
-                    description: Text("Edit the query above and press Execute.")
-                )
+                emptyResultsGrid
             }
 
             // Pager bar at bottom
@@ -1628,6 +1667,7 @@ struct DataTabView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: $showEditor, onDismiss: presentQueuedRecordMutation) {
             if let result, let rowIdx = selectedRowIndex, rowIdx < result.rows.count {
                 RecordEditorView(
@@ -1775,8 +1815,11 @@ struct DataTabView: View {
     private var interactionView: some View {
         presentedView
         .onReceive(NotificationCenter.default.publisher(for: .glassdbExecuteQuery)) { notification in
-            guard notification.object as? UUID == actionScope else { return }
-            Task { await executeCurrentQuery() }
+            guard isWorkspaceActive, isTableContext,
+                  let scope = notification.object as? UUID,
+                  scope == actionScope || scope == sessionID else { return }
+            let mode = (notification.userInfo?["mode"] as? String).flatMap(SQLExecutionMode.init(rawValue:)) ?? .automatic
+            Task { await executeCurrentQuery(mode: mode) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .glassdbAddRow)) { notification in
             guard notification.object as? UUID == actionScope else { return }
@@ -1931,7 +1974,8 @@ struct DataTabView: View {
         let applied = SQLHighlighter.applyingCompletion(
             first,
             to: queryText,
-            selectedRange: selectedRange
+            selectedRange: selectedRange,
+            appendSpace: true
         )
         queryText = applied.sql
         selectedRange = applied.selection
@@ -2784,6 +2828,60 @@ struct DataTabView: View {
         )
     }
 
+    /// The unexecuted editor uses the same canvas geometry as populated results.
+    /// Stripes are decoration only: no invented columns, rows, or query result.
+    private var emptyResultsGrid: some View {
+        VStack(spacing: 0) {
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        Text("#")
+                            .font(.system(size: settingsManager.dataGridFontSize, weight: .semibold))
+                            .frame(width: rowNumWidth)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(height: 36)
+                    .databaseCanvasPinnedSurface(
+                        opacity: settingsManager.windowOpacity,
+                        blur: settingsManager.blurBackground
+                    )
+                    .accessibilityHidden(true)
+                    VStack(spacing: 0) {
+                        ForEach(0..<max(0, Int(ceil((geometry.size.height - 36) / rowHeight))), id: \.self) { index in
+                            HStack(spacing: 0) {
+                                Color.clear.frame(width: rowNumWidth)
+                                    .databaseCanvasPinnedSurface(
+                                        opacity: settingsManager.windowOpacity,
+                                        blur: settingsManager.blurBackground
+                                    )
+                                Color.clear
+                            }
+                            .frame(height: rowHeight)
+                            .background(index.isMultiple(of: 2) ? Color.clear : Color.primary.opacity(
+                                DatabaseGlassAppearance(opacity: settingsManager.windowOpacity, blur: 0)
+                                    .surfaceAlpha(strength: 0.02)
+                            ))
+                        }
+                    }
+                    .accessibilityHidden(true)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .clipped()
+            }
+            .padding(.trailing, 8)
+            Divider()
+            HStack {
+                Text("Ready — enter SQL above, then run a statement or selection.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
     private func dataGrid(_ result: QueryResult) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             GeometryReader { geometry in
@@ -2812,7 +2910,7 @@ struct DataTabView: View {
                                 HStack(spacing: 0) {
                                     // Keep the generated row-number gutter fixed and legible while data scrolls.
                                     Text("\((currentPage - 1) * pageSize + rowIndex + 1)")
-                                        .font(.system(size: fontSize - 1, design: .monospaced))
+                                        .font(.system(size: fontSize - 1).monospacedDigit())
                                         .foregroundStyle(.secondary)
                                         .frame(width: rowNumWidth, height: rowHeight, alignment: .center)
                                         .background(
@@ -2843,11 +2941,14 @@ struct DataTabView: View {
                                         let isFrozen = columnLayout.frozen.contains(result.columns[colIndex].name)
                                         let isSelected = activeSelection?.rows.contains(rowIndex) == true && selectedColumns.contains(colIndex)
                                         Text(value.displayString)
-                                            .font(.system(size: fontSize, design: .monospaced))
+                                            .font(value.usesNumericGridAlignment
+                                                ? .system(size: fontSize).monospacedDigit()
+                                                : .system(size: fontSize))
                                             .lineLimit(1)
                                             .padding(.horizontal, 12)
                                             .padding(.vertical, 6)
-                                            .frame(width: widths[visibleOffset], height: rowHeight, alignment: .leading)
+                                            .frame(width: widths[visibleOffset], height: rowHeight,
+                                                   alignment: value.usesNumericGridAlignment ? .trailing : .leading)
                                             .foregroundStyle(value.isNull ? .tertiary : .primary)
                                             .background(
                                                 isFrozen
@@ -2914,7 +3015,7 @@ struct DataTabView: View {
                         } header: {
                             HStack(spacing: 0) {
                                 Text("#")
-                                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                                    .font(.system(size: fontSize, weight: .semibold))
                                     .frame(width: rowNumWidth, alignment: .center)
                                     .databaseCanvasPinnedSurface(
                                         opacity: settingsManager.windowOpacity,
@@ -2944,7 +3045,7 @@ struct DataTabView: View {
                                         }
                                         Spacer(minLength: 0)
                                     }
-                                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                                    .font(.system(size: fontSize, weight: .semibold))
                                     .padding(.leading, 12)
                                     .padding(.vertical, 8)
                                     .frame(width: widths[visibleOffset], alignment: .leading)
@@ -2981,10 +3082,12 @@ struct DataTabView: View {
                                         Button("Move Right") { moveColumn(col.name, offset: 1) }
                                     }
                                     .overlay(alignment: .trailing) {
-                                        Rectangle()
-                                            .fill(Color.secondary.opacity(0.35))
-                                            .frame(width: 5)
-                                            .contentShape(Rectangle().inset(by: -6))
+                                        Capsule()
+                                            .fill(.secondary.opacity(0.45))
+                                            .frame(width: 2, height: 14)
+                                            .frame(width: 16, height: headerHeight)
+                                            .contentShape(Rectangle())
+                                            .help("Drag to resize \(col.name)")
                                             .gesture(
                                                 // Global space: the handle rides the column edge
                                                 // being resized, so local translation feeds back.
@@ -3012,6 +3115,9 @@ struct DataTabView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Inset the whole viewport, including overlay scrollbars. Keeping this
+        // outside GeometryReader also preserves the filler-column measurement.
+        .padding(.trailing, 8)
     }
 
     private func rowBackground(rowIndex: Int, totalDataRows: Int) -> some ShapeStyle {
@@ -3528,7 +3634,7 @@ struct DataTabView: View {
     private func loadData() async {
         guard let connection = session?.connection else { return }
         let preservedIdentity = selectedRowIdentity()
-        isAutoQuery = true
+        isAutoQuery = tableDraft?.wrappedValue.hasUnsavedChanges != true
         isLoading = true
         errorMessage = nil
         errorIsQueryFailure = false
@@ -3612,7 +3718,12 @@ struct DataTabView: View {
                     fetchSentinel: true
                 )
             }
-            queryText = displayedQuery.sql
+            // Refreshing/recreating the browsing view must not erase a user draft.
+            if tableDraft?.wrappedValue.hasUnsavedChanges != true {
+                queryText = SQLHighlighter.editorText(forGeneratedQuery: displayedQuery.sql)
+                // Generated browsing SQL is the baseline, not an unsaved user edit.
+                tableDraft?.wrappedValue.markSaved()
+            }
             let rawResult = try await sessionManager.executeQuery(
                 fetchQuery.sql,
                 parameters: fetchQuery.parameters,
@@ -3730,10 +3841,9 @@ struct DataTabView: View {
         }
     }
 
-    private func executeCurrentQuery() async {
-        let sql = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !sql.isEmpty else { return }
-        let statements = SQLHighlighter.statements(in: sql)
+    private func executeCurrentQuery(mode: SQLExecutionMode = .automatic) async {
+        guard !isLoading, session?.state.isConnected == true else { return }
+        let statements = SQLHighlighter.statementsToExecute(in: queryText, selectedRange: selectedRange, mode: mode)
         guard !statements.isEmpty else { return }
         if statements.contains(where: { $0.safety.requiresConfirmation }) {
             pendingQueryStatements = statements
@@ -5683,6 +5793,16 @@ struct ForeignKeysTabView: View {
 /// the table Data surface, so a fragment like `comm` completes to
 /// `common_vision` everywhere an editor appears.
 enum SchemaCompletionIdentifiers {
+    /// Fetch only the requested database's tables, not every database's columns.
+    /// Validate against live database names so an alias is not used as a database.
+    static func qualifiedTables(
+        connection: any DatabaseConnection,
+        database: String
+    ) async throws -> [String] {
+        guard try await connection.databases().contains(database) else { return [] }
+        return try await connection.tables(in: database).map { "\(database).\($0)" }
+    }
+
     static func load(
         connection: any DatabaseConnection,
         database: String?

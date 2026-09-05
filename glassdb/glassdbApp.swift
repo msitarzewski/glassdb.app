@@ -70,12 +70,10 @@ struct glassdbApp: App {
                     }
             }
         }
-        #if os(macOS)
         // Use native Mac window chrome so the Liquid Glass toolbar remains in
         // AppKit's titlebar hit-test region instead of covering SwiftUI content.
         // The workspace canvas remains clear through containerBackground.
-        .windowToolbarStyle(.unifiedCompact)
-        #elseif os(visionOS)
+        #if os(visionOS)
         .windowStyle(.plain)
         #endif
         #if !os(iOS)

@@ -226,9 +226,9 @@ extension View {
     }
 
     @ViewBuilder
-    func databaseWorkspaceWindowChrome() -> some View {
+    func databaseWorkspaceWindowChrome(opensSidebarInitially: Bool = true) -> some View {
         #if os(macOS)
-        background(MacDatabaseWorkspaceWindowReader())
+        background(MacDatabaseWorkspaceWindowReader(opensSidebarInitially: opensSidebarInitially))
         #else
         self
         #endif
@@ -548,6 +548,72 @@ final class MacDatabaseWorkspaceTitlebarMaterialView: NSVisualEffectView {
     )
 
     weak var contentBoundary: NSView?
+    private var leadingConstraint: NSLayoutConstraint?
+    private weak var sidebarItem: NSSplitViewItem?
+    private var sidebarObservation: NSKeyValueObservation?
+    private var resizeObservation: NSObjectProtocol?
+
+    isolated deinit {
+        if let resizeObservation { NotificationCenter.default.removeObserver(resizeObservation) }
+    }
+
+    // Same passive geometry contract as glas.sh: read native layout, never
+    // constrain decoration to a live sidebar or detail view.
+    func followSidebarBoundary() {
+        guard let contentBoundary else { return }
+        var discoveredSidebar: NSSplitViewItem?
+        var discoveredSplit: NSSplitView?
+        var views = [contentBoundary]
+        var index = 0
+        while index < views.count, index < 256 {
+            let view = views[index]
+            index += 1
+            if let split = view as? NSSplitView,
+               let controller = split.delegate as? NSSplitViewController,
+               let sidebar = controller.splitViewItems.first(where: { $0.behavior == .sidebar }) {
+                discoveredSidebar = sidebar
+                discoveredSplit = split
+                break
+            }
+            views.append(contentsOf: view.subviews)
+        }
+        if sidebarItem !== discoveredSidebar {
+            sidebarObservation = nil
+            if let resizeObservation { NotificationCenter.default.removeObserver(resizeObservation) }
+            resizeObservation = nil
+            sidebarItem = discoveredSidebar
+            sidebarObservation = discoveredSidebar?.observe(\.isCollapsed, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.updateLeadingBoundary() }
+            }
+            if let discoveredSplit {
+                resizeObservation = NotificationCenter.default.addObserver(
+                    forName: NSSplitView.didResizeSubviewsNotification,
+                    object: discoveredSplit, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.updateLeadingBoundary() }
+                }
+            }
+        }
+        updateLeadingBoundary()
+    }
+
+    private func updateLeadingBoundary() {
+        guard let frame = superview else { return }
+        var offset: CGFloat = 0
+        if let sidebarItem, !sidebarItem.isCollapsed {
+            let sidebar = sidebarItem.viewController.view
+            offset = sidebar.convert(sidebar.bounds, to: frame).maxX - frame.bounds.minX
+        }
+        offset = min(max(0, offset), frame.bounds.width)
+        if let leadingConstraint {
+            if abs(leadingConstraint.constant - offset) > 0.1 {
+                leadingConstraint.constant = offset
+            }
+        } else {
+            leadingConstraint = leadingAnchor.constraint(equalTo: frame.leadingAnchor, constant: offset)
+            leadingConstraint?.isActive = true
+        }
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
@@ -557,22 +623,86 @@ final class MacDatabaseWorkspaceTitlebarMaterialView: NSVisualEffectView {
 /// Reuses the sister app's proven AppKit window-reader pattern to preserve
 /// native titlebar material around a transparent SwiftUI database canvas.
 struct MacDatabaseWorkspaceWindowReader: NSViewRepresentable {
+    var opensSidebarInitially = true
+
     func makeNSView(context: Context) -> NSView {
         let view = NonHitTestingWindowReaderView(frame: .zero)
-        DispatchQueue.main.async {
-            MacDatabaseWorkspaceWindowPolicy.apply(view.window)
-        }
+        view.opensSidebarInitially = opensSidebarInitially
+        view.scheduleConfiguration()
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async {
-            MacDatabaseWorkspaceWindowPolicy.apply(nsView.window)
-        }
+        guard let view = nsView as? NonHitTestingWindowReaderView else { return }
+        view.opensSidebarInitially = opensSidebarInitially
+        view.scheduleConfiguration()
     }
 
     @MainActor
-    private final class NonHitTestingWindowReaderView: NSView {
+    final class NonHitTestingWindowReaderView: NSView {
+        var opensSidebarInitially = true
+        private weak var configuredWindow: NSWindow?
+        private var appliedInitialSidebar = false
+        private var hasActivated = false
+
+        deinit { NotificationCenter.default.removeObserver(self) }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window, configuredWindow !== window {
+                NotificationCenter.default.removeObserver(self)
+                configuredWindow = window
+                appliedInitialSidebar = false
+                hasActivated = window.isKeyWindow
+                NotificationCenter.default.addObserver(
+                    self, selector: #selector(windowDidBecomeKey(_:)),
+                    name: NSWindow.didBecomeKeyNotification, object: window
+                )
+            }
+            scheduleConfiguration()
+        }
+
+        @objc private func windowDidBecomeKey(_ notification: Notification) {
+            guard !hasActivated else { return }
+            hasActivated = true
+            // Wait until initial native window presentation/restoration settles.
+            // Later activations never reopen a sidebar the user has hidden.
+            DispatchQueue.main.async { [weak self] in self?.applyInitialSidebarIfNeeded() }
+        }
+
+        func scheduleConfiguration() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.window else { return }
+                MacDatabaseWorkspaceWindowPolicy.apply(window)
+                self.applyInitialSidebarIfNeeded()
+            }
+        }
+
+        override func layout() {
+            super.layout()
+            applyInitialSidebarIfNeeded()
+        }
+
+        private func applyInitialSidebarIfNeeded() {
+            guard hasActivated, opensSidebarInitially, !appliedInitialSidebar,
+                  let root = window?.contentView else { return }
+            var views = [root]
+            var index = 0
+            while index < views.count, index < 256 {
+                let view = views[index]
+                index += 1
+                if let split = view as? NSSplitView,
+                   let controller = split.delegate as? NSSplitViewController,
+                   let sidebar = controller.splitViewItems.first(where: { $0.behavior == .sidebar }) {
+                    // One initial native action, never an update-time toolbar mutation.
+                    appliedInitialSidebar = true
+                    sidebar.isCollapsed = false
+                    return
+                }
+                views.append(contentsOf: view.subviews)
+            }
+        }
+
         override func hitTest(_ point: NSPoint) -> NSView? {
             nil
         }
@@ -598,11 +728,8 @@ enum MacDatabaseWorkspaceWindowPolicy {
         window.ignoresMouseEvents = false
         window.isMovableByWindowBackground = false
         window.autorecalculatesKeyViewLoop = true
-        window.toolbarStyle = .unifiedCompact
-        // SwiftUI's unifiedCompact style can still resolve to regular-height
-        // Liquid Glass controls on macOS 27. Keep workspace toolbar items in the
-        // compact native row without changing control sizes inside the canvas.
-        window.toolbar?.sizeMode = .small
+        // As in glas.sh, let the system choose toolbar style and control size.
+        // The passive material must not impose compact window chrome.
         installTitlebarMaterial(in: window)
     }
 
@@ -616,6 +743,7 @@ enum MacDatabaseWorkspaceWindowPolicy {
                 $0.identifier == MacDatabaseWorkspaceTitlebarMaterialView.materialIdentifier
             }) {
             if existing.contentBoundary === contentView {
+                existing.followSidebarBoundary()
                 return
             }
             existing.removeFromSuperview()
@@ -624,12 +752,14 @@ enum MacDatabaseWorkspaceWindowPolicy {
         let materialView = MacDatabaseWorkspaceTitlebarMaterialView(frame: .zero)
         materialView.identifier = MacDatabaseWorkspaceTitlebarMaterialView.materialIdentifier
         materialView.contentBoundary = contentView
-        materialView.material = .titlebar
+        materialView.material = .sidebar
         materialView.blendingMode = .behindWindow
         materialView.state = .followsWindowActiveState
         materialView.alphaValue = 1
         materialView.translatesAutoresizingMaskIntoConstraints = false
+        materialView.setAccessibilityElement(false)
         themeFrame.addSubview(materialView, positioned: .below, relativeTo: nil)
+        materialView.followSidebarBoundary()
 
         // Under `.fullSizeContentView` the content view reaches the window's
         // top edge, so the titlebar/toolbar band is the strip between the
@@ -643,7 +773,6 @@ enum MacDatabaseWorkspaceWindowPolicy {
             bottomAnchor = contentView.topAnchor
         }
         NSLayoutConstraint.activate([
-            materialView.leadingAnchor.constraint(equalTo: themeFrame.leadingAnchor),
             materialView.trailingAnchor.constraint(equalTo: themeFrame.trailingAnchor),
             materialView.topAnchor.constraint(equalTo: themeFrame.topAnchor),
             materialView.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -695,6 +824,10 @@ struct DatabaseWorkspaceCommandActions {
     let formatSQL: () -> Void
     let showHistory: () -> Void
     let showSavedQueries: () -> Void
+    let runTitle: String
+    let canRunSelection: Bool
+    let executeSelection: () -> Void
+    let executeCurrentStatement: () -> Void
 }
 
 /// Verbs only an individual SQL editor can perform (execution pipeline and
@@ -709,6 +842,8 @@ struct QueryEditorCommandHandlers {
     let cancel: () -> Void
     let showHistory: () -> Void
     let showSavedQueries: () -> Void
+    let executeSelection: () -> Void
+    let executeCurrentStatement: () -> Void
 }
 
 private struct DatabaseWorkspaceCommandActionsKey: FocusedValueKey {
@@ -755,15 +890,19 @@ struct DatabaseCommands: Commands {
         }
 
         CommandMenu("Query") {
-            Button("Execute Statement") { workspaceActions?.executeStatement() }
+            Button(workspaceActions?.runTitle ?? "Run Statement") { workspaceActions?.executeStatement() }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(workspaceActions?.canExecute != true)
-            Button("Execute Script") { workspaceActions?.executeScript() }
+            Button("Run Statement at Cursor") { workspaceActions?.executeCurrentStatement() }
+                .disabled(workspaceActions?.canExecute != true)
+            Button("Run Selection") { workspaceActions?.executeSelection() }
+                .disabled(workspaceActions?.canRunSelection != true)
+            Button("Run All Statements") { workspaceActions?.executeScript() }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
                 .disabled(workspaceActions?.canExecute != true)
             Button("Explain Plan") { workspaceActions?.explainPlan() }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(workspaceActions?.canExecute != true)
+                .disabled(workspaceActions?.canExecute != true || workspaceActions?.canUseQueryLibrary != true)
             Button("Cancel Query") { workspaceActions?.cancel() }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(workspaceActions?.canCancel != true)
@@ -772,7 +911,7 @@ struct DatabaseCommands: Commands {
 
             Button("Format SQL") { workspaceActions?.formatSQL() }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
-                .disabled(workspaceActions?.canExecute != true)
+                .disabled(workspaceActions?.canExecute != true || workspaceActions?.canUseQueryLibrary != true)
 
             Divider()
 

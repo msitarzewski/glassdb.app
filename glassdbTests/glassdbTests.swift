@@ -598,7 +598,35 @@ struct glassdbTests {
         #expect(snapshot.status(for: "missing") == nil)
     }
 
+    @Test func gridAlignmentUsesValueTypesNotNumericLookingStrings() {
+        for value: DatabaseValue in [.int(-1), .uint(42), .decimal("123456789.0001"), .double(1.5)] {
+            #expect(value.usesNumericGridAlignment)
+        }
+        for value: DatabaseValue in [.string("00123"), .bool(false), .null, .json("123"), .data(Data())] {
+            #expect(!value.usesNumericGridAlignment)
+        }
+    }
+
     #if os(macOS)
+    @Test @MainActor func workspaceReaderConfiguresWindowAfterDelayedAttachment() async throws {
+        let reader = MacDatabaseWorkspaceWindowReader.NonHitTestingWindowReaderView(frame: .zero)
+        reader.scheduleConfiguration()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(reader.window == nil)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false
+        )
+        window.toolbar = NSToolbar(identifier: "app.glassdb.tests.delayed-reader")
+        let content = try #require(window.contentView)
+        content.addSubview(reader)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!window.isOpaque)
+        #expect(window.titlebarAppearsTransparent)
+        let frame = try #require(content.superview)
+        #expect(frame.subviews.contains { $0 is MacDatabaseWorkspaceTitlebarMaterialView })
+    }
+
     @Test @MainActor func macDatabaseWorkspacePolicyPreservesInteractiveNativeChrome() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
@@ -607,6 +635,8 @@ struct glassdbTests {
             defer: false
         )
         window.toolbar = NSToolbar(identifier: "app.glassdb.tests.workspace-toolbar")
+        let nativeToolbarStyle = window.toolbarStyle
+        let nativeToolbarSize = window.toolbar?.sizeMode
 
         MacDatabaseWorkspaceWindowPolicy.apply(window)
         MacDatabaseWorkspaceWindowPolicy.apply(window)
@@ -619,9 +649,8 @@ struct glassdbTests {
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(!window.ignoresMouseEvents)
         #expect(!window.isMovableByWindowBackground)
-        // AppKit may normalize NSToolbar.sizeMode asynchronously when tests run
-        // concurrently; the window-level style is the durable contract.
-        #expect(window.toolbarStyle == .unifiedCompact)
+        #expect(window.toolbarStyle == nativeToolbarStyle)
+        #expect(window.toolbar?.sizeMode == nativeToolbarSize)
 
         let themeFrame = try #require(window.contentView?.superview)
         let titlebarMaterials = themeFrame.subviews.compactMap {
@@ -630,6 +659,10 @@ struct glassdbTests {
         #expect(titlebarMaterials.count == 1)
         let titlebarMaterial = try #require(titlebarMaterials.first)
         #expect(titlebarMaterial.hitTest(.zero) == nil)
+        #expect(titlebarMaterial.material == .sidebar)
+        #expect(titlebarMaterial.blendingMode == .behindWindow)
+        #expect(titlebarMaterial.state == .followsWindowActiveState)
+        #expect(titlebarMaterial.alphaValue == 1)
         window.layoutIfNeeded()
         // The material covers the titlebar/toolbar band and stops at the
         // content layout rect, so it can never overlap workspace content.
@@ -3526,6 +3559,97 @@ struct glassdbTests {
         #expect(manager.cachedTableStatistics(sessionID: sessionID, database: "main") != nil)
     }
 
+    @Test func sqlRunButtonTitlesReflectSelectionAndRunAll() {
+        var availability = SQLRunAvailability(canRun: true, hasSelection: false)
+        #expect(availability.buttonTitle(runAll: false) == "Statement")
+        #expect(availability.buttonTitle(runAll: true) == "All Statements")
+        availability.hasSelection = true
+        #expect(availability.buttonTitle(runAll: false) == "Selection")
+        #expect(availability.buttonTitle(runAll: true) == "All Statements")
+    }
+
+    @Test func generatedTableSQLOnlyPromptsAfterEdits() {
+        let generated = SQLHighlighter.editorText(forGeneratedQuery: "SELECT * FROM sample")
+        var draft = QueryDocumentTab(text: generated, isSaved: true)
+        #expect(!draft.hasUnsavedChanges)
+        draft.text += "\nSELECT 42;"
+        #expect(draft.hasUnsavedChanges)
+        draft.text = generated
+        #expect(!draft.hasUnsavedChanges)
+        draft.text += "\nSELECT 42;"
+        draft.markSaved()
+        #expect(!draft.hasUnsavedChanges)
+    }
+
+    @Test func tabCompletionAddsOneSpaceAndAdvancesCaret() {
+        let prefix = "SELECT * FROM beam.us"
+        for suffix in ["", " WHERE active = 1", ";", ".id", "\nWHERE active = 1"] {
+            let applied = SQLHighlighter.applyingCompletion(
+                "beam.users", to: prefix + suffix,
+                selectedRange: NSRange(location: (prefix as NSString).length, length: 0),
+                appendSpace: true
+            )
+            let base = "SELECT * FROM beam.users"
+            #expect(applied.sql == base + (suffix.isEmpty ? " " : suffix))
+            #expect(applied.selection.location == (base as NSString).length
+                + ((suffix.isEmpty || suffix.hasPrefix(" ")) ? 1 : 0))
+        }
+    }
+
+    @Test func qualifiedTableCompletionFollowsTheCaretDatabase() {
+        let sql = "SELECT * FROM beam."
+        let caret = NSRange(location: (sql as NSString).length, length: 0)
+        #expect(SQLHighlighter.completionDatabase(in: sql, selectedRange: caret) == "beam")
+        let names = ["beam.users", "beam.articles", "other.users"]
+        let suggestions = SQLHighlighter.completions(in: sql, selectedRange: caret, schemaIdentifiers: names)
+        #expect(Set(suggestions) == Set(["beam.users", "beam.articles"]))
+        let applied = SQLHighlighter.applyingCompletion("beam.users", to: sql, selectedRange: caret)
+        #expect(applied.sql == "SELECT * FROM beam.users")
+        #expect(applied.selection.location == (applied.sql as NSString).length)
+        for text in ["SELECT 'beam.'", "SELECT 1 -- beam.", "SELECT /* beam. */"] {
+            #expect(SQLHighlighter.completionDatabase(
+                in: text, selectedRange: NSRange(location: (text as NSString).length, length: 0)
+            ) == nil)
+        }
+        let partial = "SELECT * FROM beam.us"
+        #expect(SQLHighlighter.completions(
+            in: partial, selectedRange: NSRange(location: (partial as NSString).length, length: 0),
+            schemaIdentifiers: names
+        ) == ["beam.users"])
+    }
+
+    @Test func sqlRunModesRespectCaretSelectionAndAll() {
+        let sql = "SELECT '🦋;quoted';\n-- comment ;\nSELECT 2;\nSELECT 3;"
+        let selection = (sql as NSString).range(of: "SELECT 2;\nSELECT 3;")
+        let automatic = SQLHighlighter.statementsToExecute(in: sql, selectedRange: selection, mode: .automatic)
+        #expect(automatic.map(\.text) == ["SELECT 2", "SELECT 3"])
+        #expect(SQLHighlighter.statementsToExecute(in: sql, selectedRange: selection, mode: .selection).count == 2)
+        let current = SQLHighlighter.statementsToExecute(in: sql, selectedRange: selection, mode: .statement)
+        #expect(current.count == 1)
+        #expect(current.first?.text.hasSuffix("SELECT 2") == true)
+        #expect(SQLHighlighter.statementsToExecute(in: sql, selectedRange: selection, mode: .all).count == 3)
+        let caret = NSRange(location: (sql as NSString).range(of: "SELECT 3").location + 3, length: 0)
+        #expect(SQLHighlighter.statementsToExecute(in: sql, selectedRange: caret, mode: .automatic).first?.text == "SELECT 3")
+        #expect(SQLHighlighter.statementsToExecute(in: sql, selectedRange: caret, mode: .selection).isEmpty)
+    }
+
+    @Test func sqlRunSelectionNeverExpandsToUnselectedMutation() {
+        let sql = "DELETE FROM items; SELECT 42; DROP TABLE items;"
+        let range = (sql as NSString).range(of: "SELECT 42")
+        let statements = SQLHighlighter.statementsToExecute(in: sql, selectedRange: range, mode: .selection)
+        #expect(statements.map(\.text) == ["SELECT 42"])
+        #expect(statements.allSatisfy { !$0.safety.requiresConfirmation })
+        #expect(SQLHighlighter.statementsToExecute(in: sql, selectedRange: NSRange(location: NSNotFound, length: 1), mode: .selection).isEmpty)
+    }
+
+    @Test func generatedEditorQueriesSeparateAppendedStatements() {
+        let generated = SQLHighlighter.editorText(forGeneratedQuery: "SELECT * FROM items LIMIT 100 OFFSET 0")
+        #expect(generated.hasSuffix(";"))
+        #expect(SQLHighlighter.editorText(forGeneratedQuery: generated) == generated)
+        #expect(SQLHighlighter.editorText(forGeneratedQuery: "  ").isEmpty)
+        #expect(SQLHighlighter.statements(in: generated + "\nSELECT 42;").count == 2)
+    }
+
     @Test func workspaceCommandRoutingConsultsOnlyTheActiveDocumentRegistration() {
         var registry: [UUID: QueryEditorCommandHandlers] = [:]
         var invoked: [String] = []
@@ -3536,7 +3660,9 @@ struct glassdbTests {
                 explainPlan: { invoked.append("\(label).explain") },
                 cancel: { invoked.append("\(label).cancel") },
                 showHistory: { invoked.append("\(label).history") },
-                showSavedQueries: { invoked.append("\(label).saved") }
+                showSavedQueries: { invoked.append("\(label).saved") },
+                executeSelection: { invoked.append("\(label).selection") },
+                executeCurrentStatement: { invoked.append("\(label).current") }
             )
         }
         func activeHandlers(_ tabs: WorkspaceTabState) -> QueryEditorCommandHandlers? {
@@ -4214,7 +4340,8 @@ struct glassdbTests {
         window.toolbar = NSToolbar(identifier: "app.glassdb.tests.tab-strip-toolbar")
         window.contentView = hostingView
         hostingView.frame = window.contentView!.bounds
-        MacDatabaseWorkspaceWindowPolicy.apply(window)
+        // Exercise the actual reader lifecycle, not a manual policy call that
+        // hides failure to configure newly attached workspace windows.
         for _ in 0..<60 {
             try await Task.sleep(for: .milliseconds(25))
             hostingView.needsLayout = true
@@ -4246,6 +4373,53 @@ struct glassdbTests {
             hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
             let png = try #require(bitmap.representation(using: .png, properties: [:]))
             try png.write(to: URL(fileURLWithPath: capturePath), options: .atomic)
+        }
+
+        let frameView = try #require(hostingView.superview)
+        let material = try #require(frameView.subviews.compactMap {
+            $0 as? MacDatabaseWorkspaceTitlebarMaterialView
+        }.first)
+        var pending = [hostingView as NSView]
+        var splitController: NSSplitViewController?
+        while !pending.isEmpty {
+            let view = pending.removeFirst()
+            if let split = view as? NSSplitView,
+               let controller = split.delegate as? NSSplitViewController,
+               controller.splitViewItems.contains(where: { $0.behavior == .sidebar }) {
+                splitController = controller
+                break
+            }
+            pending.append(contentsOf: view.subviews)
+        }
+        let split = try #require(splitController)
+        let sidebar = try #require(split.splitViewItems.first { $0.behavior == .sidebar })
+        // New workspaces with the default preference show the database list.
+        #expect(!sidebar.isCollapsed)
+        // Model a collapsed native restoration at first activation. The reader
+        // opens it once, then respects manual hiding across later activations.
+        sidebar.isCollapsed = true
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!sidebar.isCollapsed)
+        sidebar.isCollapsed = true
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(sidebar.isCollapsed)
+        material.followSidebarBoundary()
+        for collapsed in [false, true, false] {
+            sidebar.isCollapsed = collapsed
+            for width in [1200.0, 1000.0] {
+                window.setContentSize(NSSize(width: width, height: 700))
+                for _ in 0..<12 {
+                    frameView.layoutSubtreeIfNeeded()
+                    try await Task.sleep(for: .milliseconds(25))
+                }
+                let sidebarFrame = sidebar.viewController.view.convert(sidebar.viewController.view.bounds, to: frameView)
+                if !collapsed { #expect(sidebarFrame.minX >= -1) }
+                let expectedEdge = collapsed ? frameView.bounds.minX : sidebarFrame.maxX
+                #expect(abs(material.frame.minX - expectedEdge) < 1)
+                #expect(material.hitTest(.zero) == nil)
+            }
         }
     }
     #endif

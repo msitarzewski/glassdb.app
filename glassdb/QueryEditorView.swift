@@ -9,6 +9,57 @@ import SwiftUI
 import GlassDBKit
 import UniformTypeIdentifiers
 
+struct SQLRunAvailability: Equatable {
+    var canRun = false
+    var hasSelection = false
+    var title: String { hasSelection ? "Run Selection" : "Run Statement" }
+    func buttonTitle(runAll: Bool) -> String {
+        runAll ? "All Statements" : (hasSelection ? "Selection" : "Statement")
+    }
+}
+
+struct SQLRunAvailabilityKey: PreferenceKey {
+    static let defaultValue = SQLRunAvailability()
+    static func reduce(value: inout SQLRunAvailability, nextValue: () -> SQLRunAvailability) {
+        let next = nextValue()
+        if next.canRun { value = next }
+    }
+}
+
+/// Shared native execution control for table editors and SQL documents.
+struct SQLRunControl: View {
+    let availability: SQLRunAvailability
+    let run: (SQLExecutionMode) -> Void
+    @State private var runAll = false
+
+    var body: some View {
+        Menu {
+            Button("Run Statement") { run(.statement) }
+            Button("Run Selection") { run(.selection) }
+                .disabled(!availability.hasSelection)
+            Button("Run All Statements") { run(.all) }
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+        } label: {
+            // Native toolbar menus flatten label stacks, ignoring HStack spacing.
+            // Keep the gap in the title so the AppKit menu-button bridge retains it.
+            Label("\u{2002}\(availability.buttonTitle(runAll: runAll))", systemImage: "play.fill")
+        } primaryAction: {
+            run(runAll ? .all : .automatic)
+        }
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(!availability.canRun)
+        .labelStyle(.titleAndIcon)
+        .help("\(availability.title) (Command-Return); Run All Statements (Shift-Command-Return)")
+        .accessibilityLabel(runAll ? "Run All Statements" : availability.title)
+        #if os(macOS)
+        .onModifierKeysChanged(mask: [.command, .shift]) { _, modifiers in
+            runAll = modifiers.contains([.command, .shift])
+        }
+        #endif
+        .onDisappear { runAll = false }
+    }
+}
+
 struct SQLTextDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.plainText] }
     static var writableContentTypes: [UTType] { [.plainText] }
@@ -433,33 +484,17 @@ struct QueryEditorView: View {
                 }
                 #endif
                 ToolbarItem(placement: databaseToolbarPlacement) {
-                    Button {
-                        prepareCurrentStatementExecution()
-                    } label: {
-                        Label("Execute Statement", systemImage: "play.fill")
+                    SQLRunControl(availability: SQLRunAvailability(
+                        canRun: session?.state.isConnected == true && !isExecuting
+                            && !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        hasSelection: selectedRange.length > 0
+                    )) { mode in
+                        prepareExecution(SQLHighlighter.statementsToExecute(in: queryText, selectedRange: selectedRange, mode: mode))
                     }
-                    .disabled(
-                        session?.state.isConnected != true
-                            || queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || isExecuting
-                    )
-                    .keyboardShortcut(.return, modifiers: .command)
                 }
                 .databaseHighVisibilityPriority()
 
                 ToolbarItemGroup(placement: databaseToolbarPlacement) {
-                    Button {
-                        prepareScriptExecution()
-                    } label: {
-                        Label("Execute Script", systemImage: "play.square.stack")
-                    }
-                    .disabled(
-                        session?.state.isConnected != true
-                            || queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || isExecuting
-                    )
-                    .keyboardShortcut(.return, modifiers: [.command, .shift])
-
                     Button {
                         prepareExplainExecution()
                     } label: {
@@ -713,7 +748,13 @@ struct QueryEditorView: View {
             explainPlan: prepareExplainExecution,
             cancel: { Task { await cancelExecution() } },
             showHistory: { showingHistory = true },
-            showSavedQueries: { showingSavedQueries = true }
+            showSavedQueries: { showingSavedQueries = true },
+            executeSelection: {
+                prepareExecution(SQLHighlighter.statementsToExecute(in: queryText, selectedRange: selectedRange, mode: .selection))
+            },
+            executeCurrentStatement: {
+                prepareExecution(SQLHighlighter.statementsToExecute(in: queryText, selectedRange: selectedRange, mode: .statement))
+            }
         )
     }
 
@@ -812,7 +853,7 @@ struct QueryEditorView: View {
     }
 
     private func prepareExecution(_ statements: [SQLStatement]) {
-        guard session?.state.isConnected == true, !statements.isEmpty else { return }
+        guard session?.state.isConnected == true, !isExecuting, !statements.isEmpty else { return }
         if statements.contains(where: { $0.safety.requiresConfirmation }) {
             statementsAwaitingConfirmation = statements
             showingExecutionConfirmation = true
@@ -822,20 +863,26 @@ struct QueryEditorView: View {
     }
 
     private func execute(_ statements: [SQLStatement]) async {
+        guard !isExecuting else { return }
         isExecuting = true
         defer { isExecuting = false }
 
+        var executingSQL = ""
         do {
             for statement in statements {
+                executingSQL = statement.text
                 currentResult = try await sessionManager.executeQuery(
                     statement.text,
                     sessionID: sessionID,
                     editorRowLimit: settingsManager.resultRowLimit
                 )
+                // Keep a server-error result visible and stop the batch even
+                // when the adapter reports it without throwing.
+                if currentResult?.error != nil { return }
             }
         } catch {
             currentResult = QueryResult(
-                query: statements.last?.text ?? "",
+                query: executingSQL,
                 executionTime: 0,
                 error: error.localizedDescription
             )

@@ -195,13 +195,16 @@ struct DatabaseWorkspaceView: View {
     #if os(iOS)
     @Environment(IOSAppRouter.self) private var iOSRouter
     #endif
-    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var appliedInitialSidebarVisibility = false
+    @State private var tableRunAvailability = SQLRunAvailability()
     @State private var tabState: WorkspaceTabState
     @State private var queryDocuments: [UUID: QueryDocumentTab]
+    @State private var tableSQLDrafts: [WorkspaceSelection: QueryDocumentTab] = [:]
     @State private var databases: [String] = []
     @State private var overviewRefreshTrigger = 0
-    @State private var queryPendingClose: UUID?
-    @State private var queryPendingExport: UUID?
+    @State private var queryPendingClose: WorkspaceSelection?
+    @State private var queryPendingExport: WorkspaceSelection?
     @State private var closeQueryAfterExport = false
     @State private var showingQueryExporter = false
     @State private var showingSQLImporter = false
@@ -248,6 +251,7 @@ struct DatabaseWorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .databaseWorkspaceWindowBackground()
+        .onPreferenceChange(SQLRunAvailabilityKey.self) { tableRunAvailability = $0 }
         .databaseWorkspaceWindowChrome()
         .databaseCommandWTarget(
             priority: .workspace,
@@ -260,6 +264,9 @@ struct DatabaseWorkspaceView: View {
         }
         .navigationTitle(detailTitle)
         #if os(macOS)
+        // The passive AppKit material supplies frost. Do not paint a second
+        // SwiftUI toolbar background over it or change toolbar visibility.
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar(removing: .title)
         #endif
         .databaseSidebarChrome()
@@ -334,9 +341,13 @@ struct DatabaseWorkspaceView: View {
             await monitorConnectionState()
         }
         .onAppear {
-            if !settingsManager.showSidebarByDefault {
-                columnVisibility = .detailOnly
-            }
+            guard !appliedInitialSidebarVisibility else { return }
+            appliedInitialSidebarVisibility = true
+            #if os(macOS)
+            columnVisibility = .all
+            #else
+            columnVisibility = settingsManager.showSidebarByDefault ? .all : .detailOnly
+            #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .glassdbOpenSQLDraft)) { notification in
             guard let request = notification.object as? SQLDraftRequest,
@@ -345,7 +356,7 @@ struct DatabaseWorkspaceView: View {
         }
         .fileExporter(
             isPresented: $showingQueryExporter,
-            document: queryPendingExport.flatMap { queryDocuments[$0] }.map {
+            document: queryPendingExport.flatMap { sqlDocument(for: $0) }.map {
                 SQLTextDocument(text: $0.text)
             },
             contentType: .plainText,
@@ -360,7 +371,7 @@ struct DatabaseWorkspaceView: View {
         ) { result in
             importSQLDocument(result)
         }
-        .alert("Save Changes Before Closing?", isPresented: .init(
+        .alert("Save Changes?", isPresented: .init(
             get: { queryPendingClose != nil },
             set: { if !$0 { queryPendingClose = nil } }
         )) {
@@ -369,8 +380,9 @@ struct DatabaseWorkspaceView: View {
             Button("Don't Save", role: .destructive) {
                 guard let id = queryPendingClose else { return }
                 queryPendingClose = nil
-                closeQueryDocument(id)
+                performCloseWorkspace(id)
             }
+            .keyboardShortcut("d", modifiers: .command)
             Button("Save…") {
                 guard let id = queryPendingClose else { return }
                 queryPendingClose = nil
@@ -745,7 +757,9 @@ struct DatabaseWorkspaceView: View {
         }
         .scrollIndicators(.hidden)
         .databaseLookScrollEnabled()
-        .background(.regularMaterial)
+        // Keep tab-strip material inside the content safe area; it must not
+        // extend upward and cover the independent titlebar frost.
+        .background(.regularMaterial, ignoresSafeAreaEdges: [])
         .accessibilityLabel("Open database workspaces")
     }
 
@@ -808,7 +822,8 @@ struct DatabaseWorkspaceView: View {
                 database: database,
                 table: table,
                 isWorkspaceActive: isActive,
-                onOpenSQLEditor: { openQueryDocument() }
+                onOpenSQLEditor: { openQueryDocument() },
+                sqlDraft: tableSQLDraftBinding(for: destination)
             )
         case .database(let database):
             DatabaseDetailView(
@@ -873,35 +888,55 @@ struct DatabaseWorkspaceView: View {
         let hasQuery = document.map {
             !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } ?? false
+        let availability = activeQueryDocumentID == nil ? tableRunAvailability : SQLRunAvailability(
+            canRun: session?.state.isConnected == true && hasQuery && document?.isExecuting != true,
+            hasSelection: (document?.selectedRange.length ?? 0) > 0
+        )
         return DatabaseWorkspaceCommandActions(
-            canExecute: session?.state.isConnected == true
-                && hasQuery
-                && document?.isExecuting != true,
+            canExecute: availability.canRun,
             canCancel: document?.isExecuting == true
                 && session?.connection?.capabilities.contains(.cancellation) == true,
-            canSave: document?.text.isEmpty == false,
+            canSave: sqlDocument(for: tabState.displayed)?.text.isEmpty == false,
             canUseQueryLibrary: activeQueryDocumentID != nil,
             canCloseTab: tabState.previewed != nil || canCloseWorkspace(tabState.selected),
             newQueryTab: { openQueryDocument() },
             closeTab: { closeFocusedEditor() },
             openDocument: { showingSQLImporter = true },
             saveDocument: { exportActiveQueryDocument() },
-            executeStatement: { activeEditorHandlers?.executeStatement() },
-            executeScript: { activeEditorHandlers?.executeScript() },
+            executeStatement: { runActiveSQL(.automatic) },
+            executeScript: { runActiveSQL(.all) },
             explainPlan: { activeEditorHandlers?.explainPlan() },
             cancel: { activeEditorHandlers?.cancel() },
             formatSQL: { formatActiveQueryDocument() },
             showHistory: { activeEditorHandlers?.showHistory() },
-            showSavedQueries: { activeEditorHandlers?.showSavedQueries() }
+            showSavedQueries: { activeEditorHandlers?.showSavedQueries() },
+            runTitle: availability.title,
+            canRunSelection: availability.canRun && availability.hasSelection,
+            executeSelection: { runActiveSQL(.selection) },
+            executeCurrentStatement: { runActiveSQL(.statement) }
         )
+    }
+
+    private func runActiveSQL(_ mode: SQLExecutionMode) {
+        if let handlers = activeEditorHandlers {
+            switch mode {
+            case .automatic: handlers.executeStatement()
+            case .statement: handlers.executeCurrentStatement()
+            case .selection: handlers.executeSelection()
+            case .all: handlers.executeScript()
+            }
+        } else if case .table = tabState.displayed {
+            NotificationCenter.default.post(name: .glassdbExecuteQuery, object: sessionID,
+                                            userInfo: ["mode": mode.rawValue])
+        }
     }
 
     /// File > Save routes through the workspace's exporter so it works from
     /// the menu bar without reaching into editor-private sheet state.
     private func exportActiveQueryDocument() {
-        guard let id = activeQueryDocumentID,
-              queryDocuments[id]?.text.isEmpty == false else { return }
-        queryPendingExport = id
+        let destination = tabState.displayed
+        guard sqlDocument(for: destination)?.text.isEmpty == false else { return }
+        queryPendingExport = destination
         closeQueryAfterExport = false
         showingQueryExporter = true
     }
@@ -930,9 +965,8 @@ struct DatabaseWorkspaceView: View {
 
     private func requestCloseWorkspace(_ destination: WorkspaceSelection) {
         guard canCloseWorkspace(destination) else { return }
-        if case .query(let id) = destination,
-           queryDocuments[id]?.hasUnsavedChanges == true {
-            queryPendingClose = id
+        if sqlDocument(for: destination)?.hasUnsavedChanges == true {
+            queryPendingClose = destination
             return
         }
         performCloseWorkspace(destination)
@@ -947,6 +981,7 @@ struct DatabaseWorkspaceView: View {
         if case .query(let id) = destination {
             queryDocuments.removeValue(forKey: id)
         }
+        tableSQLDrafts.removeValue(forKey: destination)
     }
 
     /// Command-W has exactly one window-level registration. Hidden workspace
@@ -1000,6 +1035,18 @@ struct DatabaseWorkspaceView: View {
         )
     }
 
+    private func sqlDocument(for destination: WorkspaceSelection) -> QueryDocumentTab? {
+        if case .query(let id) = destination { return queryDocuments[id] }
+        return tableSQLDrafts[destination]
+    }
+
+    private func tableSQLDraftBinding(for destination: WorkspaceSelection) -> Binding<QueryDocumentTab> {
+        Binding(
+            get: { tableSQLDrafts[destination] ?? QueryDocumentTab() },
+            set: { tableSQLDrafts[destination] = $0 }
+        )
+    }
+
     private func canCloseWorkspace(_ destination: WorkspaceSelection) -> Bool {
         guard destination.isClosable else { return false }
         guard case .query(let id) = destination else { return true }
@@ -1022,7 +1069,7 @@ struct DatabaseWorkspaceView: View {
 
     private var queryExportFilename: String {
         guard let id = queryPendingExport,
-              let document = queryDocuments[id] else { return "query.sql" }
+              let document = sqlDocument(for: id) else { return "query.sql" }
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         let sanitized = document.title.unicodeScalars.map {
             allowed.contains($0) ? Character(String($0)) : "-"
@@ -1039,10 +1086,14 @@ struct DatabaseWorkspaceView: View {
         switch result {
         case .success:
             guard let id = queryPendingExport,
-                  queryDocuments[id] != nil else { return }
-            queryDocuments[id]?.markSaved()
+                  sqlDocument(for: id) != nil else { return }
+            if case .query(let documentID) = id {
+                queryDocuments[documentID]?.markSaved()
+            } else {
+                tableSQLDrafts[id]?.markSaved()
+            }
             if closeQueryAfterExport {
-                closeQueryDocument(id)
+                performCloseWorkspace(id)
             }
         case .failure(let error):
             let cocoaError = error as? CocoaError
