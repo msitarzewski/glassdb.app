@@ -16,6 +16,10 @@ import AppKit
 
 // MARK: - Token Types
 
+enum SQLExecutionMode: String, Sendable {
+    case automatic, statement, selection, all
+}
+
 enum SQLTokenKind: Equatable {
     case keyword
     case function
@@ -387,6 +391,11 @@ struct SQLHighlighter {
         }
     }
 
+    static func editorText(forGeneratedQuery sql: String) -> String {
+        let trimmed = sql.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed.hasSuffix(";") ? trimmed : trimmed + ";"
+    }
+
     /// Returns the selected SQL, or the parsed statement containing the caret.
     /// A non-empty selection may intentionally contain multiple statements.
     static func statementsToExecute(in sql: String, selectedRange: NSRange) -> [SQLStatement] {
@@ -408,6 +417,20 @@ struct SQLHighlighter {
             return [previous]
         }
         return parsed.first.map { [$0] } ?? []
+    }
+
+    static func statementsToExecute(in sql: String, selectedRange: NSRange, mode: SQLExecutionMode) -> [SQLStatement] {
+        switch mode {
+        case .automatic:
+            return statementsToExecute(in: sql, selectedRange: selectedRange)
+        case .statement:
+            return statementsToExecute(in: sql, selectedRange: NSRange(location: selectedRange.location, length: 0))
+        case .selection:
+            guard selectedRange.length > 0, selectedRange.location < (sql as NSString).length else { return [] }
+            return statementsToExecute(in: sql, selectedRange: selectedRange)
+        case .all:
+            return statements(in: sql)
+        }
     }
 
     static func safetyClassification(of sql: String) -> SQLSafetyClassification {
@@ -566,6 +589,15 @@ struct SQLHighlighter {
 
     // MARK: Completion and Formatting
 
+    /// The database qualifier currently being completed, not the session's
+    /// selected database. Reuses caret/token rules to exclude strings/comments.
+    static func completionDatabase(in sql: String, selectedRange: NSRange) -> String? {
+        guard let context = completionContext(in: sql, selectedRange: selectedRange),
+              let dot = context.prefix.firstIndex(of: "."),
+              dot != context.prefix.startIndex else { return nil }
+        return String(context.prefix[..<dot])
+    }
+
     /// Returns bounded, deterministic suggestions for the identifier fragment at
     /// the caret. Callers supply live schema names so completion never invents
     /// database objects or requires a second parser implementation in the UI.
@@ -621,7 +653,8 @@ struct SQLHighlighter {
     static func applyingCompletion(
         _ completion: String,
         to sql: String,
-        selectedRange: NSRange
+        selectedRange: NSRange,
+        appendSpace: Bool = false
     ) -> (sql: String, selection: NSRange) {
         let source = sql as NSString
         let location = min(selectedRange.location, source.length)
@@ -637,8 +670,19 @@ struct SQLHighlighter {
         } else {
             replacementRange = NSRange(location: location, length: 0)
         }
-        let completed = source.replacingCharacters(in: replacementRange, with: completion)
-        let caret = replacementRange.location + (completion as NSString).length
+        var completed = source.replacingCharacters(in: replacementRange, with: completion)
+        var caret = replacementRange.location + (completion as NSString).length
+        if appendSpace {
+            let tail = (completed as NSString).substring(from: caret)
+            if tail.first == " " || tail.first == "\t" {
+                caret += 1
+            } else if tail.first.map({ !$0.isWhitespace && !".,;()[]".contains($0) }) ?? true {
+                completed = (completed as NSString).replacingCharacters(
+                    in: NSRange(location: caret, length: 0), with: " "
+                )
+                caret += 1
+            }
+        }
         return (completed, NSRange(location: caret, length: 0))
     }
 

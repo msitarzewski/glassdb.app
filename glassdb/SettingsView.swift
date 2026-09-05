@@ -168,8 +168,8 @@ struct SettingsView: View {
             querySection
 
             Section("Windows") {
-                @Bindable var settings = settingsManager
-                Toggle("Show sidebar when opening a workspace", isOn: $settings.showSidebarByDefault)
+                Text("New database workspaces show the schema sidebar. Use the sidebar button to hide it while working.")
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

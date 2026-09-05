@@ -212,7 +212,16 @@
 - Evidence: Mac 136/136 on merged main including the new `workspaceTitlebarBackgroundsStayOutOfTheContentLayoutRect` host test and the extended policy test; iOS simulator build passes against pinned packages; live verification in a debug build driven through accessibility with a throwaway SQLite connection; signed arm64 Release installed to /Applications on 2026-09-04
 - Diagnostic method worth reusing: accessibility geometry plus window-only pixel/alpha capture separates "not laid out" from "painted over"; the offscreen `NSHostingView` harness does not composite window materials, so on-screen debug-build checks remain necessary for chrome bugs
 
+### Completed — Approved Workspace and SQL Editor Polish (2026-09-05)
+- [x] Passive sidebar-matched Mac titlebar material, system toolbar sizing, and one-time schema-sidebar opening after window activation; preserve native dragging, layout, and subsequent user toggles.
+- [x] Proportional grid typography, typed numeric alignment, smaller resize indicators with larger hit targets, and 8pt right inset; top-aligned empty SQL editor with blank striped results canvas.
+- [x] Shared parser-backed Statement/Selection/All execution in table and SQL-document editors, keyboard shortcuts, modifier-aware Mac label, generated semicolons, and stop-on-error batching.
+- [x] Workspace-owned table SQL draft tracking, tab-close Save Changes dialog and keyboard actions, explicit SQL export, and refresh protection for unsaved edits. Scope excludes window close/quit and recovery; see the open report below.
+- [x] Lazy database-qualified table completion plus Tab acceptance with trailing-space/caret handling.
+- [x] User-approved installed Mac build; final local Mac suite 145/145, zero failures/skips, five test-host negative-width runtime warnings. Signed Release verified and deployed with rollback retained. See `activeContext.md#Approved Workspace and SQL Editor Polish (2026-09-05)` and the PR for final platform/CI evidence.
+
 ### In Progress
+- [ ] Reproduce the 2026-09-05 edited-SQL-loss report: determine tab close vs window close/quit vs refresh, whether Save Changes appeared, and whether file export completed. Tab-level draft/save handling exists; whole-window/quit protection and durable unsaved-draft recovery do not. Keep this open rather than inferring recovery from passing dirty-state unit tests.
 - [ ] C3 cross-device Glass-family credential catalog and eligible-secret synchronization; shared access group/App Group behavior is currently same-device only
 - [ ] Magic / First Class **My Connections** contract: neutral endpoint identity,
   glassdb database/tunnel overlay, outcome-oriented onboarding, and canonical
