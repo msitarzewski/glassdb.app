@@ -235,6 +235,9 @@ struct ConnectionManagerView: View {
         }
         #if os(macOS)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                addConnectionButton
+            }
             ToolbarItem(placement: .confirmationAction) {
                 // The Mac Settings scene is the platform `Settings` scene and
                 // carries no window id, so `openWindow(id:)` silently does
@@ -269,10 +272,7 @@ struct ConnectionManagerView: View {
         .toolbar {
             ToolbarItem(placement: .bottomOrnament) {
                 HStack {
-                    Button("Add Connection", systemImage: "plus") {
-                        showingAddConnection = true
-                    }
-                    .accessibilityIdentifier("database-connection-library-add")
+                    addConnectionButton
 
                     Button("Settings", systemImage: "gearshape") {
                         showSettings()
@@ -386,14 +386,13 @@ struct ConnectionManagerView: View {
         .listStyle(.sidebar)
         .navigationTitle("Connections")
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .primaryAction) {
-                Button("Add Connection", systemImage: "plus") {
-                    showingAddConnection = true
+                if horizontalSizeClass == .compact {
+                    addConnectionButton
                 }
-                .managerNewConnectionShortcut()
-                .accessibilityIdentifier("database-connection-library-add")
-                .help("Add a database connection")
             }
+            #endif
             #if !os(macOS)
             ToolbarItem(placement: .secondaryAction) {
                 Button("Settings", systemImage: "gearshape") {
@@ -404,6 +403,15 @@ struct ConnectionManagerView: View {
             }
             #endif
         }
+    }
+
+    private var addConnectionButton: some View {
+        Button("Add Connection", systemImage: "plus") {
+            showingAddConnection = true
+        }
+        .managerNewConnectionShortcut()
+        .accessibilityIdentifier("database-connection-library-add")
+        .help("Add a database connection")
     }
 
     private func collectionNavigation(
@@ -512,6 +520,13 @@ struct ConnectionManagerView: View {
         .searchFocused($searchFieldFocused)
         .databaseLookScrollEnabled()
         .navigationTitle(scopeTitle(in: connectionLibrary))
+        #if os(iOS)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                addConnectionButton
+            }
+        }
+        #endif
     }
 
     private func selectMode(
